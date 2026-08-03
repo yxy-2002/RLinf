@@ -80,7 +80,7 @@ GITHUB_PREFIX=""
 NO_ROOT=0
 NO_INSTALL_RLINF_CMD="--no-install-project"
 SUPPORTED_TARGETS=("embodied" "agentic" "docs")
-SUPPORTED_MODELS=("openvla" "openvla-oft" "openpi" "gr00t" "gr00t_n1d6" "gr00t_n1d7" "dexbotic" "starvla" "lingbotvla" "dreamzero" "qwen3_vl" "abot_m0")
+SUPPORTED_MODELS=("openvla" "openvla-oft" "openpi" "gr00t" "gr00t_n1d6" "gr00t_n1d7" "dexbotic" "starvla" "lingbotvla" "dreamzero" "qwen3_vl" "abot_m0" "lamp")
 SUPPORTED_ENVS=("behavior" "maniskill_libero" "libero" "metaworld" "calvin" "isaaclab" "robocasa" "robocasa365" "franka" "franka-dexhand" "franka-franky" "frankasim" "dexjoco" "robotwin" "habitat" "opensora" "wan" "genesis" "xsquare_turtle2" "liberopro" "liberoplus" "roboverse" "embodichain" "d4rl" "dosw1" "gim_arm" "dummy" "polaris")
 
 #=======================Utility Functions=======================
@@ -1551,6 +1551,21 @@ install_dexbotic_model() {
     uv pip uninstall pynvml || true
 }
 
+install_lamp_model() {
+    case "$ENV_NAME" in
+        dexjoco)
+            create_and_sync_venv
+            install_common_embodied_deps
+            uv pip install -r "$SCRIPT_DIR/embodied/models/lamp.txt"
+            install_dexjoco_env
+            ;;
+        *)
+            echo "Environment '$ENV_NAME' is not supported for LAMP model." >&2
+            exit 1
+            ;;
+    esac
+}
+
 install_lingbot_vla_model() {
     create_and_sync_venv
     install_common_embodied_deps
@@ -2460,6 +2475,9 @@ main() {
                     ;;
                 dexbotic)
                     install_dexbotic_model
+                    ;;
+                lamp)
+                    install_lamp_model
                     ;;
                 lingbotvla)                  
                     install_lingbot_vla_model 

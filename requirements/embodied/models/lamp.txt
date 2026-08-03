@@ -1,0 +1,5 @@
+# LAMP offline data preprocessing and versioned artifacts.
+av>=12,<19
+opencv-python>=4.10,<5
+pyarrow==14.0.1
+safetensors>=0.4,<1

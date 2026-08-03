@@ -8,7 +8,7 @@
 2. 每个文件负责什么：输入、输出、状态和关键约束是什么。
 3. 它与整个代码库怎样连接：谁调用它、它调用谁、训练和在线推理时处于哪一层。
 
-本文面向后续维护者，是本阶段唯一保留的迁移说明。用户快速上手文档、README 导航、安装、Docker、CI 和 E2E 接入暂不纳入本次修改。
+本文面向后续维护者，是本阶段唯一保留的迁移说明。用户快速上手文档、README 导航、Docker、CI 和 E2E 接入暂不纳入本次修改；训练环境安装入口随代码保留。
 
 ### 1.1 迁移来源
 
@@ -466,19 +466,24 @@ statistics；如果调用者显式提供 `hand_prior` mapping，则把它作为�
 - 若 `rollout.enable_torch_compile=true`，调用 wrapper 的
   `enable_torch_compile()`；时序 controller 仍在编译图外。
 
-## 8. 模型注册与暂缓范围
+## 8. 模型注册、环境安装与暂缓范围
 
 ### 8.1 模型注册
 
 - `rlinf/config.py`：新增 `SupportedModel.LAMP_BC` 和 `LAMP_DP`，均属于 embodied。
 - `rlinf/models/__init__.py`：把两个 model type 注册到 LAMP `get_model`。
 
-### 8.2 暂不纳入本次修改
+### 8.2 训练环境安装
 
-本阶段提交只覆盖核心模型、数据、训练、评估配置和单元测试。以下外围工作明确暂缓：
+- `requirements/install.sh`：注册安装模型名 `lamp`，目前仅支持环境名 `dexjoco`。
+- `requirements/embodied/models/lamp.txt`：声明视频读取、OpenCV、Parquet 和 artifact 依赖。
+- 安装顺序为创建 venv、同步公共 embodied 依赖、安装 LAMP 依赖，再安装固定版本的 DexJoCo runtime。
+
+### 8.3 暂不纳入本次修改
+
+本阶段提交覆盖核心模型、数据、训练、评估配置、单元测试和本地 venv 安装入口。以下外围工作明确暂缓：
 
 - README、Sphinx 用户文档及其导航入口。
-- `requirements/install.sh` 与模型依赖清单。
 - Docker stage 和 Docker build workflow。
 - GitHub Actions 集成任务与 embodied E2E 脚本。
 
@@ -614,9 +619,16 @@ actor:
 - 评估 YAML：``rollout.model.model_path`` 指向部署 policy artifact。
 - 恢复训练时：在所选训练 YAML 中设置 ``runner.resume_dir``。
 
-### 13.2 环境前提
+### 13.2 创建训练环境
 
-安装脚本、依赖清单和 Docker 环境暂不属于本次提交。以下训练命令假设当前 Python 环境已具备 LAMP、DexJoCo、Torch、视频解码和 parquet 读取所需依赖。
+在仓库根目录运行：
+
+```bash
+bash requirements/install.sh embodied --model lamp --env dexjoco --venv .venv-lamp
+source .venv-lamp/bin/activate
+```
+
+该命令安装 RLinf 的公共 embodied 依赖、LAMP 数据依赖及固定版本的 DexJoCo runtime。数据集、ResNet-18 权重和 prior/policy artifact 不由安装脚本下载，仍需通过第 13.1 节所述配置路径提供。Docker 环境暂不属于本次提交。
 
 ### 13.3 训练 CVAE prior
 
@@ -711,6 +723,7 @@ MUJOCO_GL=egl bash evaluations/run_eval.sh dexjoco \
 | `rlinf/workers/env/env_worker.py` | 输出逐 env reset mask |
 | `rlinf/workers/rollout/hf/huggingface_worker.py` | GPU 加载与 compile |
 | `rlinf/runners/offline_runner.py` | 标准 metric namespace |
+| `requirements/install.sh` | 注册 `lamp` + `dexjoco` venv 安装流程 |
 | `evaluations/run_eval.sh` | DexJoCo config 推断 |
 | `tests/unit_tests/test_dexjoco_env.py` | hand history/qpos 回归测试 |
 
@@ -774,10 +787,11 @@ MUJOCO_GL=egl bash evaluations/run_eval.sh dexjoco \
 | `examples/embodiment/config/model/lamp_bc.yaml` | RLinf rollout model config 风格 | BC artifact 在线加载契约 |
 | `examples/embodiment/config/model/lamp_dp.yaml` | RLinf rollout model config 风格 | DP artifact、temporal ensemble、prior dim 在线契约 |
 
-### 17.4 评估、测试与迁移说明
+### 17.4 依赖、评估、测试与迁移说明
 
 | 新文件 | 来源 | 功能 |
 |---|---|---|
+| `requirements/embodied/models/lamp.txt` | LAMP 实际 import 与 RLinf embodied 基础依赖 | 视频、OpenCV、Parquet 和 artifact 依赖清单 |
 | `evaluations/dexjoco/dexjoco_lamp_bc_eval.yaml` | RLinf embodied eval recipe + 旧 BC rollout | DexJoCo BC 独立在线评估 |
 | `evaluations/dexjoco/dexjoco_lamp_dp_eval.yaml` | RLinf embodied eval recipe + 旧 DP eval | DexJoCo DP 独立在线评估，默认 compile |
 | `evaluations/dexjoco/dexjoco_lamp_bimanual_dp_eval.yaml` | RLinf embodied eval recipe + 旧双臂 DP eval | 46 维动作的双臂 DP 在线评估模板 |
