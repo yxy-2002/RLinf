@@ -63,6 +63,10 @@ class _FakeDexJocoChild(gym.Env):
     def _obs(self):
         state = np.full(self.state_dim, float(self.seed_value), dtype=np.float64)
         state[0] += self.step_count
+        hand_start = 14 if self.dual_arm else 7
+        state[hand_start : hand_start + (32 if self.dual_arm else 16)] += (
+            self.step_count
+        )
         if self.restored_state is not None:
             state = self.restored_state.copy()
         image = np.full((4, 5, 3), self.step_count, dtype=np.uint8)
@@ -169,11 +173,17 @@ def test_reset_observation_cameras_qpos_and_seed_partition():
         assert obs["main_images"].dtype == torch.uint8
         assert obs["wrist_images"].shape == (4, 4, 5, 3)
         assert obs["extra_view_images"].shape[0] == 4
+        assert obs["panda_qpos"].shape == (4, 7)
+        assert obs["hand_history"].shape == (4, 8, 16)
+        torch.testing.assert_close(
+            obs["hand_history"][:, 0], obs["hand_history"][:, -1]
+        )
         assert obs["task_descriptions"] == ["do click_mouse"] * 4
         assert infos["panda_qpos"].shape == (4, 7)
         assert infos["native"][0]["upstream_field"] == 0
 
         obs, _ = env.step(np.zeros((4, 23), dtype=np.float32))[:2]
+        assert torch.all(obs["hand_history"][:, -1] != obs["hand_history"][:, -2])
         env.reset(env_idx=[0])
         assert env._last_raw_obs[0]["state"][0] == 16
         assert env._last_raw_obs[1]["state"][0] == 17
@@ -189,6 +199,8 @@ def test_dual_arm_images_and_chunk_auto_reset_final_values():
         obs, _ = env.reset()
         assert obs["states"].shape == (2, 50)
         assert obs["wrist_images"].shape == (2, 2, 4, 5, 3)
+        assert obs["right_hand_history"].shape == (2, 8, 16)
+        assert obs["left_hand_history"].shape == (2, 8, 16)
         assert env.action_dim == env.policy_state_dim == 46
 
         outputs, rewards, terminations, truncations, infos = env.chunk_step(

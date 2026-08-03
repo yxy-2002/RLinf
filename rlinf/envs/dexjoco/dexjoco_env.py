@@ -402,6 +402,16 @@ class DexJocoEnv(gym.Env):
         self._is_start = True
         self._last_raw_obs: list[dict[str, Any]] | None = None
         self._last_qpos: np.ndarray | None = None
+        history_shape = (
+            (self.num_envs, 2, 8, 16)
+            if self.dual_arm
+            else (
+                self.num_envs,
+                8,
+                16,
+            )
+        )
+        self._hand_history = np.zeros(history_shape, dtype=np.float32)
         self._last_native_infos: list[dict[str, Any]] = [
             {} for _ in range(self.num_envs)
         ]
@@ -551,13 +561,51 @@ class DexJocoEnv(gym.Env):
                 )
             )
 
-        return {
+        result = {
             "states": torch.as_tensor(states, dtype=torch.float32),
+            "panda_qpos": torch.as_tensor(self._last_qpos, dtype=torch.float32),
             "main_images": torch.as_tensor(main_images),
             "wrist_images": torch.as_tensor(wrist_images),
             "extra_view_images": extra_images,
             "task_descriptions": list(self.task_descriptions),
         }
+        if self.dual_arm:
+            result["right_hand_history"] = torch.as_tensor(
+                self._hand_history[:, 0], dtype=torch.float32
+            )
+            result["left_hand_history"] = torch.as_tensor(
+                self._hand_history[:, 1], dtype=torch.float32
+            )
+        else:
+            result["hand_history"] = torch.as_tensor(
+                self._hand_history, dtype=torch.float32
+            )
+        return result
+
+    def _update_hand_history(
+        self,
+        env_idx: np.ndarray,
+        observations: list[dict[str, Any]],
+        *,
+        reset: bool,
+    ) -> None:
+        """Append current hand state or initialize all eight history frames."""
+
+        for idx, observation in zip(env_idx, observations):
+            state = np.asarray(observation["state"], dtype=np.float32)
+            if self.dual_arm:
+                hands = np.stack((state[14:30], state[30:46]), axis=0)
+            else:
+                hands = state[7:23]
+            if reset:
+                self._hand_history[int(idx)] = np.broadcast_to(
+                    hands[..., None, :], self._hand_history[int(idx)].shape
+                )
+            else:
+                self._hand_history[int(idx), ..., :-1, :] = self._hand_history[
+                    int(idx), ..., 1:, :
+                ]
+                self._hand_history[int(idx), ..., -1, :] = hands
 
     def _update_info_cache(
         self, env_idx: np.ndarray, info_list: list[dict[str, Any]]
@@ -658,6 +706,7 @@ class DexJocoEnv(gym.Env):
             for idx, obs in zip(reset_idx, partial_obs):
                 self._last_raw_obs[int(idx)] = obs
         self._update_info_cache(reset_idx, info_list)
+        self._update_hand_history(reset_idx, partial_obs, reset=True)
 
         if initial_states is not None:
             restored_obs, restored_infos = self._restore_initial_states(
@@ -666,6 +715,7 @@ class DexJocoEnv(gym.Env):
             for idx, obs in zip(requested_idx, restored_obs):
                 self._last_raw_obs[int(idx)] = obs
             self._update_info_cache(requested_idx, restored_infos)
+            self._update_hand_history(requested_idx, restored_obs, reset=True)
 
         self._reset_metrics(reset_idx)
         self._is_start = False
@@ -710,6 +760,7 @@ class DexJocoEnv(gym.Env):
         self._last_raw_obs = obs_list
         all_idx = np.arange(self.num_envs, dtype=np.int64)
         self._update_info_cache(all_idx, info_list)
+        self._update_hand_history(all_idx, obs_list, reset=False)
 
         rewards = np.asarray(rewards, dtype=np.float32).reshape(self.num_envs)
         terminations = np.asarray(terminations, dtype=bool).reshape(self.num_envs)

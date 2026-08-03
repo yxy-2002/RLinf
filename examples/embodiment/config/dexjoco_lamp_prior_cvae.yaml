@@ -1,0 +1,19 @@
+defaults:
+  - dexjoco_lamp_il_base
+  - _self_
+
+runner:
+  max_steps: 30000
+  logger:
+    experiment_name: dexjoco_lamp_prior_cvae
+
+actor:
+  global_batch_size: 256
+  micro_batch_size: 256
+  model:
+    hand_prior:
+      type: cvae
+      latent_dim: 3
+      hidden_dim: 1024
+      posterior_kl_weight: 1.0e-4
+      prior_kl_weight: 1.0e-4

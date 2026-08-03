@@ -106,25 +106,13 @@ class EnvOutput:
         )
 
     def prepare_observations(self, obs: dict[str, Any]) -> dict[str, Any]:
-        image_tensor = obs["main_images"] if "main_images" in obs else None
-        wrist_image_tensor = obs["wrist_images"] if "wrist_images" in obs else None
-        extra_view_image_tensor = (
-            obs["extra_view_images"] if "extra_view_images" in obs else None
-        )
-        states = obs["states"] if "states" in obs else None
-        task_descriptions = (
+        prepared = dict(obs)
+        prepared["task_descriptions"] = (
             list(obs["task_descriptions"])
             if "task_descriptions" in obs and obs["task_descriptions"] is not None
             else None
         )
-
-        return {
-            "main_images": image_tensor,  # [N_ENV, H, W, C]
-            "wrist_images": wrist_image_tensor,  # [N_ENV, H, W, C] or [N_ENV, N_IMG, H, W, C]
-            "extra_view_images": extra_view_image_tensor,  # [N_ENV, N_IMG, H, W, C]
-            "states": states,
-            "task_descriptions": task_descriptions,
-        }
+        return prepared
 
     @staticmethod
     def merge_env_outputs(env_outputs: list[dict]) -> dict[str, Any]:

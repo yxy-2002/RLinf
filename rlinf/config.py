@@ -107,6 +107,8 @@ SupportedModel.RECAP_VALUE_MODEL = SupportedModel.register(
 SupportedModel.STEAM_VALUE_MODEL = SupportedModel.register(
     "steam_value_model", force=True
 )
+SupportedModel.LAMP_BC = SupportedModel.register("lamp_bc", force=True)
+SupportedModel.LAMP_DP = SupportedModel.register("lamp_dp", force=True)
 
 SupportedModel.QWEN2_5_VL_SFT = SupportedModel.register("qwen2.5_vl", force=True)
 SupportedModel.QWEN3_VL_SFT = SupportedModel.register("qwen3_vl", force=True)
@@ -138,6 +140,8 @@ EMBODIED_MODEL = set(
         SupportedModel.CFG_MODEL,
         SupportedModel.RECAP_VALUE_MODEL,
         SupportedModel.STEAM_VALUE_MODEL,
+        SupportedModel.LAMP_BC,
+        SupportedModel.LAMP_DP,
     }
 )
 
@@ -1088,8 +1092,7 @@ def validate_embodied_cfg(cfg):
                 f"fields: {invalid_kwargs}"
             )
             assert not env_cfg.get("use_fixed_reset_state_ids", False), (
-                f"env.{split_name}.use_fixed_reset_state_ids is unsupported for "
-                "DexJoCo"
+                f"env.{split_name}.use_fixed_reset_state_ids is unsupported for DexJoCo"
             )
             assert not env_cfg.get("use_ordered_reset_state_ids", False), (
                 f"env.{split_name}.use_ordered_reset_state_ids is unsupported for "

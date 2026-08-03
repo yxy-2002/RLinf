@@ -1,0 +1,9 @@
+model_type: lamp_dp
+model_path: ""
+precision: "32"
+action_dim: 23
+num_action_chunks: 4
+temporal_ensemble_decay: 0.25
+# The self-contained artifact owns prior type and single/bimanual latent
+# dimensions.  Set a hand_prior mapping explicitly only for extra assertions.
+hand_prior: null

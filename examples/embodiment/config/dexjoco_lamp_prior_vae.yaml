@@ -1,0 +1,14 @@
+defaults:
+  - dexjoco_lamp_il_base
+  - _self_
+
+runner:
+  logger:
+    experiment_name: dexjoco_lamp_prior_vae
+
+actor:
+  model:
+    hand_prior:
+      type: vae
+      latent_dim: 3
+      hidden_dim: 512

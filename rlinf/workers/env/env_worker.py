@@ -921,8 +921,15 @@ class EnvWorker(Worker):
         return env_outputs
 
     def _build_rollout_input_data(self, env_batch: dict[str, Any]) -> dict[str, Any]:
+        obs = dict(env_batch["obs"])
+        dones = env_batch.get("dones")
+        if dones is not None:
+            reset_mask = dones
+            if reset_mask.ndim > 1:
+                reset_mask = reset_mask.any(dim=1)
+            obs["reset_mask"] = reset_mask.to(dtype=torch.bool)
         data = {
-            "obs": env_batch["obs"],
+            "obs": obs,
             "final_obs": env_batch["final_obs"],
         }
         if self.enable_rlt:

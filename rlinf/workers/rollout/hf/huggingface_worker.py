@@ -145,6 +145,11 @@ class MultiStepRolloutWorker(Worker):
             rollout_model_config.model_path = self.cfg.rollout.model.model_path
 
         self.hf_model: BasePolicy = get_model(rollout_model_config)
+        if SupportedModel(self.model_cfg.model_type) in (
+            SupportedModel.LAMP_BC,
+            SupportedModel.LAMP_DP,
+        ):
+            self.hf_model.to(self.device)
 
         if self.cfg.runner.get("ckpt_path", None):
             model_dict = torch.load(self.cfg.runner.ckpt_path)
@@ -488,6 +493,8 @@ class MultiStepRolloutWorker(Worker):
             SupportedModel.DREAMZERO,
             SupportedModel.CNN_POLICY,
             SupportedModel.CFG_MODEL,
+            SupportedModel.LAMP_BC,
+            SupportedModel.LAMP_DP,
         ]:
             if self.enable_dagger:
                 kwargs = {"mode": "eval"}

@@ -200,6 +200,19 @@ class OfflineRunner:
             if values
         }
 
+    @staticmethod
+    def _training_metric_namespaces(metrics: dict) -> dict:
+        """Add ``train/`` while preserving worker-owned standard namespaces."""
+
+        return {
+            (
+                key
+                if key.startswith(("validation/", "data/", "time/"))
+                else f"train/{key}"
+            ): value
+            for key, value in metrics.items()
+        }
+
     def _process_ranked_numeric_results(
         self, results: list[dict], metric_field: str
     ) -> tuple[dict, list[dict]]:
@@ -324,16 +337,20 @@ class OfflineRunner:
             time_metrics.update(
                 {f"time/actor/{k}": v for k, v in actor_time_metrics_agg.items()}
             )
-            training_metrics = {f"train/{k}": v for k, v in metrics.items()}
+            training_metrics = self._training_metric_namespaces(metrics)
 
             if _step == start_step + 1 or _step % log_interval == 0:
                 self.metric_logger.log(time_metrics, _step)
                 self.metric_logger.log(training_metrics, _step)
                 self._log_ranked_metrics(
-                    metrics_list=actor_training_metrics_per_rank,
+                    metrics_list=[
+                        self._training_metric_namespaces(rank_metrics)
+                        for rank_metrics in actor_training_metrics_per_rank
+                    ],
                     step=_step,
                     prefix="train",
                     worker_group_name=self.actor.worker_group_name,
+                    add_prefix=False,
                 )
                 self._log_ranked_metrics(
                     metrics_list=actor_time_metrics_per_rank,

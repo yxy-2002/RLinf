@@ -1,0 +1,24 @@
+defaults:
+  - dexjoco_lamp_il_base
+  - _self_
+
+runner:
+  max_steps: 30000
+  logger:
+    experiment_name: dexjoco_lamp_dp
+
+algorithm:
+  stage: dp
+
+actor:
+  global_batch_size: 512
+  micro_batch_size: 64
+  optim:
+    lr: 3.0e-5
+    warmup_steps: 1000
+  model:
+    model_type: lamp_dp
+    hand_prior:
+      type: cvae
+      latent_dim: 3
+      artifact_path: ../results/dexjoco_lamp_prior_cvae/artifact

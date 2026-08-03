@@ -101,6 +101,11 @@ def _register_builtin_models():
 
         return get_model(cfg, torch_dtype)
 
+    def _build_lamp_policy(cfg: DictConfig, torch_dtype):
+        from rlinf.models.embodiment.lamp import get_model
+
+        return get_model(cfg, torch_dtype)
+
     def _build_lingbotvla(cfg: DictConfig, torch_dtype):
         from rlinf.models.embodiment.lingbotvla import get_model
 
@@ -209,6 +214,18 @@ def _register_builtin_models():
     register_model(
         SupportedModel.FLOW_POLICY.value,
         _build_flow_policy,
+        category="embodied",
+        force=True,
+    )
+    register_model(
+        SupportedModel.LAMP_BC.value,
+        _build_lamp_policy,
+        category="embodied",
+        force=True,
+    )
+    register_model(
+        SupportedModel.LAMP_DP.value,
+        _build_lamp_policy,
         category="embodied",
         force=True,
     )

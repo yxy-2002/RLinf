@@ -1,0 +1,112 @@
+defaults:
+  - hybrid_engines/fsdp@actor.fsdp_config
+  - override hydra/job_logging: stdout
+
+hydra:
+  run:
+    dir: .
+  output_subdir: null
+
+cluster:
+  num_nodes: 1
+  component_placement:
+    actor: 0-0
+
+runner:
+  task_type: offline
+  only_eval: false
+  logger:
+    log_path: ../results
+    project_name: rlinf
+    experiment_name: dexjoco_lamp_il
+    logger_backends: [tensorboard]
+  max_epochs: 1000000
+  max_steps: 20000
+  local_update_steps: 100
+  val_check_interval: -1
+  save_interval: 5000
+  log_interval: 100
+  resume_dir: null
+
+algorithm:
+  stage: prior
+  loss_type: lamp_il
+  adv_type: null
+  gamma: 0.99
+  bc_loss:
+    arm: 1.0
+    arm_xyz: 1.0
+    quaternion: 8.0
+    hand: 2.5
+    drift: 3.0
+
+data:
+  dataset_type: dexjoco_lamp
+  task_name: pick_bucket
+  dataset_root: datasets/dexjoco_lerobot_datasets
+  cache_root: ../results/lamp_cache
+  cache_path: null
+  image_size: 128
+  num_workers: 4
+  pin_memory: true
+  persistent_workers: true
+
+actor:
+  group_name: ActorGroup
+  training_backend: fsdp
+  seed: 42
+  micro_batch_size: 128
+  global_batch_size: 128
+  eval_batch_size: 256
+  torch_compile: true
+  compile_mode: max-autotune-no-cudagraphs
+  validation_interval: 500
+  validation_batches: -1
+  optim:
+    lr: 1.0e-4
+    min_lr: 1.0e-6
+    warmup_steps: 500
+    weight_decay: 1.0e-4
+    adam_beta1: 0.9
+    adam_beta2: 0.999
+    adam_eps: 1.0e-8
+    clip_grad: 1.0
+    backbone_lr_ratio: 0.1
+  model:
+    model_type: lamp_dp
+    num_action_chunks: 4
+    resnet_path: pretrained_models/resnet-18
+    execution_horizon: 4
+    hand_prior:
+      type: vae
+      hand_side: single
+      latent_dim: 3
+      hidden_dim: 512
+      beta: 1.0e-4
+      beta_warmup_steps: 1000
+      posterior_kl_weight: 1.0e-4
+      prior_kl_weight: 1.0e-4
+      artifact_path: null
+      right:
+        artifact_path: null
+        latent_dim: 3
+      left:
+        artifact_path: null
+        latent_dim: 3
+
+rollout:
+  group_name: RolloutGroup
+  pipeline_stage_num: 1
+  model:
+    model_type: lamp_dp
+    model_path: ""
+    precision: "32"
+
+env:
+  group_name: EnvGroup
+
+reward:
+  use_reward_model: false
+
+critic:
+  use_critic_model: false
