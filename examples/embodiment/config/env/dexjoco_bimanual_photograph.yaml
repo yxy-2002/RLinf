@@ -1,0 +1,10 @@
+defaults:
+  - dexjoco_base
+  - _self_
+
+task_name: bimanual_photograph
+task_description: Grasp the camera with the left hand, align it with the logo, and press the shutter button with the right hand.
+camera_mapping:
+  base: ego
+  wrist_left: wrist_left
+  wrist_right: wrist_right

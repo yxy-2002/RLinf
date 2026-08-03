@@ -1,0 +1,25 @@
+env_type: dexjoco
+task_name: null
+task_description: null
+camera_mapping: {}
+
+randomize: false
+randomize_dynamics: false
+realtime_pacing: false
+seed: 0
+env_kwargs: {}
+
+total_num_envs: null
+group_size: 1
+auto_reset: true
+ignore_terminations: false
+max_episode_steps: 256
+max_steps_per_rollout_epoch: 256
+use_fixed_reset_state_ids: false
+use_ordered_reset_state_ids: false
+is_eval: false
+
+video_cfg:
+  save_video: false
+  info_on_video: true
+  video_base_dir: ${runner.logger.log_path}/video/train

@@ -1049,6 +1049,52 @@ def validate_embodied_cfg(cfg):
             if cfg.env.get("eval", None) is not None
             else None
         )
+        dexjoco_tasks = {
+            "bimanual_assembly",
+            "bimanual_hanoi",
+            "bimanual_microwave_cook",
+            "bimanual_photograph",
+            "bimanual_unlock_ipad",
+            "click_mouse",
+            "fold_glasses",
+            "hammer_nail",
+            "pick_bucket",
+            "pinch_tongs",
+            "water_plant",
+        }
+        dexjoco_reserved_kwargs = {
+            "policy_mode",
+            "render_mode",
+            "randomize",
+            "randomize_dynamics",
+            "seed",
+        }
+        for split_name, env_type in (
+            ("train", train_env_type),
+            ("eval", eval_env_type),
+        ):
+            if env_type != SupportedEnvType.DEXJOCO:
+                continue
+            env_cfg = cfg.env.get(split_name)
+            task_name = str(env_cfg.get("task_name", ""))
+            assert task_name in dexjoco_tasks, (
+                f"env.{split_name}.task_name must be an official DexJoCo task, "
+                f"got {task_name!r}"
+            )
+            env_kwargs = env_cfg.get("env_kwargs", {}) or {}
+            invalid_kwargs = sorted(dexjoco_reserved_kwargs.intersection(env_kwargs))
+            assert not invalid_kwargs, (
+                f"env.{split_name}.env_kwargs cannot override adapter-owned "
+                f"fields: {invalid_kwargs}"
+            )
+            assert not env_cfg.get("use_fixed_reset_state_ids", False), (
+                f"env.{split_name}.use_fixed_reset_state_ids is unsupported for "
+                "DexJoCo"
+            )
+            assert not env_cfg.get("use_ordered_reset_state_ids", False), (
+                f"env.{split_name}.use_ordered_reset_state_ids is unsupported for "
+                "DexJoCo"
+            )
         if (
             train_env_type == SupportedEnvType.MANISKILL
             or eval_env_type == SupportedEnvType.MANISKILL

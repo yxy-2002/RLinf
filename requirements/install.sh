@@ -81,7 +81,7 @@ NO_ROOT=0
 NO_INSTALL_RLINF_CMD="--no-install-project"
 SUPPORTED_TARGETS=("embodied" "agentic" "docs")
 SUPPORTED_MODELS=("openvla" "openvla-oft" "openpi" "gr00t" "gr00t_n1d6" "gr00t_n1d7" "dexbotic" "starvla" "lingbotvla" "dreamzero" "qwen3_vl" "abot_m0")
-SUPPORTED_ENVS=("behavior" "maniskill_libero" "libero" "metaworld" "calvin" "isaaclab" "robocasa" "robocasa365" "franka" "franka-dexhand" "franka-franky" "frankasim" "robotwin" "habitat" "opensora" "wan" "genesis" "xsquare_turtle2" "liberopro" "liberoplus" "roboverse" "embodichain" "d4rl" "dosw1" "gim_arm" "dummy" "polaris")
+SUPPORTED_ENVS=("behavior" "maniskill_libero" "libero" "metaworld" "calvin" "isaaclab" "robocasa" "robocasa365" "franka" "franka-dexhand" "franka-franky" "frankasim" "dexjoco" "robotwin" "habitat" "opensora" "wan" "genesis" "xsquare_turtle2" "liberopro" "liberoplus" "roboverse" "embodichain" "d4rl" "dosw1" "gim_arm" "dummy" "polaris")
 
 #=======================Utility Functions=======================
 
@@ -1752,6 +1752,10 @@ install_env_only() {
         polaris)
             install_polaris_env
             ;;
+        dexjoco)
+            install_common_embodied_deps
+            install_dexjoco_env
+            ;;
         *)
             echo "Environment '$ENV_NAME' is not supported for env-only installation." >&2
             exit 1
@@ -1763,6 +1767,115 @@ install_env_only() {
 
 install_dummy_env() {
     uv sync --extra embodied --active $NO_INSTALL_RLINF_CMD
+}
+
+install_dexjoco_env() {
+    local dexjoco_commit="8d23b0fab23b17a58c4b55f3942e17013aaf8267"
+    local patch_sha="993a0eef721beb1445910d3b8e8a73a48abcb7d7c68ba464c80579fac35a6e00"
+    local patch_file="$SCRIPT_DIR/patches/dexjoco/0001-runtime-compat.patch"
+    local manifest_file="$SCRIPT_DIR/patches/dexjoco/runtime-files.sha256"
+    local runtime_dir="$VENV_DIR/dexjoco-runtime"
+    local source_url="${DEXJOCO_SOURCE_PATH:-${GITHUB_PREFIX}https://github.com/brave-eai/dexjoco.git}"
+
+    if [ "$(sha256sum "$patch_file" | awk '{print $1}')" != "$patch_sha" ]; then
+        echo "DexJoCo compatibility patch checksum does not match ${patch_sha}." >&2
+        exit 1
+    fi
+
+    # DEXJOCO_SOURCE_PATH is a clone source, never the runtime checkout. This
+    # keeps the optional repository-root mirror read-only and makes the venv
+    # independent of its location after installation.
+    DEXJOCO_RUNTIME_PATH="" clone_or_reuse_repo \
+        DEXJOCO_RUNTIME_PATH "$runtime_dir" "$source_url" >/dev/null
+    runtime_dir="$(realpath "$runtime_dir")"
+
+    if [ ! -d "$runtime_dir/.git" ]; then
+        echo "DexJoCo runtime path is not a git checkout: $runtime_dir" >&2
+        exit 1
+    fi
+
+    local current_commit
+    current_commit="$(git -C "$runtime_dir" rev-parse HEAD)"
+    if [ "$current_commit" != "$dexjoco_commit" ]; then
+        if [ -n "$(git -C "$runtime_dir" status --porcelain --untracked-files=all)" ]; then
+            echo "DexJoCo runtime has local changes at commit ${current_commit}; refusing to switch commits." >&2
+            exit 1
+        fi
+        if ! git -C "$runtime_dir" cat-file -e "${dexjoco_commit}^{commit}" 2>/dev/null; then
+            git -C "$runtime_dir" fetch origin "$dexjoco_commit"
+        fi
+        git -C "$runtime_dir" checkout --detach "$dexjoco_commit"
+    fi
+
+    local runtime_status
+    runtime_status="$(git -C "$runtime_dir" status --porcelain --untracked-files=all)"
+    if [ -z "$runtime_status" ]; then
+        git -C "$runtime_dir" apply "$patch_file"
+    elif ! git -C "$runtime_dir" apply --reverse --check "$patch_file"; then
+        echo "DexJoCo runtime contains unknown or partially applied modifications; refusing to overwrite them." >&2
+        exit 1
+    fi
+
+    local changed_path
+    while IFS= read -r changed_path; do
+        [ -z "$changed_path" ] && continue
+        case "$changed_path" in
+            dexjoco/dexjoco/sim/envs/panda_bimanual_assembly_env.py|\
+            dexjoco/dexjoco/sim/envs/panda_bimanual_hanoi_env.py|\
+            dexjoco/dexjoco/sim/envs/panda_bimanual_microwave_cook_env.py|\
+            dexjoco/dexjoco/sim/envs/panda_bimanual_photograph_env.py|\
+            dexjoco/dexjoco/sim/envs/panda_bimanual_unlock_ipad_env.py|\
+            dexjoco/dexjoco/sim/envs/panda_click_mouse_env.py|\
+            dexjoco/dexjoco/sim/envs/panda_fold_glasses_env.py|\
+            dexjoco/dexjoco/sim/envs/panda_hammer_nail_env.py|\
+            dexjoco/dexjoco/sim/envs/panda_pick_bucket_env.py|\
+            dexjoco/dexjoco/sim/envs/panda_pinch_tongs_env.py|\
+            dexjoco/dexjoco/sim/envs/panda_water_plant_env.py)
+                ;;
+            *)
+                echo "DexJoCo runtime has a non-allowlisted change: $changed_path" >&2
+                exit 1
+                ;;
+        esac
+    done < <(git -C "$runtime_dir" status --porcelain --untracked-files=all | sed 's/^...//')
+
+    (
+        cd "$runtime_dir"
+        sha256sum --check "$manifest_file"
+    )
+
+    uv pip install -e "$runtime_dir/dexjoco" "pyarrow==14.0.1"
+    MUJOCO_GL="${MUJOCO_GL:-egl}" python - <<'EOF'
+from importlib.metadata import version
+
+import mujoco
+import numpy as np
+
+import dexjoco
+from dexjoco.tasks.mappings import CONFIG_MAPPING
+
+assert dexjoco is not None
+assert mujoco.__version__ == "3.4.0", mujoco.__version__
+assert version("gymnasium") == "1.0.0", version("gymnasium")
+assert version("numpy") == "1.26.4", version("numpy")
+
+env = CONFIG_MAPPING["click_mouse"]().get_environment(
+    policy_mode=True,
+    render_mode="rgb_array",
+    randomize=False,
+    randomize_dynamics=False,
+    seed=0,
+)
+try:
+    obs, _ = env.reset()
+    action = np.asarray(obs["state"][:23], dtype=np.float32)
+    next_obs, _, _, _, _ = env.step(action)
+    assert next_obs["state"].shape == (31,)
+    assert next_obs["ego_right"].ndim == 3
+finally:
+    env.close()
+EOF
+    echo "DexJoCo ${dexjoco_commit} installed and EGL smoke-tested at ${runtime_dir}."
 }
 
 install_libero_env() {

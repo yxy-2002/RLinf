@@ -1,0 +1,170 @@
+diff --git a/dexjoco/dexjoco/sim/envs/panda_bimanual_assembly_env.py b/dexjoco/dexjoco/sim/envs/panda_bimanual_assembly_env.py
+--- a/dexjoco/dexjoco/sim/envs/panda_bimanual_assembly_env.py
++++ b/dexjoco/dexjoco/sim/envs/panda_bimanual_assembly_env.py
+@@ -351,7 +351,8 @@
+         up = np.cross(right, forward)
+ 
+         rot_matrix = np.column_stack([right, up, -forward])
+-        cam_quat_wxyz = R.from_matrix(rot_matrix).as_quat(scalar_first=True)
++        cam_quat_xyzw = R.from_matrix(rot_matrix).as_quat()
++        cam_quat_wxyz = cam_quat_xyzw[[3, 0, 1, 2]]
+ 
+         self._model.cam_pos[self._front_camera_id] = cam_pos
+         self._model.cam_quat[self._front_camera_id] = cam_quat_wxyz
+diff --git a/dexjoco/dexjoco/sim/envs/panda_bimanual_hanoi_env.py b/dexjoco/dexjoco/sim/envs/panda_bimanual_hanoi_env.py
+--- a/dexjoco/dexjoco/sim/envs/panda_bimanual_hanoi_env.py
++++ b/dexjoco/dexjoco/sim/envs/panda_bimanual_hanoi_env.py
+@@ -450,7 +450,8 @@
+         up = np.cross(right, forward)
+ 
+         rot_matrix = np.column_stack([right, up, -forward])
+-        cam_quat_wxyz = R.from_matrix(rot_matrix).as_quat(scalar_first=True)
++        cam_quat_xyzw = R.from_matrix(rot_matrix).as_quat()
++        cam_quat_wxyz = cam_quat_xyzw[[3, 0, 1, 2]]
+ 
+         self._model.cam_pos[self._front_camera_id] = cam_pos
+         self._model.cam_quat[self._front_camera_id] = cam_quat_wxyz
+diff --git a/dexjoco/dexjoco/sim/envs/panda_bimanual_microwave_cook_env.py b/dexjoco/dexjoco/sim/envs/panda_bimanual_microwave_cook_env.py
+--- a/dexjoco/dexjoco/sim/envs/panda_bimanual_microwave_cook_env.py
++++ b/dexjoco/dexjoco/sim/envs/panda_bimanual_microwave_cook_env.py
+@@ -311,7 +311,8 @@
+         up = np.cross(right, forward)
+ 
+         rot_matrix = np.column_stack([right, up, -forward])
+-        cam_quat_wxyz = R.from_matrix(rot_matrix).as_quat(scalar_first=True)
++        cam_quat_xyzw = R.from_matrix(rot_matrix).as_quat()
++        cam_quat_wxyz = cam_quat_xyzw[[3, 0, 1, 2]]
+ 
+         self._model.cam_pos[self._front_camera_id] = cam_pos
+         self._model.cam_quat[self._front_camera_id] = cam_quat_wxyz
+diff --git a/dexjoco/dexjoco/sim/envs/panda_bimanual_photograph_env.py b/dexjoco/dexjoco/sim/envs/panda_bimanual_photograph_env.py
+--- a/dexjoco/dexjoco/sim/envs/panda_bimanual_photograph_env.py
++++ b/dexjoco/dexjoco/sim/envs/panda_bimanual_photograph_env.py
+@@ -706,7 +706,8 @@
+         up = np.cross(right, forward)
+ 
+         rot_matrix = np.column_stack([right, up, -forward])
+-        cam_quat_wxyz = R.from_matrix(rot_matrix).as_quat(scalar_first=True)
++        cam_quat_xyzw = R.from_matrix(rot_matrix).as_quat()
++        cam_quat_wxyz = cam_quat_xyzw[[3, 0, 1, 2]]
+ 
+         self._model.cam_pos[self._front_camera_id] = cam_pos
+         self._model.cam_quat[self._front_camera_id] = cam_quat_wxyz
+diff --git a/dexjoco/dexjoco/sim/envs/panda_bimanual_unlock_ipad_env.py b/dexjoco/dexjoco/sim/envs/panda_bimanual_unlock_ipad_env.py
+--- a/dexjoco/dexjoco/sim/envs/panda_bimanual_unlock_ipad_env.py
++++ b/dexjoco/dexjoco/sim/envs/panda_bimanual_unlock_ipad_env.py
+@@ -471,7 +471,8 @@
+         up = np.cross(right, forward)
+ 
+         rot_matrix = np.column_stack([right, up, -forward])
+-        cam_quat_wxyz = R.from_matrix(rot_matrix).as_quat(scalar_first=True)
++        cam_quat_xyzw = R.from_matrix(rot_matrix).as_quat()
++        cam_quat_wxyz = cam_quat_xyzw[[3, 0, 1, 2]]
+ 
+         self._model.cam_pos[self._front_camera_id] = cam_pos
+         self._model.cam_quat[self._front_camera_id] = cam_quat_wxyz
+diff --git a/dexjoco/dexjoco/sim/envs/panda_click_mouse_env.py b/dexjoco/dexjoco/sim/envs/panda_click_mouse_env.py
+--- a/dexjoco/dexjoco/sim/envs/panda_click_mouse_env.py
++++ b/dexjoco/dexjoco/sim/envs/panda_click_mouse_env.py
+@@ -219,7 +219,7 @@
+                 "state": gym.spaces.Dict(
+                     {
+                         "tcp_pose": gym.spaces.Box(-np.inf, np.inf, shape=(7,)),
+-                        "gripper_pose": gym.spaces.Box(-1, 1, shape=(1,)),
++                        "gripper_pose": gym.spaces.Box(-1, 1, shape=(_N_ALLEGRO,)),
+                         "mouse_ori_pose": gym.spaces.Box(
+                             -np.inf, np.inf, shape=(7,), dtype=np.float64
+                         ),
+@@ -387,7 +387,8 @@
+         up = np.cross(right, forward)
+ 
+         rot_matrix = np.column_stack([right, up, -forward])
+-        cam_quat_wxyz = R.from_matrix(rot_matrix).as_quat(scalar_first=True)
++        cam_quat_xyzw = R.from_matrix(rot_matrix).as_quat()
++        cam_quat_wxyz = cam_quat_xyzw[[3, 0, 1, 2]]
+ 
+         self._model.cam_pos[self._front_camera_id] = cam_pos
+         self._model.cam_quat[self._front_camera_id] = cam_quat_wxyz
+diff --git a/dexjoco/dexjoco/sim/envs/panda_fold_glasses_env.py b/dexjoco/dexjoco/sim/envs/panda_fold_glasses_env.py
+--- a/dexjoco/dexjoco/sim/envs/panda_fold_glasses_env.py
++++ b/dexjoco/dexjoco/sim/envs/panda_fold_glasses_env.py
+@@ -341,7 +341,8 @@
+         up = np.cross(right, forward)
+ 
+         rot_matrix = np.column_stack([right, up, -forward])
+-        cam_quat_wxyz = R.from_matrix(rot_matrix).as_quat(scalar_first=True)
++        cam_quat_xyzw = R.from_matrix(rot_matrix).as_quat()
++        cam_quat_wxyz = cam_quat_xyzw[[3, 0, 1, 2]]
+ 
+         self._model.cam_pos[self._front_camera_id] = cam_pos
+         self._model.cam_quat[self._front_camera_id] = cam_quat_wxyz
+diff --git a/dexjoco/dexjoco/sim/envs/panda_hammer_nail_env.py b/dexjoco/dexjoco/sim/envs/panda_hammer_nail_env.py
+--- a/dexjoco/dexjoco/sim/envs/panda_hammer_nail_env.py
++++ b/dexjoco/dexjoco/sim/envs/panda_hammer_nail_env.py
+@@ -185,7 +185,7 @@
+                 "state": gym.spaces.Dict(
+                     {
+                         "tcp_pose": gym.spaces.Box(-np.inf, np.inf, shape=(7,)),
+-                        "gripper_pose": gym.spaces.Box(-1, 1, shape=(1,)),
++                        "gripper_pose": gym.spaces.Box(-1, 1, shape=(_N_ALLEGRO,)),
+                         "hammer_ori_pose": gym.spaces.Box(
+                             -np.inf, np.inf, shape=(7,), dtype=np.float64
+                         ),
+@@ -382,7 +382,8 @@
+         up = np.cross(right, forward)
+ 
+         rot_matrix = np.column_stack([right, up, -forward])
+-        cam_quat_wxyz = R.from_matrix(rot_matrix).as_quat(scalar_first=True)
++        cam_quat_xyzw = R.from_matrix(rot_matrix).as_quat()
++        cam_quat_wxyz = cam_quat_xyzw[[3, 0, 1, 2]]
+ 
+         self._model.cam_pos[self._front_camera_id] = cam_pos
+         self._model.cam_quat[self._front_camera_id] = cam_quat_wxyz
+diff --git a/dexjoco/dexjoco/sim/envs/panda_pick_bucket_env.py b/dexjoco/dexjoco/sim/envs/panda_pick_bucket_env.py
+--- a/dexjoco/dexjoco/sim/envs/panda_pick_bucket_env.py
++++ b/dexjoco/dexjoco/sim/envs/panda_pick_bucket_env.py
+@@ -362,7 +362,8 @@
+         up = np.cross(right, forward)
+ 
+         rot_matrix = np.column_stack([right, up, -forward])
+-        cam_quat_wxyz = R.from_matrix(rot_matrix).as_quat(scalar_first=True)
++        cam_quat_xyzw = R.from_matrix(rot_matrix).as_quat()
++        cam_quat_wxyz = cam_quat_xyzw[[3, 0, 1, 2]]
+ 
+         self._model.cam_pos[self._front_camera_id] = cam_pos
+         self._model.cam_quat[self._front_camera_id] = cam_quat_wxyz
+diff --git a/dexjoco/dexjoco/sim/envs/panda_pinch_tongs_env.py b/dexjoco/dexjoco/sim/envs/panda_pinch_tongs_env.py
+--- a/dexjoco/dexjoco/sim/envs/panda_pinch_tongs_env.py
++++ b/dexjoco/dexjoco/sim/envs/panda_pinch_tongs_env.py
+@@ -147,7 +147,7 @@
+                 "state": gym.spaces.Dict(
+                     {
+                         "tcp_pose": gym.spaces.Box(-np.inf, np.inf, shape=(7,)),
+-                        "gripper_pose": gym.spaces.Box(-1, 1, shape=(1,)),
++                        "gripper_pose": gym.spaces.Box(-1, 1, shape=(_N_ALLEGRO,)),
+                         "tongs_ori_pose": gym.spaces.Box(
+                             -np.inf, np.inf, shape=(7,), dtype=np.float64
+                         ),
+@@ -323,7 +323,8 @@
+         up = np.cross(right, forward)
+ 
+         rot_matrix = np.column_stack([right, up, -forward])
+-        cam_quat_wxyz = R.from_matrix(rot_matrix).as_quat(scalar_first=True)
++        cam_quat_xyzw = R.from_matrix(rot_matrix).as_quat()
++        cam_quat_wxyz = cam_quat_xyzw[[3, 0, 1, 2]]
+ 
+         self._model.cam_pos[self._front_camera_id] = cam_pos
+         self._model.cam_quat[self._front_camera_id] = cam_quat_wxyz
+diff --git a/dexjoco/dexjoco/sim/envs/panda_water_plant_env.py b/dexjoco/dexjoco/sim/envs/panda_water_plant_env.py
+--- a/dexjoco/dexjoco/sim/envs/panda_water_plant_env.py
++++ b/dexjoco/dexjoco/sim/envs/panda_water_plant_env.py
+@@ -387,7 +387,8 @@
+         # MuJoCo camera convention: X=right, Y=up, Z=back (-forward).
+         rot_matrix = np.column_stack([right, up, -forward])
+ 
+-        cam_quat_wxyz = R.from_matrix(rot_matrix).as_quat(scalar_first=True)
++        cam_quat_xyzw = R.from_matrix(rot_matrix).as_quat()
++        cam_quat_wxyz = cam_quat_xyzw[[3, 0, 1, 2]]
+ 
+         self._model.cam_pos[self._front_camera_id] = cam_pos
+         self._model.cam_quat[self._front_camera_id] = cam_quat_wxyz

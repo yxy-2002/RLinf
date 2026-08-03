@@ -1,0 +1,10 @@
+defaults:
+  - dexjoco_base
+  - _self_
+
+task_name: bimanual_unlock_ipad
+task_description: Grasp the iPad and enter the password 123 to unlock the device.
+camera_mapping:
+  base: ego
+  wrist_left: wrist_left
+  wrist_right: wrist_right

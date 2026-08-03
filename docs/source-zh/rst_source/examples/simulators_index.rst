@@ -125,6 +125,17 @@
      </div>
 
      <div style="flex: 1 1 30%; max-width: 300px; text-align: center;">
+       <a href="embodied/dexjoco.html" style="display: block;"><img src="https://raw.githubusercontent.com/brave-eai/dexjoco/8d23b0fab23b17a58c4b55f3942e17013aaf8267/docs/pics/dexjoco_logo.jpg"
+            style="width: 100%; height: 200px; object-fit: contain; border-radius: 8px; box-shadow: 0 2px 6px rgba(0,0,0,0.15);" /></a>
+       <p style="margin-top: 8px; font-size: 14px; line-height: 1.4;">
+         <a href="embodied/dexjoco.html" style="text-decoration: underline; color: blue;">
+           <b>DexJoCo 并行环境</b>
+         </a><br>
+         面向 11 个官方单臂与双臂 MuJoCo 任务的纯环境接入
+       </p>
+     </div>
+
+     <div style="flex: 1 1 30%; max-width: 300px; text-align: center;">
        <a href="embodied/frankasim.html" style="display: block;"><img src="https://raw.githubusercontent.com/RLinf/serl/refs/heads/RLinf/franka-sim/franka_sim/franka_sim/envs/xmls/robotiq_2f85/2f85.png"
             style="width: 100%; height: 200px; object-fit: cover; border-radius: 8px; box-shadow: 0 2px 6px rgba(0,0,0,0.15);"
             data-target="animated-image.originalImage"></a>
@@ -196,6 +207,7 @@
    RoboCasa365 <embodied/robocasa365>
    RoboTwin <embodied/robotwin>
    RoboVerse <embodied/roboverse>
+   DexJoCo <embodied/dexjoco>
    Franka-Sim <embodied/frankasim>
    EmbodiChain <embodied/embodichain>
    PolaRiS <embodied/polaris>

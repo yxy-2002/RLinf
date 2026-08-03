@@ -1,0 +1,10 @@
+defaults:
+  - dexjoco_base
+  - _self_
+
+task_name: bimanual_hanoi
+task_description: "Execute the final two moves of the three-level Tower of Hanoi: move the medium disk from the middle peg to the right peg with the right hand, then move the small disk from the left peg to the right peg with the left hand."
+camera_mapping:
+  base: ego
+  wrist_left: wrist_left
+  wrist_right: wrist_right
