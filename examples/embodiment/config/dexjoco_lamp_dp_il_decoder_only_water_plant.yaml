@@ -1,0 +1,4 @@
+defaults: [dexjoco_lamp_dp_il_decoder_only_hammer_nail, _self_]
+runner: {logger: {experiment_name: dexjoco_lamp_dp_il_decoder_only_water_plant}}
+data: {task_name: water_plant}
+actor: {model: {hand_prior: {artifact_path: ./outputs/dexjoco_lamp_prior_cvae_dim6_water_plant/artifact}}}

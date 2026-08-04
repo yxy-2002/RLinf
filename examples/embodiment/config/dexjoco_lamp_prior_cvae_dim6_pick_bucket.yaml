@@ -5,7 +5,16 @@ defaults:
 runner:
   max_steps: 30000
   logger:
-    experiment_name: dexjoco_lamp_prior_cvae
+    experiment_name: dexjoco_lamp_prior_cvae_dim6_pick_bucket
+
+cluster:
+  component_placement:
+    actor: 0-0
+
+data:
+  task_name: pick_bucket
+  dataset_root: ./datasets/DexJoCo-Datasets-LeRobot/dexjoco_lerobot_datasets
+  cache_root: ./outputs/lamp_cache
 
 actor:
   global_batch_size: 256

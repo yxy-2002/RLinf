@@ -1,0 +1,10 @@
+defaults:
+  - dexjoco_lamp_dp_il_mlp_pick_bucket
+  - _self_
+
+runner:
+  logger:
+    experiment_name: dexjoco_lamp_dp_il_mlp_fold_glasses
+
+data:
+  task_name: fold_glasses

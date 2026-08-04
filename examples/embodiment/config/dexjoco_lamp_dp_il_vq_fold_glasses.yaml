@@ -1,0 +1,17 @@
+defaults:
+  - dexjoco_lamp_dp_il_mlp_pick_bucket
+  - _self_
+
+runner:
+  logger:
+    experiment_name: dexjoco_lamp_dp_il_vq_fold_glasses
+
+data:
+  task_name: fold_glasses
+
+actor:
+  model:
+    hand_prior:
+      type: vq
+      latent_dim: 1
+      artifact_path: ./outputs/dexjoco_lamp_prior_vq_fold_glasses/artifact

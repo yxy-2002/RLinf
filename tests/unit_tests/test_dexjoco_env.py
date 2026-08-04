@@ -46,7 +46,7 @@ class _FakeDexJocoChild(gym.Env):
         dynamics_audit,
         env_kwargs,
     ):
-        del randomize_dynamics, realtime_pacing, dynamics_audit, env_kwargs
+        del randomize_dynamics, realtime_pacing, dynamics_audit
         self.task_name = task_name
         self.seed_value = seed
         self.randomize = randomize
@@ -57,6 +57,9 @@ class _FakeDexJocoChild(gym.Env):
         self.panda_joint_limits = np.tile(
             np.asarray([[-3.0, 3.0]], dtype=np.float32), (qpos_dim, 1)
         )
+        self.terminate_after = int(env_kwargs.get("terminate_after", 2))
+        if env_kwargs.get("stagger_termination", False):
+            self.terminate_after = 1 if seed % 2 == 0 else 3
         self.step_count = 0
         self.restored_state = None
 
@@ -85,7 +88,7 @@ class _FakeDexJocoChild(gym.Env):
     def _info(self):
         qpos_dim = 14 if self.dual_arm else 7
         return {
-            "succeed": self.step_count >= 1,
+            "succeed": self.step_count >= self.terminate_after,
             "panda_qpos": np.full(
                 qpos_dim, self.seed_value + self.step_count, dtype=np.float32
             ),
@@ -101,7 +104,13 @@ class _FakeDexJocoChild(gym.Env):
     def step(self, action):
         assert np.asarray(action).shape == (self.action_dim,)
         self.step_count += 1
-        return self._obs(), 1.0, self.step_count >= 2, False, self._info()
+        return (
+            self._obs(),
+            1.0,
+            self.step_count >= self.terminate_after,
+            False,
+            self._info(),
+        )
 
     def set_init_state(self, initial_state):
         self.restored_state = np.asarray(initial_state, dtype=np.float64).copy()
@@ -218,6 +227,51 @@ def test_dual_arm_images_and_chunk_auto_reset_final_values():
         assert infos[-1]["_final_observation"].all()
         assert infos[-1]["final_observation"]["states"][0, 0] == 12
         assert outputs[-1]["states"][0, 0] == 10
+    finally:
+        env.close()
+
+
+def test_chunk_step_stops_finished_rows_until_chunk_auto_reset():
+    env = _make_env(
+        num_envs=2,
+        env_kwargs={"stagger_termination": True},
+        max_episode_steps=10,
+    )
+    try:
+        env.reset()
+        outputs, rewards, terminations, truncations, infos = env.chunk_step(
+            np.zeros((2, 4, 23), dtype=np.float32)
+        )
+
+        torch.testing.assert_close(
+            rewards,
+            torch.tensor(
+                [
+                    [1.0, 0.0, 0.0, 0.0],
+                    [1.0, 1.0, 1.0, 0.0],
+                ]
+            ),
+        )
+        assert not terminations[:, :-1].any()
+        assert terminations[:, -1].all()
+        assert not truncations.any()
+
+        final_info = infos[-1]["final_info"]
+        assert final_info["episode"]["return"].tolist() == [1.0, 3.0]
+        assert final_info["episode"]["episode_len"].tolist() == [1.0, 3.0]
+        assert final_info["effective_steps"].tolist() == [1, 3]
+        assert final_info["primitive_valid"].tolist() == [
+            [True, False, False, False],
+            [True, True, True, False],
+        ]
+        assert infos[-1]["effective_steps"].tolist() == [1, 3]
+
+        # Terminal observations remain frozen while other subprocesses finish.
+        assert infos[-1]["final_observation"]["states"][0, 0] == 11
+        assert infos[-1]["final_observation"]["states"][1, 0] == 14
+        # The final returned observations are from the automatic reset.
+        assert outputs[-1]["states"][0, 0] == 10
+        assert outputs[-1]["states"][1, 0] == 11
     finally:
         env.close()
 

@@ -16,15 +16,15 @@ runner:
   task_type: offline
   only_eval: false
   logger:
-    log_path: ../results
+    log_path: ./outputs
     project_name: rlinf
     experiment_name: dexjoco_lamp_il
-    logger_backends: [tensorboard]
+    logger_backends: [tensorboard, wandb]
   max_epochs: 1000000
-  max_steps: 20000
+  max_steps: 30000
   local_update_steps: 100
   val_check_interval: -1
-  save_interval: 5000
+  save_interval: 10000
   log_interval: 100
   resume_dir: null
 
@@ -44,7 +44,7 @@ data:
   dataset_type: dexjoco_lamp
   task_name: pick_bucket
   dataset_root: datasets/dexjoco_lerobot_datasets
-  cache_root: ../results/lamp_cache
+  cache_root: ./outputs/lamp_cache
   cache_path: null
   image_size: 128
   num_workers: 4
@@ -59,7 +59,7 @@ actor:
   global_batch_size: 128
   eval_batch_size: 256
   torch_compile: true
-  compile_mode: max-autotune-no-cudagraphs
+  compile_mode: default
   validation_interval: 500
   validation_batches: -1
   optim:
@@ -75,7 +75,7 @@ actor:
   model:
     model_type: lamp_dp
     num_action_chunks: 4
-    resnet_path: pretrained_models/resnet-18
+    resnet_path: ./pretrained_models/resnet-18
     execution_horizon: 4
     hand_prior:
       type: vae

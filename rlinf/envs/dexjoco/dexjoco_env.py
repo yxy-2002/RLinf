@@ -743,31 +743,65 @@ class DexJocoEnv(gym.Env):
                 f"DexJoCo step expects ({self.num_envs}, {self.action_dim}) actions, "
                 f"got {action_array.shape}."
             )
+        env_idx = np.arange(self.num_envs, dtype=np.int64)
+        return self._step_selected(action_array, env_idx, auto_reset=auto_reset)
+
+    def _step_selected(
+        self,
+        actions: np.ndarray,
+        env_idx: np.ndarray,
+        *,
+        auto_reset: bool,
+    ) -> tuple[
+        dict[str, Any], torch.Tensor, torch.Tensor, torch.Tensor, dict[str, Any]
+    ]:
+        """Step selected subprocesses and return a full-batch snapshot."""
+
+        env_idx = np.asarray(env_idx, dtype=np.int64).reshape(-1)
+        action_array = np.ascontiguousarray(actions, dtype=np.float32)
+        if action_array.shape != (len(env_idx), self.action_dim):
+            raise ValueError(
+                "DexJoCo selected step expects "
+                f"({len(env_idx)}, {self.action_dim}) actions, got "
+                f"{action_array.shape}."
+            )
+        if len(env_idx) == 0:
+            raise ValueError("DexJoCo selected step requires at least one environment.")
+        if np.any(env_idx < 0) or np.any(env_idx >= self.num_envs):
+            raise IndexError(f"DexJoCo step env_idx is out of range: {env_idx}.")
+        if len(np.unique(env_idx)) != len(env_idx):
+            raise ValueError(f"DexJoCo step env_idx contains duplicates: {env_idx}.")
         if not np.isfinite(action_array).all():
             raise ValueError("DexJoCo actions contain non-finite values.")
         if self._last_raw_obs is None:
             self.reset()
 
         raw_obs, rewards, terminations, truncations, raw_infos = self.env.step(
-            action_array
+            action_array, id=env_idx
         )
         obs_list = self._normalize_obs_batch(raw_obs)
         info_list = self._normalize_info_batch(raw_infos)
-        if len(info_list) != self.num_envs:
+        if len(obs_list) != len(env_idx) or len(info_list) != len(env_idx):
             raise ValueError(
-                f"Expected {self.num_envs} DexJoCo infos, got {len(info_list)}."
+                f"Expected {len(env_idx)} selected DexJoCo results, got "
+                f"{len(obs_list)} observations and {len(info_list)} infos."
             )
-        self._last_raw_obs = obs_list
-        all_idx = np.arange(self.num_envs, dtype=np.int64)
-        self._update_info_cache(all_idx, info_list)
-        self._update_hand_history(all_idx, obs_list, reset=False)
+        assert self._last_raw_obs is not None
+        for idx, obs in zip(env_idx, obs_list):
+            self._last_raw_obs[int(idx)] = obs
+        self._update_info_cache(env_idx, info_list)
+        self._update_hand_history(env_idx, obs_list, reset=False)
 
-        rewards = np.asarray(rewards, dtype=np.float32).reshape(self.num_envs)
-        terminations = np.asarray(terminations, dtype=bool).reshape(self.num_envs)
-        truncations = np.asarray(truncations, dtype=bool).reshape(self.num_envs)
-        self._elapsed_steps += 1
+        selected_rewards = np.asarray(rewards, dtype=np.float32).reshape(len(env_idx))
+        selected_terminations = np.asarray(terminations, dtype=bool).reshape(
+            len(env_idx)
+        )
+        selected_truncations = np.asarray(truncations, dtype=bool).reshape(len(env_idx))
+        self._elapsed_steps[env_idx] += 1
         if self.max_episode_steps is not None and self.max_episode_steps > 0:
-            truncations |= self._elapsed_steps >= self.max_episode_steps
+            selected_truncations |= (
+                self._elapsed_steps[env_idx] >= self.max_episode_steps
+            )
 
         success = np.asarray(
             [
@@ -776,11 +810,18 @@ class DexJocoEnv(gym.Env):
             ],
             dtype=bool,
         )
-        self._success_once |= success
-        self._returns += rewards
-        self._episode_lengths += 1
+        self._success_once[env_idx] |= success
+        self._returns[env_idx] += selected_rewards
+        self._episode_lengths[env_idx] += 1
 
-        infos = self._base_infos(info_list)
+        rewards = np.zeros(self.num_envs, dtype=np.float32)
+        terminations = np.zeros(self.num_envs, dtype=bool)
+        truncations = np.zeros(self.num_envs, dtype=bool)
+        rewards[env_idx] = selected_rewards
+        terminations[env_idx] = selected_terminations
+        truncations[env_idx] = selected_truncations
+
+        infos = self._base_infos([dict(info) for info in self._last_native_infos])
         infos["episode"] = {
             "return": torch.as_tensor(self._returns.copy(), dtype=torch.float32),
             "episode_len": torch.as_tensor(
@@ -796,7 +837,7 @@ class DexJocoEnv(gym.Env):
             )
             terminations[:] = False
 
-        obs_dict = self._wrap_obs(obs_list)
+        obs_dict = self._wrap_obs(self._last_raw_obs)
         dones = np.logical_or(terminations, truncations)
         if np.any(dones) and auto_reset and self.auto_reset:
             obs_dict, infos = self._handle_auto_reset(dones, obs_dict, infos)
@@ -835,16 +876,33 @@ class DexJocoEnv(gym.Env):
                 f"DexJoCo chunk action dim must be {self.action_dim}, got "
                 f"{actions.shape[-1]}."
             )
+        if not np.isfinite(actions).all():
+            raise ValueError("DexJoCo chunk actions contain non-finite values.")
 
         obs_list = []
         infos_list = []
         rewards_list = []
         terminations_list = []
         truncations_list = []
+        primitive_valid_list = []
+        active = np.ones(self.num_envs, dtype=bool)
         for chunk_idx in range(actions.shape[1]):
-            obs, rewards, terminations, truncations, infos = self.step(
-                actions[:, chunk_idx], auto_reset=False
-            )
+            primitive_valid_list.append(torch.as_tensor(active.copy()))
+            active_idx = np.flatnonzero(active)
+            if len(active_idx) > 0:
+                obs, rewards, terminations, truncations, infos = self._step_selected(
+                    actions[active_idx, chunk_idx],
+                    active_idx,
+                    auto_reset=False,
+                )
+                step_dones = torch.logical_or(terminations, truncations)
+                active &= ~step_dones.cpu().numpy()
+            else:
+                obs = copy.deepcopy(obs_list[-1])
+                infos = copy.deepcopy(infos_list[-1])
+                rewards = torch.zeros(self.num_envs, dtype=torch.float32)
+                terminations = torch.zeros(self.num_envs, dtype=torch.bool)
+                truncations = torch.zeros(self.num_envs, dtype=torch.bool)
             obs_list.append(obs)
             infos_list.append(infos)
             rewards_list.append(rewards)
@@ -854,14 +912,21 @@ class DexJocoEnv(gym.Env):
         chunk_rewards = torch.stack(rewards_list, dim=1)
         raw_terminations = torch.stack(terminations_list, dim=1)
         raw_truncations = torch.stack(truncations_list, dim=1)
+        primitive_valid = torch.stack(primitive_valid_list, dim=1)
+        effective_steps = primitive_valid.sum(dim=1, dtype=torch.int64)
         past_terminations = raw_terminations.any(dim=1)
         past_truncations = raw_truncations.any(dim=1)
         past_dones = torch.logical_or(past_terminations, past_truncations)
+
+        infos_list[-1]["primitive_valid"] = primitive_valid
+        infos_list[-1]["effective_steps"] = effective_steps
 
         if past_dones.any() and self.auto_reset:
             obs_list[-1], infos_list[-1] = self._handle_auto_reset(
                 past_dones.cpu().numpy(), obs_list[-1], infos_list[-1]
             )
+            infos_list[-1]["primitive_valid"] = primitive_valid
+            infos_list[-1]["effective_steps"] = effective_steps
 
         if self.auto_reset or self.ignore_terminations:
             chunk_terminations = torch.zeros_like(raw_terminations)

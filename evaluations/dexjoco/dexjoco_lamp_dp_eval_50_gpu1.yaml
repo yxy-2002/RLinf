@@ -1,0 +1,7 @@
+defaults:
+  - dexjoco_lamp_dp_eval_50
+  - _self_
+
+cluster:
+  component_placement:
+    env, rollout: 1-1

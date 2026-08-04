@@ -1,0 +1,3 @@
+defaults: [dexjoco_lamp_dp_il_decoder_only_hammer_nail, _self_]
+runner: {logger: {experiment_name: dexjoco_lamp_dp_il_vq_hammer_nail}}
+actor: {model: {hand_prior: {type: vq, latent_dim: 1, artifact_path: ./outputs/dexjoco_lamp_prior_vq_hammer_nail/artifact}}}

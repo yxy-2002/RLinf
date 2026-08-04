@@ -1,0 +1,75 @@
+defaults:
+  - env/dexjoco_fold_glasses@env.eval
+  - model/lamp_dp@rollout.model
+  - override hydra/job_logging: stdout
+  - _self_
+
+hydra:
+  run:
+    dir: .
+  output_subdir: null
+  searchpath:
+    - file://${oc.env:EMBODIED_PATH}/config/
+
+cluster:
+  num_nodes: 1
+  component_placement:
+    # The supervisor sets this to the policy's assigned GPU, keeping the
+    # evaluation colocated with at most one other workload.
+    env, rollout: ${oc.env:LAMP_EVAL_GPU,0-0}
+
+runner:
+  task_type: embodied_eval
+  only_eval: true
+  logger:
+    log_path: ./outputs/lamp_evaluations
+    project_name: rlinf
+    experiment_name: dexjoco_lamp_dp_50seed_fold_glasses
+    logger_backends: [tensorboard]
+  max_epochs: 1
+  max_steps: -1
+  val_check_interval: -1
+  save_interval: -1
+  resume_dir: null
+  ckpt_path: null
+
+algorithm:
+  loss_type: lamp_il
+  adv_type: null
+
+env:
+  group_name: EnvGroup
+  eval:
+    # One environment per deterministic seed: [0, 49].
+    seed: 0
+    rollout_epoch: 1
+    total_num_envs: 50
+    group_size: 1
+    auto_reset: false
+    ignore_terminations: false
+    max_episode_steps: 256
+    max_steps_per_rollout_epoch: 256
+    is_eval: true
+    video_cfg:
+      save_video: true
+      video_base_dir: ${runner.logger.log_path}/video/eval
+
+rollout:
+  group_name: RolloutGroup
+  backend: huggingface
+  pipeline_stage_num: 1
+  enable_offload: false
+  # Evaluation runs are short (50 episodes); skipping autotune avoids a
+  # multi-minute compile warm-up for every policy while leaving inference
+  # semantics unchanged.
+  enable_torch_compile: false
+  torch_compile_mode: max-autotune-no-cudagraphs
+  model:
+    model_path: ''
+    is_lora: false
+
+reward:
+  use_reward_model: false
+
+critic:
+  use_critic_model: false

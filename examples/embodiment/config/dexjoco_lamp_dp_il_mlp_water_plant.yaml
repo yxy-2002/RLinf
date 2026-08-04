@@ -1,0 +1,3 @@
+defaults: [dexjoco_lamp_dp_il_decoder_only_water_plant, _self_]
+runner: {logger: {experiment_name: dexjoco_lamp_dp_il_mlp_water_plant}}
+actor: {model: {hand_prior: {type: mlp, latent_dim: 6, artifact_path: null}}}

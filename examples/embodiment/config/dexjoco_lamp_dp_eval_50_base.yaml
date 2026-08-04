@@ -1,0 +1,68 @@
+defaults:
+  - env/dexjoco_pick_bucket@env.eval
+  - model/lamp_dp@rollout.model
+  - override hydra/job_logging: stdout
+  - _self_
+
+hydra:
+  run:
+    dir: .
+  output_subdir: null
+
+cluster:
+  num_nodes: 1
+  component_placement:
+    env, rollout: 0-0
+
+runner:
+  task_type: embodied_eval
+  only_eval: true
+  logger:
+    log_path: ../results
+    project_name: rlinf
+    experiment_name: dexjoco_lamp_dp_eval_50
+    logger_backends: [tensorboard]
+  max_epochs: 1
+  max_steps: -1
+  val_check_interval: -1
+  save_interval: -1
+  resume_dir: null
+  ckpt_path: null
+
+algorithm:
+  loss_type: lamp_il
+  adv_type: null
+
+env:
+  group_name: EnvGroup
+  eval:
+    # All policy variants use precisely these 50 deterministic seeds.
+    seed: 20260803
+    rollout_epoch: 1
+    total_num_envs: 50
+    group_size: 1
+    auto_reset: false
+    ignore_terminations: false
+    max_episode_steps: 256
+    max_steps_per_rollout_epoch: 256
+    is_eval: true
+    video_cfg:
+      save_video: true
+      video_base_dir: ${runner.logger.log_path}/video/eval
+
+rollout:
+  group_name: RolloutGroup
+  backend: huggingface
+  pipeline_stage_num: 1
+  enable_offload: false
+  enable_torch_compile: true
+  torch_compile_mode: max-autotune-no-cudagraphs
+  model:
+    model_path: ../results/dexjoco_lamp_dp/artifact
+    is_lora: false
+
+reward:
+  use_reward_model: false
+
+critic:
+  use_critic_model: false

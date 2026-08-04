@@ -5,11 +5,11 @@ defaults:
 runner:
   max_steps: 30000
   logger:
-    experiment_name: dexjoco_lamp_dp
+    experiment_name: dexjoco_lamp_dp_il_mlp_pick_bucket
 
 cluster:
   component_placement:
-    actor: 0-0
+    actor: 1-1
 
 algorithm:
   stage: dp

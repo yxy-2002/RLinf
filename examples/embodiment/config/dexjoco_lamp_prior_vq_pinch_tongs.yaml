@@ -1,0 +1,23 @@
+defaults:
+  - dexjoco_lamp_il_base
+  - _self_
+
+runner:
+  max_steps: 30000
+  logger:
+    experiment_name: dexjoco_lamp_prior_vq_pinch_tongs
+
+data:
+  task_name: pinch_tongs
+  dataset_root: ./datasets/DexJoCo-Datasets-LeRobot/dexjoco_lerobot_datasets
+  cache_root: ./outputs/lamp_cache
+
+actor:
+  global_batch_size: 256
+  micro_batch_size: 256
+  model:
+    hand_prior:
+      type: vq
+      latent_dim: 1
+      code_latent_dim: 256
+      hidden_dim: 512
