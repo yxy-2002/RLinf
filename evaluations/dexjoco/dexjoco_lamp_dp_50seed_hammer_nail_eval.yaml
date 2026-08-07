@@ -1,0 +1,42 @@
+defaults:
+  - dexjoco_lamp_dp_eval_50_base
+  - _self_
+
+# This must live in the primary config. Hydra cannot discover model/lamp_dp
+# when the search path is declared only by an inherited config.
+hydra:
+  run:
+    dir: .
+  output_subdir: null
+  searchpath:
+    - file://${oc.env:EMBODIED_PATH}/config/
+
+cluster:
+  component_placement:
+    env, rollout: 0-0
+
+runner:
+  logger:
+    log_path: ./outputs/lamp_evaluations/hammer_nail
+    experiment_name: dexjoco_lamp_dp_il_decoder_only_hammer_nail_eval_50
+
+env:
+  eval:
+    task_name: hammer_nail
+    task_description: Use the hammer to drive the nail into the wooden board.
+    camera_mapping:
+      base: front
+      wrist: wrist
+    seed: 0
+    rollout_epoch: 1
+    total_num_envs: 50
+    group_size: 1
+    auto_reset: false
+    ignore_terminations: false
+    max_episode_steps: 900
+    max_steps_per_rollout_epoch: 900
+
+rollout:
+  enable_torch_compile: false
+  model:
+    model_path: ./outputs/lamp_dp_rerun/dexjoco_lamp_dp_il_decoder_only_hammer_nail/artifact

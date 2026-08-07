@@ -27,7 +27,11 @@ from rlinf.utils.distributed import ScopedTimer
 from rlinf.utils.logging import get_logger
 from rlinf.utils.metric_logger import MetricLogger
 from rlinf.utils.metric_utils import compute_evaluate_metrics, print_metrics_table
-from rlinf.utils.runner_utils import check_progress
+from rlinf.utils.runner_utils import (
+    check_progress,
+    resolve_save_interval,
+    resolve_training_horizon,
+)
 
 
 class OfflineRunner:
@@ -39,11 +43,13 @@ class OfflineRunner:
         actor: Any,
         env: Any | None,
         rollout: Any | None,
+        steps_per_epoch: int | None = None,
     ):
         self.cfg = cfg
         self.actor = actor
         self.env = env
         self.rollout = rollout
+        self._runtime_steps_per_epoch = steps_per_epoch
 
         # Embodied-style eval channels (env <-> rollout)
         self.env_channel = Channel.create("Env")
@@ -315,7 +321,7 @@ class OfflineRunner:
                 self.global_step,
                 self.max_steps,
                 self.cfg.runner.val_check_interval,
-                self.cfg.runner.save_interval,
+                self.save_interval,
                 1.0,
                 run_time_exceeded=False,
             )
@@ -384,11 +390,12 @@ class OfflineRunner:
         self.actor.save_checkpoint(actor_save_path, self.global_step).wait()
 
     def set_max_steps(self):
-        self.num_steps_per_epoch = 1
-        self.max_steps = self.num_steps_per_epoch * self.cfg.runner.max_epochs
-
-        if (max_steps := self.cfg.runner.get("max_steps", -1)) >= 0:
-            self.max_steps = min(self.max_steps, max_steps)
+        self.num_steps_per_epoch, self.max_steps = resolve_training_horizon(
+            self.cfg.runner, steps_per_epoch=self._runtime_steps_per_epoch
+        )
+        self.save_interval = resolve_save_interval(
+            self.cfg.runner, steps_per_epoch=self.num_steps_per_epoch
+        )
 
     @property
     def epoch(self):

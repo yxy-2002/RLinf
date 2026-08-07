@@ -195,6 +195,9 @@ flowchart LR
 - **compile 关键改动**：forward 可返回 `ema_counts/ema_sums`，worker 在编译图外调用
   `apply_ema_updates()`。这样避免 Dynamo 图内原地修改 codebook buffer 导致 graph break、
   recompilation 或错误捕获状态。
+- **动作空间契约**：只对 VQ 使用 DexJoCo Allegro actuator `ctrlrange` 作为固定物理上下界，
+  训练前 clip 并线性映射到 `[-1,1]`。导出时先恢复到物理手部动作空间，再执行 PCA 排序；
+  DP 最近邻和策略解码都直接消费物理 codebook，不再复用 train-only z-score。
 - **兼容行为**：普通 eager 调用仍可选择内部更新；训练 worker 明确使用外部更新路径。
 
 ### 3.10 `bc_policy.py`
@@ -256,11 +259,12 @@ flowchart LR
 - **职责**：定义 schema version 1 的部署 artifact 和精确训练恢复格式。
 - **部署 artifact**：
   - `artifact.json`：模型类型、架构、task、dataset fingerprint、policy spec、统计 key 和
-    metadata SHA-256。
+    resolved training contract、模型/统计文件 SHA-256 及 metadata SHA-256。
   - `model.safetensors`：纯 tensor state dict，不执行 pickle。
   - `statistics.npz`：训练 split 的归一化统计。
 - **训练 checkpoint**：`training_state.pt` 另存模型、optimizer、scheduler、sampler、Torch/
-  CUDA/NumPy RNG 和严格 resume metadata。
+  CUDA/NumPy RNG 和严格 resume metadata；CVAE/VQ/DP 的 seed、optimizer、batch、horizon、
+  compile、validation 与 model 配置都参与 resume 比较。
 - **为什么分开**：在线 rollout 不应加载 optimizer/pickle；训练恢复则必须保留完整状态。
 - **旧 ckpt**：按用户要求不提供兼容加载路径。
 
@@ -322,7 +326,7 @@ flowchart LR
 - **职责**：把 LeRobot 源数据转换为 actor-local、可 mmap 的训练数据。
 - **fingerprint**：由低维数据 SHA-256、视频 manifest（路径/大小/mtime）、task、相机 key、
   image size 和 split schema 共同决定。
-- **split**：以 episode 为单位，seed 0，95% train / 5% validation；只有 train rows 用于统计。
+- **split**：以 episode 为单位，seed 42，90% train / 10% validation；只有 train rows 用于统计。
 - **缓存格式**：低维数组是未压缩 `.npy`；图像预先 resize 后以 uint8 `.npy` 存储；worker
   使用 `np.load(..., mmap_mode="r")`。图像契约固定为 NHWC/uint8；进入 GPU 后才转换为
   NCHW/float32 并除以 255。cache schema 2 将该布局写入 fingerprint，不能误读早期
@@ -356,15 +360,18 @@ flowchart LR
   - `_setup_bc()`：只允许单臂；严格加载 VAE prior；加载两个 ResNet。
   - `_setup_dp()`：按单/双臂创建 DP；严格加载 prior；预计算 core target。
 - **DataLoader**：在 actor 内创建 mmap dataset；支持 pinned memory、persistent workers 和
-  固定形状 micro-batch。`global_batch_size / micro_batch_size` 决定梯度累积次数；默认 DP
-  使用 global 512、micro 64，避免将 512 组多视角图像一次性放入 GPU。
+  固定形状 micro-batch。`global_batch_size / micro_batch_size` 决定梯度累积次数；单臂 DP
+  parity 配置使用 global 512、micro 512，因此每个 optimizer step 是与 JAX launcher 相同的
+  单个 512-sample physical batch，梯度累积次数为 1。需要 epoch 预算时，worker 从实际
+  train split 长度和 global batch 动态解析 `steps_per_epoch`。
 - **determinism/resume**：`DeterministicInfiniteBatchSampler` 只按“已消费 micro-batch 数”
   推进，不受 DataLoader prefetch 影响；checkpoint 同时校验 accumulation steps，并恢复
-  sampler 和 RNG。
-- **优化**：AdamW；ResNet backbone 使用 `backbone_lr_ratio`；cosine warmup；全局 grad clip；
-  FP32/TF32。
-- **compile**：默认编译神经网络 loss 路径，模式
-  `max-autotune-no-cudagraphs`。PCA 无神经网络更新，关闭 compile。
+  sampler 和 RNG。该性质保证 Torch 自身 exact resume，不表示 NumPy sampler 与 JAX
+  Threefry VQ permutation 逐样本相同。
+- **优化**：AdamW；ResNet backbone 使用 `backbone_lr_ratio`；cosine warmup；除 VQ 的 JAX
+  recipe 明确不裁剪梯度外，其余 recipe 按配置执行全局 grad clip；FP32/TF32。
+- **compile**：默认编译神经网络 loss 路径；公共配置的 `actor.compile_mode` 为 `default`，
+  可显式切换为 `max-autotune-no-cudagraphs`。PCA 无神经网络更新，关闭 compile。
 - **validation**：切换 `model.eval()` 并传递 `train=False` 语义；按配置遍历全部或有限 batch。
 - **输出**：返回裸 metric namespace 给 `OfflineRunner`；保存训练 checkpoint 和部署 artifact。
 
@@ -373,6 +380,10 @@ flowchart LR
 - **来源**：RLinf 现有文件。
 - **改动**：worker 返回的 `validation/`、`data/`、`time/` key 保持原 namespace；其他 key
   自动前缀为 `train/`。
+- **epoch horizon**：入口在 cache 准备完成后以
+  `floor(train_rows / global_batch_size)` 解析 `steps_per_epoch`；训练总步数为
+  `max_epochs * steps_per_epoch`，并可继续受非负 `max_steps` 限制。`save_every_epochs` 同样在
+  运行时换算为 optimizer-step 间隔；runner、worker 和学习率 schedule 共用同一结果。
 - **关系**：不仅服务 LAMP，也允许其他 offline worker 使用标准指标层次。
 
 ### 5.3 `examples/embodiment/train_lamp_il.py`
@@ -381,7 +392,8 @@ flowchart LR
 - **职责**：Hydra entrypoint；driver 预构建缓存；调用 `validate_cfg`；创建 `Cluster` 和 actor
   placement；启动 `LampILWorker` group；复用 `OfflineRunner`。
 - **为什么缓存先于 Ray actor**：避免多个 worker 同时构建同一数据，并把缓存路径写回 resolve
-  后的 cfg，便于日志和 checkpoint provenance。
+  后的 cfg，便于日志和 checkpoint provenance；同时让 epoch/save 预算可以由 cache metadata
+  解析，而不在各任务 YAML 中写死 step 数字。
 
 ### 5.4 `examples/embodiment/run_lamp_il.sh`
 
@@ -407,12 +419,37 @@ flowchart LR
 | 文件 | 功能 | 主要可配接口 |
 |---|---|---|
 | `dexjoco_lamp_prior_vae.yaml` | temporal VAE prior | `latent_dim`、`hidden_dim`、`beta` |
-| `dexjoco_lamp_prior_cvae.yaml` | history-conditioned future CVAE | `latent_dim`、posterior/prior KL weight |
+| `dexjoco_lamp_prior_cvae.yaml` | history-conditioned future CVAE | 默认 `latent_dim=3`、`kl_warmup_steps=2000`（`posterior_kl_weight=1e-4`、launcher 的 `prior_kl_weight=1e-3`） |
 | `dexjoco_lamp_prior_pca.yaml` | 确定性 PCA 拟合 | `latent_dim`；只运行一步，不 compile |
-| `dexjoco_lamp_prior_vq.yaml` | residual VQ-VAE | `code_latent_dim`、hidden dim；策略 core 使用离散 code |
+| `dexjoco_lamp_prior_vq.yaml` | residual VQ-VAE | 1500 data epochs、DQ-RISE architecture；策略 core 使用离散 code |
 
-双臂 prior 通过覆盖 `data.task_name` 和 `actor.model.hand_prior.hand_side=right|left`
-分别训练。
+单臂 CVAE 通用 preset 复现实际 JAX launcher 的默认训练契约：train/eval batch 分别为 256/512，
+默认训练 20000 steps，
+AdamW learning rate 从 `3e-4` 经 500-step warmup 后 cosine decay 到 `1e-5`，每 5000 steps
+保存 checkpoint。RLinf/Torch 训练使用 eager mode，并在最后一步对完整 validation split 评估；
+JAX 侧 train step 仍由 `jax.jit` 编译。六个 task-specific dim6 preset 均显式覆盖
+`latent_dim=6`；为对应已选用的 JAX task recipe，click/fold 训练 20000 steps，其余四个任务训练
+30000 steps，validation interval 与各自 final step 相同。JAX Python CLI 的独立 fallback 写着
+`prior_kl_weight=3e-4`，但单臂 launcher 显式传入 `1e-3`，这里以实际单臂 launcher 为准。
+
+这些 task preset 沿用当前训练输出 namespace。仓库中已存在同名 checkpoint 时，重训前必须通过
+Hydra override 指定新的 `runner.logger.log_path`，否则会覆盖 checkpoint/root artifact，并可能留下
+更高 step 的旧目录；VQ task preset 同样需要遵守这一点。新 artifact 的 model/statistics checksum
+会确保 DP derived cache 不再静默复用被替换 prior 的旧 latent，但不会保留被覆盖的旧文件。
+
+VQ preset 使用 batch 256、seed 233、1500 个完整 data epoch、每 100 epoch 保存一次，并且不做
+gradient clipping。按 click、fold、hammer、pick、pinch、water 顺序，六个任务的
+`steps_per_epoch=floor(train_rows/256)` 分别为 114、190、75、153、139、97，总步数分别为
+171000、285000、112500、229500、208500、145500。这些数字仅是当前 cache 的解析结果，
+不再出现在 task YAML 中；driver 与 worker 都从当前 cache 的 train rows 计算并相互校验，防止
+旧 split cache 或错误 task override 静默改变训练预算。VQ 的训练输入使用固定 Allegro 物理边界
+映射到 `[-1,1]`，artifact 保存物理 `sorted_codebook` 及对应上下界，并拒绝与旧 z-score VQ
+artifact 静默混用。AdamW 使用 `lr=3e-4`、`min_lr=0`、150-step warmup、`weight_decay=1e-6` 和
+`betas=(0.95, 0.999)`，validation 只在最后执行。
+
+双臂 prior 可通过覆盖 `data.task_name` 和 `actor.model.hand_prior.hand_side=right|left` 分别训练，
+但 JAX bimanual CVAE 入口默认 `prior_kl_weight=3e-4`；使用该入口做 parity 时必须额外覆盖该值，
+不能直接沿用本节单臂 launcher 的 `1e-3`。
 
 ### 6.3 Policy 配置
 
@@ -432,8 +469,9 @@ statistics；如果调用者显式提供 `hand_prior` mapping，则把它作为�
 ### 7.1 Eval configs
 
 - `evaluations/dexjoco/dexjoco_lamp_bc_eval.yaml`：加载 `lamp_bc` artifact，单步 action。
-- `evaluations/dexjoco/dexjoco_lamp_dp_eval.yaml`：加载 `lamp_dp` artifact，默认 compile 和
-  4-step temporal execution。
+- `evaluations/dexjoco/dexjoco_lamp_dp_eval.yaml`：加载 `lamp_dp` artifact，默认 eager
+  inference 和 4-step temporal execution。该默认配置用于接线和 smoke test；与旧 LAMP 指标比较时，
+  必须使用第 13.6 节的 historical parity evaluation 参数。
 - `evaluations/dexjoco/dexjoco_lamp_bimanual_dp_eval.yaml`：双臂 DP 模板，显式设置
   `action_dim=46`，默认任务为 `bimanual_assembly`；可通过 Hydra defaults/override 切换到
   其他双臂任务。
@@ -499,6 +537,8 @@ statistics；如果调用者显式提供 `hand_prior` mapping，则把它作为�
 - 用真实编码的小型 MP4 验证视频 cache 输出为 NHWC/uint8，像素没有被 0--1 到 uint8 的
   错误转换截断。
 - 验证 `OfflineRunner` 对聚合日志和 per-worker 日志采用相同的标准 namespace 规则。
+- 验证 CVAE/VQ 六任务 Hydra 继承后的完整训练 recipe、VQ epoch-derived horizon 和无裁剪
+  gradient norm；验证全部 31 份单臂 DP 配置的 train/eval/physical batch 均为 512。
 - 验证完整 BC policy artifact 可经 RLinf model factory 严格加载并完成在线 observation
   推理；同时校验送入环境的 quaternion 为单位四元数。
 
@@ -672,11 +712,73 @@ MUJOCO_GL=egl bash evaluations/run_eval.sh dexjoco \
   dexjoco_lamp_bimanual_dp_eval
 ```
 
+#### Historical parity evaluation（历史协议对齐评估）
+
+使用旧 LAMP 的评估预算比较迁移前后的单臂 DP，而不是直接比较默认 smoke 配置。下面的命令
+以 `pick_bucket` PCA 策略为例，固定 20 个环境的 seed 为 1--20，每个环境只评估一个 episode，
+将两个步数上限同时设为 900 个 primitive steps，并关闭 `torch.compile`：
+
+```bash
+PATH="$PWD/.venv/bin:$PATH" MUJOCO_GL=egl PYOPENGL_PLATFORM=egl \
+bash evaluations/run_eval.sh dexjoco dexjoco_lamp_dp_eval \
+  env.eval.seed=1 \
+  env.eval.rollout_epoch=1 \
+  env.eval.total_num_envs=20 \
+  env.eval.group_size=1 \
+  env.eval.auto_reset=false \
+  env.eval.ignore_terminations=false \
+  env.eval.max_episode_steps=900 \
+  env.eval.max_steps_per_rollout_epoch=900 \
+  env.eval.video_cfg.save_video=false \
+  rollout.enable_torch_compile=false \
+  rollout.model.model_path="$PWD/outputs/dexjoco_lamp_dp_il_pca_pick_bucket/artifact" \
+  runner.logger.experiment_name=dexjoco_lamp_dp_il_pca_pick_bucket_parity_s1_20_h900
+```
+
+这条命令仍从 `evaluations/dexjoco/dexjoco_lamp_dp_eval.yaml` 组合配置；`group_size=1`
+使 DexJoCo adapter 为 20 个并行环境分配 seed 1--20，`rollout_epoch=1` 和
+`auto_reset=false` 保证每个 seed 只贡献一个 trajectory。900 可被 4-step execution horizon
+整除，因此执行 225 次策略调用。运行前还应确保在线图像 resize 与训练和旧 evaluator 的
+`INTER_AREA` 语义一致；否则该运行只能隔离 horizon、episode 数和 compile 的影响，不能作为
+完整的历史协议对齐结果。
+
+`click_mouse` 还要求 reset 后、策略接管前执行旧 evaluator 定义的 30 步固定动作。专用配置
+`dexjoco_lamp_dp_50seed_click_mouse_eval.yaml` 通过 `click_mouse_warmup_steps=30` 启用该行为；
+DexJoCo adapter 使用旧 `CLICK_MOUSE_WARMUP_ACTION22` 转换得到的同一 23 维 quaternion 动作，
+并在 warmup 完成后初始化 hand history。warmup 不累计到 policy return、`episode_len` 或 900 步
+rollout budget。`fold_glasses` 不使用 reset warmup。
+
+其余四个 decoder-only rerun checkpoint 使用仓库内固定的 task-specific config：
+`dexjoco_lamp_dp_rerun_50seed_{hammer_nail,pick_bucket,pinch_tongs,water_plant}_eval.yaml`。
+这些 config 分别固定 GPU 0--3、task metadata、artifact 路径、seed 0--49 和 900-step
+policy budget。四卡并行评估可直接运行：
+
+```bash
+bash evaluations/dexjoco/run_lamp_dp_rerun_remaining4.sh
+```
+
+脚本默认写入带 UTC 时间戳的 `outputs/lamp_evaluations/*_remaining4/`；也可以把自定义输出
+目录作为第一个参数传入。单任务重跑仍使用标准入口，例如：
+
+```bash
+bash evaluations/run_eval.sh dexjoco \
+  dexjoco_lamp_dp_rerun_50seed_hammer_nail_eval
+```
+
+`evaluations/dexjoco/` 不再保留旧的通用 `dexjoco_lamp_dp_eval_50{,_gpu*}.yaml` 副本。
+这些副本会优先遮蔽 `examples/embodiment/config/` 中的同名配置，但继承后又无法提供 primary
+config 所需的 Hydra search path。需要动态 task override 的旧 watcher 继续使用 `examples` 下的
+50-seed base/GPU config；固定 rerun evaluation 使用上述 task-specific primary config。
+
+不要使用 `toolkits/collect_lamp_eval_result.py` 收集这次结果。该脚本固定校验 50 个 trajectory，
+并把 seed 范围写成 20260803--20260852，不适用于 20-seed parity evaluation。应直接读取本次
+日志目录中的 TensorBoard `eval/success_once` 和 `eval/num_trajectories`；后者应为 20。
+
 ## 14. 已验证内容
 
-- 六份训练和三份在线评估 Hydra config 均可 compose。
-- DP 训练与 DP eval config 通过 `validate_cfg()`。
-- LAMP phase-two 与 DexJoCo env 单元测试共 13 项通过。
+- 本轮涉及的 CVAE、VQ 和全部单臂 DP 共 44 份 Hydra config 均可 compose，并通过
+  `validate_cfg()`。
+- `tests/unit_tests/test_lamp_phase2.py` 共 55 项通过，其中逐份覆盖 31 个单臂 DP 配置。
 - 使用真实 `pick_bucket` LeRobot 数据完成一步 VAE GPU 训练。
 - 真实 smoke 生成 TensorBoard log、step-1 exact checkpoint 和 schema-v1 prior artifact。
 - 生成的 prior artifact 通过 type、task、dataset fingerprint、hand side 和 metadata hash
@@ -686,8 +788,8 @@ MUJOCO_GL=egl bash evaluations/run_eval.sh dexjoco \
   quaternion 范数为 1。
 - 使用真实 `pick_bucket` 数据完成完整的
   `Hydra -> Ray -> LampILWorker -> torch.compile -> 两个 micro-batch -> optimizer -> log -> checkpoint/artifact`
-  一步训练。配置为 global batch 4、micro batch 2、VAE hidden dim 32；默认
-  `max-autotune-no-cudagraphs` 首次 step 用时约 118 秒，其中绝大部分是 Inductor autotune，
+  一步训练。配置为 global batch 4、micro batch 2、VAE hidden dim 32；该次 smoke 显式使用
+  `max-autotune-no-cudagraphs`，首次 step 用时约 118 秒，其中绝大部分是 Inductor autotune，
   显存 allocated/reserved 约 0.267/0.271 GiB。这个数字只证明完整默认路径可运行，不能作为
   稳态吞吐基准。
 - 从真实 `pick_bucket` 视频分别解码 front/wrist 帧，确认输出为
@@ -751,6 +853,7 @@ MUJOCO_GL=egl bash evaluations/run_eval.sh dexjoco \
 | `rlinf/models/embodiment/lamp/hand_cvae.py` | `models/cvae.py`、`pretrain/cvae/train.py` | 可配置 latent dim 的 future CVAE prior |
 | `rlinf/models/embodiment/lamp/hand_pca.py` | `models/pca.py`、`pretrain/pca/fit.py` | 可配置 latent dim 的确定性 PCA codec |
 | `rlinf/models/embodiment/lamp/hand_vq_vae.py` | `models/vq_vae.py`、`pretrain/vq_vae/train.py` | VQ prior 与 graph-external EMA |
+| `rlinf/models/embodiment/lamp/vq_action_normalization.py` | DQ-RISE `dataset/pretrain.py`、`eval_vqvae.py` 与 DexJoCo Allegro actuator `ctrlrange` | VQ 专用固定 `[-1,1]` 映射及物理动作恢复 |
 | `rlinf/models/embodiment/lamp/bc_policy.py` | `models/bc_policy.py`、`behavior_clone/train.py` | 单臂 CNN BC core |
 | `rlinf/models/embodiment/lamp/diffusion_math.py` | `diffusion_policy/diffusion.py` | 共享 diffusion/DDIM 数学 |
 | `rlinf/models/embodiment/lamp/conditional_unet1d.py` | `diffusion_policy/unet.py` | 条件一维 U-Net |
@@ -783,7 +886,7 @@ MUJOCO_GL=egl bash evaluations/run_eval.sh dexjoco \
 | `examples/embodiment/config/dexjoco_lamp_prior_pca.yaml` | 旧 PCA CLI 默认值 | PCA 拟合 recipe |
 | `examples/embodiment/config/dexjoco_lamp_prior_vq.yaml` | 旧 VQ CLI 默认值 | VQ prior 训练 recipe |
 | `examples/embodiment/config/dexjoco_lamp_bc.yaml` | 旧 BC CLI 默认值 | ResNet-18 + VAE/MLP BC recipe |
-| `examples/embodiment/config/dexjoco_lamp_dp.yaml` | 旧 DP CLI 默认值；新增 micro/global batch 拆分 | 单/双臂 DP recipe |
+| `examples/embodiment/config/dexjoco_lamp_dp.yaml` | 实际 JAX DP launcher 默认值；physical/global batch 均为 512 | 单/双臂 DP recipe |
 | `examples/embodiment/config/model/lamp_bc.yaml` | RLinf rollout model config 风格 | BC artifact 在线加载契约 |
 | `examples/embodiment/config/model/lamp_dp.yaml` | RLinf rollout model config 风格 | DP artifact、temporal ensemble、prior dim 在线契约 |
 

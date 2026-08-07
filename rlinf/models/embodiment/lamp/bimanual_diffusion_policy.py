@@ -23,13 +23,13 @@ import torch
 from torch import nn
 
 from rlinf.models.embodiment.lamp.bc_policy import MLP
+from rlinf.models.embodiment.lamp.conditional_unet1d import ConditionalUnet1D
 from rlinf.models.embodiment.lamp.constants import (
     ARM_JOINT_DIM,
     ARM_QUAT_ACTION_DIM,
     HAND_ACTION_DIM,
     MODEL_QUAT_ACTION_DIM,
 )
-from rlinf.models.embodiment.lamp.hand_cvae import CVAE_LATENT_DIM, DexJoCoHandCVAE
 from rlinf.models.embodiment.lamp.diffusion_math import (
     add_noise,
     ddim_step,
@@ -37,15 +37,15 @@ from rlinf.models.embodiment.lamp.diffusion_math import (
     make_diffusion_schedule,
     predict_x0_from_epsilon,
 )
+from rlinf.models.embodiment.lamp.hand_cvae import CVAE_LATENT_DIM, DexJoCoHandCVAE
+from rlinf.models.embodiment.lamp.hand_vae import HISTORY_FRAMES
+from rlinf.models.embodiment.lamp.resnet18 import HFResNet18Backbone
 from rlinf.models.embodiment.lamp.single_arm_diffusion_policy import (
     ACTION_HORIZON,
     VQ_CODE_COUNT,
     _masked_mean,
     vq_normalized_to_index,
 )
-from rlinf.models.embodiment.lamp.resnet18 import HFResNet18Backbone
-from rlinf.models.embodiment.lamp.conditional_unet1d import ConditionalUnet1D
-from rlinf.models.embodiment.lamp.hand_vae import HISTORY_FRAMES
 
 BimanualHandPriorSource = Literal["cvae", "decoder_only", "pca", "vq_codebook", "mlp"]
 
@@ -518,10 +518,11 @@ class LAMPBimanualDiffusionPolicy(nn.Module):
             else:
                 right_index = vq_normalized_to_index(right_latent[..., 0])
                 left_index = vq_normalized_to_index(left_latent[..., 0])
-                right_norm = self.right_vq_codebook[right_index]
-                left_norm = self.left_vq_codebook[left_index]
-            right_hand = self._denormalize_hand(right_norm, "right")
-            left_hand = self._denormalize_hand(left_norm, "left")
+                right_hand = self.right_vq_codebook[right_index]
+                left_hand = self.left_vq_codebook[left_index]
+            if self.hand_prior_source != "vq_codebook":
+                right_hand = self._denormalize_hand(right_norm, "right")
+                left_hand = self._denormalize_hand(left_norm, "left")
             right = torch.cat((right_arm, right_hand), dim=-1)
             left = torch.cat((left_arm, left_hand), dim=-1)
         physical = torch.cat((right, left), dim=-1)

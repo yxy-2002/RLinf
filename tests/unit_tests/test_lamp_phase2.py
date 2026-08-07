@@ -14,30 +14,94 @@
 
 from __future__ import annotations
 
+import json
 import pickle
 from dataclasses import asdict
+from pathlib import Path
 
 import av
 import numpy as np
+import pytest
 import torch
+from hydra import compose, initialize_config_dir
 from omegaconf import OmegaConf
 from transformers import ResNetConfig
 
+from rlinf.config import validate_offline_cfg
 from rlinf.data.datasets.lamp.dexjoco_lerobot import decode_video_rows
-from rlinf.data.datasets.lamp.offline_dataset import LampMMapDataset
+from rlinf.data.datasets.lamp.offline_dataset import (
+    LampMMapDataset,
+    lamp_steps_per_epoch,
+)
 from rlinf.models.embodiment.lamp import get_model as get_lamp_model
 from rlinf.models.embodiment.lamp.artifact_io import save_artifact
 from rlinf.models.embodiment.lamp.bc_policy import BCPolicy
+from rlinf.models.embodiment.lamp.hand_prior_artifact import (
+    load_prior_artifact,
+    sorted_vq_codebook,
+)
+from rlinf.models.embodiment.lamp.hand_vae import DexJoCoHandVAE
+from rlinf.models.embodiment.lamp.hand_vq_vae import HandVQVAE
 from rlinf.models.embodiment.lamp.policy_wrapper import (
     LampPolicy,
     LampPolicySpec,
     LampTemporalEnsembleController,
 )
-from rlinf.models.embodiment.lamp.hand_prior_artifact import load_prior_artifact
-from rlinf.models.embodiment.lamp.hand_vae import DexJoCoHandVAE
-from rlinf.models.embodiment.lamp.hand_vq_vae import HandVQVAE
+from rlinf.models.embodiment.lamp.single_arm_diffusion_policy import (
+    LAMPDiffusionPolicy,
+)
+from rlinf.models.embodiment.lamp.vq_action_normalization import (
+    ALLEGRO_HAND_ACTION_HIGH,
+    ALLEGRO_HAND_ACTION_LOW,
+    denormalize_vq_hand_action,
+    normalize_vq_hand_action,
+)
 from rlinf.runners.offline_runner import OfflineRunner
-from rlinf.workers.actor.lamp_il_worker import DeterministicInfiniteBatchSampler
+from rlinf.utils.runner_utils import resolve_save_interval, resolve_training_horizon
+from rlinf.workers.actor.lamp_il_worker import (
+    DeterministicInfiniteBatchSampler,
+    _clip_gradients,
+    _cvae_kl_weights,
+    _nearest_vq_indices,
+    _prior_architecture,
+    _training_contract,
+)
+
+_CONFIG_DIR = Path(__file__).resolve().parents[2] / "examples/embodiment/config"
+_SINGLE_ARM_TASKS = (
+    "click_mouse",
+    "fold_glasses",
+    "hammer_nail",
+    "pick_bucket",
+    "pinch_tongs",
+    "water_plant",
+)
+_VQ_STEPS_PER_EPOCH = {
+    "click_mouse": 114,
+    "fold_glasses": 190,
+    "hammer_nail": 75,
+    "pick_bucket": 153,
+    "pinch_tongs": 139,
+    "water_plant": 97,
+}
+_CVAE_TASK_STEPS = {
+    "click_mouse": 20_000,
+    "fold_glasses": 20_000,
+    "hammer_nail": 30_000,
+    "pick_bucket": 30_000,
+    "pinch_tongs": 30_000,
+    "water_plant": 30_000,
+}
+_DP_CONFIG_NAMES = tuple(
+    path.stem
+    for path in sorted(_CONFIG_DIR.glob("dexjoco_lamp_dp*.yaml"))
+    if "eval" not in path.stem
+)
+
+
+def _compose_lamp_config(config_name: str):
+    with initialize_config_dir(config_dir=str(_CONFIG_DIR), version_base="1.3"):
+        return compose(config_name=config_name)
 
 
 def test_offline_runner_preserves_standard_metric_namespaces():
@@ -55,6 +119,36 @@ def test_offline_runner_preserves_standard_metric_namespaces():
         "data/samples_per_second": 3.0,
         "time/update_seconds_per_step": 4.0,
     }
+
+
+def test_training_horizon_preserves_zero_step_cap_and_rejects_other_negatives():
+    assert resolve_training_horizon(
+        {"max_epochs": 10, "steps_per_epoch": 4, "max_steps": 0}
+    ) == (4, 0)
+    with pytest.raises(ValueError, match="max_steps"):
+        resolve_training_horizon(
+            {"max_epochs": 10, "steps_per_epoch": 4, "max_steps": -2}
+        )
+
+
+def test_lamp_epoch_schedule_is_derived_from_cache_at_runtime(tmp_path):
+    (tmp_path / "metadata.json").write_text(
+        json.dumps({"train_rows": 35_812}), encoding="utf-8"
+    )
+    steps_per_epoch = lamp_steps_per_epoch(tmp_path, global_batch_size=256)
+    runner_cfg = {
+        "max_epochs": 1_500,
+        "max_steps": -1,
+        "save_every_epochs": 100,
+        "save_interval": 10_000,
+    }
+
+    assert steps_per_epoch == 139
+    assert resolve_training_horizon(runner_cfg, steps_per_epoch=steps_per_epoch) == (
+        139,
+        208_500,
+    )
+    assert resolve_save_interval(runner_cfg, steps_per_epoch=steps_per_epoch) == 13_900
 
 
 def test_video_cache_decode_is_nhwc_uint8(tmp_path):
@@ -133,9 +227,16 @@ def test_configurable_vae_latent_dim_and_artifact_round_trip(tmp_path):
     )
     assert restored.latent_dim == 5
     assert restored_metadata["latent_dim"] == 5
+    assert len(restored_metadata["model_sha256"]) == 64
+    assert len(restored_metadata["statistics_sha256"]) == 64
     assert set(restored_statistics) == set(statistics)
     for name, value in model.state_dict().items():
         torch.testing.assert_close(restored.state_dict()[name], value)
+
+    model_path = tmp_path / "model.safetensors"
+    model_path.write_bytes(model_path.read_bytes() + b"corrupt")
+    with pytest.raises(ValueError, match="model_sha256"):
+        load_prior_artifact(tmp_path)
 
 
 def test_vq_ema_can_be_applied_outside_compiled_forward():
@@ -148,6 +249,65 @@ def test_vq_ema_can_be_applied_outside_compiled_forward():
     model.quantizer.apply_ema_updates(output["ema_counts"], output["ema_sums"])
     assert torch.isfinite(model.quantizer.codebooks).all()
     assert not torch.equal(model.quantizer.codebooks, before)
+
+
+def test_vq_action_normalization_uses_fixed_allegro_ctrlrange():
+    low = np.asarray(ALLEGRO_HAND_ACTION_LOW, dtype=np.float32)
+    high = np.asarray(ALLEGRO_HAND_ACTION_HIGH, dtype=np.float32)
+    midpoint = (low + high) * 0.5
+    physical = np.stack((low - 1.0, midpoint, high + 1.0))
+
+    normalized = normalize_vq_hand_action(physical)
+
+    np.testing.assert_allclose(normalized[0], -1.0)
+    np.testing.assert_allclose(normalized[1], 0.0, atol=2e-7)
+    np.testing.assert_allclose(normalized[2], 1.0)
+    np.testing.assert_allclose(
+        denormalize_vq_hand_action(normalized),
+        np.stack((low, midpoint, high)),
+        atol=2e-7,
+    )
+
+
+def test_vq_codebook_is_exported_and_matched_in_physical_action_space():
+    model = HandVQVAE(latent_dim=16, hidden_dim=32, layer_num=1)
+    normalized_action = torch.linspace(-1.0, 1.0, 16)
+    with torch.no_grad():
+        for parameter in model.decoder.parameters():
+            parameter.zero_()
+        model.decoder.output.bias.copy_(normalized_action)
+
+    codebook = sorted_vq_codebook(model)
+    expected = denormalize_vq_hand_action(normalized_action.numpy())
+
+    assert codebook.shape == (16, 16)
+    np.testing.assert_allclose(codebook, np.broadcast_to(expected, codebook.shape))
+    physical_codebook = np.zeros((16, 16), dtype=np.float32)
+    physical_codebook[:, 0] = np.linspace(-0.4, 0.4, 16)
+    assert _nearest_vq_indices(physical_codebook[[7]], physical_codebook).item() == 7
+
+
+def test_vq_dp_decoder_consumes_a_physical_codebook_without_zscore():
+    backbone_config = ResNetConfig(
+        depths=[1, 1, 1, 1], hidden_sizes=[64, 128, 256, 512]
+    ).to_dict()
+    codebook = np.arange(16 * 16, dtype=np.float32).reshape(16, 16) / 100.0
+    model = LAMPDiffusionPolicy(
+        backbone_config,
+        hand_prior_source="vq_codebook",
+        vq_codebook=codebook,
+        core_action_mean=np.zeros(8, dtype=np.float32),
+        core_action_std=np.ones(8, dtype=np.float32),
+        hand_action_mean=np.full(16, 100.0, dtype=np.float32),
+        hand_action_std=np.full(16, 10.0, dtype=np.float32),
+    )
+    core = torch.zeros(1, 1, 8)
+    core[..., 7] = -1.0
+
+    action, auxiliary = model._decode_core(core)
+
+    torch.testing.assert_close(action[..., 7:], torch.from_numpy(codebook[None, 0:1]))
+    assert auxiliary["vq_index"].item() == 0
 
 
 def test_temporal_ensemble_aligns_quaternion_sign_and_resets_rows():
@@ -181,6 +341,140 @@ def test_deterministic_sampler_resumes_from_consumed_batch():
     batches = [next(iterator) for _ in range(7)]
     resumed = iter(DeterministicInfiniteBatchSampler(10, 2, seed=7, start_batch=6))
     assert next(resumed) == batches[6]
+
+
+def test_cvae_default_config_matches_jax_launcher_contract():
+    cfg = _compose_lamp_config("dexjoco_lamp_prior_cvae")
+
+    assert cfg.runner.max_steps == 20_000
+    assert cfg.runner.save_interval == 5_000
+    assert cfg.data.dataset_root.endswith(
+        "DexJoCo-Datasets-LeRobot/dexjoco_lerobot_datasets"
+    )
+    assert cfg.actor.seed == 42
+    assert cfg.actor.global_batch_size == cfg.actor.micro_batch_size == 256
+    assert cfg.actor.eval_batch_size == 512
+    assert cfg.actor.validation_interval == 20_000
+    assert cfg.actor.validation_batches == -1
+    assert cfg.actor.torch_compile is False
+    assert OmegaConf.to_container(cfg.actor.optim, resolve=True) == {
+        "lr": 3e-4,
+        "min_lr": 1e-5,
+        "warmup_steps": 500,
+        "weight_decay": 1e-4,
+        "adam_beta1": 0.9,
+        "adam_beta2": 0.999,
+        "adam_eps": 1e-8,
+        "clip_grad": 1.0,
+        "backbone_lr_ratio": 0.1,
+    }
+    prior = cfg.actor.model.hand_prior
+    assert prior.type == "cvae"
+    assert prior.latent_dim == 3
+    assert prior.hidden_dim == 1024
+    assert prior.posterior_kl_weight == 1e-4
+    assert prior.prior_kl_weight == 1e-3
+    assert prior.kl_warmup_steps == 2_000
+
+
+def test_cvae_kl_warmup_converts_torch_step_to_jax_one_based_step():
+    first_q, first_p = _cvae_kl_weights(torch.tensor(0))
+    full_q, full_p = _cvae_kl_weights(torch.tensor(1_999))
+
+    torch.testing.assert_close(first_q, torch.tensor(1e-4 / 2_000))
+    torch.testing.assert_close(first_p, torch.tensor(1e-3 / 2_000))
+    torch.testing.assert_close(full_q, torch.tensor(1e-4))
+    torch.testing.assert_close(full_p, torch.tensor(1e-3))
+
+
+@pytest.mark.parametrize(("task", "max_steps"), _CVAE_TASK_STEPS.items())
+def test_cvae_dim6_task_configs_match_selected_jax_recipe(task, max_steps):
+    cfg = _compose_lamp_config(f"dexjoco_lamp_prior_cvae_dim6_{task}")
+
+    assert cfg.data.task_name == task
+    assert cfg.runner.max_steps == max_steps
+    assert cfg.actor.validation_interval == max_steps
+    assert cfg.actor.model.hand_prior.latent_dim == 6
+
+
+@pytest.mark.parametrize(("task", "steps_per_epoch"), _VQ_STEPS_PER_EPOCH.items())
+def test_vq_task_configs_defer_epoch_steps_to_runtime(task, steps_per_epoch):
+    cfg = _compose_lamp_config(f"dexjoco_lamp_prior_vq_{task}")
+    total_steps = 1_500 * steps_per_epoch
+    validate_offline_cfg(cfg)
+
+    assert cfg.data.task_name == task
+    assert cfg.data.dataset_root.endswith(
+        "DexJoCo-Datasets-LeRobot/dexjoco_lerobot_datasets"
+    )
+    assert cfg.runner.max_epochs == 1_500
+    assert cfg.runner.max_steps == -1
+    assert "steps_per_epoch" not in cfg.runner
+    assert cfg.runner.save_every_epochs == 100
+    assert resolve_training_horizon(cfg.runner, steps_per_epoch=steps_per_epoch) == (
+        steps_per_epoch,
+        total_steps,
+    )
+    assert (
+        resolve_save_interval(cfg.runner, steps_per_epoch=steps_per_epoch)
+        == 100 * steps_per_epoch
+    )
+    assert cfg.actor.validation_interval == -1
+    assert cfg.actor.validate_at_end is True
+    assert cfg.actor.validation_batches == -1
+    assert cfg.actor.seed == 233
+    assert cfg.actor.global_batch_size == cfg.actor.micro_batch_size == 256
+    assert cfg.actor.eval_batch_size == 512
+    assert cfg.actor.optim.lr == 3e-4
+    assert cfg.actor.optim.min_lr == 0.0
+    assert cfg.actor.optim.warmup_steps == 150
+    assert cfg.actor.optim.weight_decay == 1e-6
+    assert cfg.actor.optim.adam_beta1 == 0.95
+    assert cfg.actor.optim.adam_beta2 == 0.999
+    assert cfg.actor.optim.adam_eps == 1e-8
+    assert cfg.actor.optim.clip_grad is None
+    contract = _training_contract(
+        cfg, steps_per_epoch=steps_per_epoch, max_steps=total_steps
+    )
+    assert contract["seed"] == 233
+    assert contract["optimizer"]["clip_grad"] is None
+    assert contract["model"]["hand_prior"]["ema_decay"] == 0.8
+    assert _prior_architecture("vq", cfg.actor.model.hand_prior) == {
+        "action_dim": 16,
+        "latent_dim": 256,
+        "hidden_dim": 512,
+        "num_quantizers": 2,
+        "codebook_size": 4,
+        "layer_num": 5,
+        "commitment_weight": 1.0,
+        "ema_decay": 0.8,
+        "epsilon": 1e-5,
+        "dead_code_threshold": 0.0,
+        "reconstruction_multiplier": 3.0,
+        "vq_multiplier": 5.0,
+    }
+
+
+@pytest.mark.parametrize("config_name", _DP_CONFIG_NAMES)
+def test_single_arm_dp_configs_use_the_jax_physical_batch(config_name):
+    cfg = _compose_lamp_config(config_name)
+
+    assert cfg.algorithm.stage == "dp"
+    assert cfg.actor.global_batch_size == 512
+    assert cfg.actor.micro_batch_size == 512
+    assert cfg.actor.eval_batch_size == 512
+    assert cfg.actor.global_batch_size // cfg.actor.micro_batch_size == 1
+
+
+def test_null_gradient_clip_reports_norm_without_changing_gradients():
+    parameter = torch.nn.Parameter(torch.tensor([3.0, 4.0]))
+    parameter.grad = torch.tensor([6.0, 8.0])
+    before = parameter.grad.clone()
+
+    norm = _clip_gradients([parameter], None)
+
+    torch.testing.assert_close(norm, torch.tensor(10.0))
+    torch.testing.assert_close(parameter.grad, before)
 
 
 def test_bc_policy_artifact_round_trip_and_online_inference(tmp_path):

@@ -1191,8 +1191,9 @@ def validate_offline_cfg(cfg: DictConfig) -> DictConfig:
     assert runner_local_update_steps_int > 0, (
         "runner.local_update_steps must be > 0 for offline training"
     )
-    assert runner_max_steps_int >= 0, (
-        f"runner.max_steps must be >= 0, got {runner_max_steps_int}"
+    assert runner_max_steps_int >= -1, (
+        "runner.max_steps must be -1 (use the epoch-derived horizon) or >= 0, "
+        f"got {runner_max_steps_int}"
     )
     assert actor_global_int >= actor_micro_int, (
         "actor.global_batch_size must be >= actor.micro_batch_size for offline training"

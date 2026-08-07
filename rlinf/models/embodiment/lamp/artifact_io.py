@@ -38,6 +38,29 @@ def metadata_sha256(value: Mapping[str, Any]) -> str:
     return hashlib.sha256(canonical_json(value).encode("utf-8")).hexdigest()
 
 
+def _file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _statistics_sha256(statistics: Mapping[str, np.ndarray]) -> str:
+    digest = hashlib.sha256()
+    for name in sorted(statistics):
+        value = np.ascontiguousarray(np.asarray(statistics[name]))
+        header = {
+            "name": name,
+            "dtype": value.dtype.str,
+            "shape": list(value.shape),
+        }
+        digest.update(json.dumps(header, sort_keys=True).encode("utf-8"))
+        digest.update(b"\0")
+        digest.update(value.tobytes(order="C"))
+    return digest.hexdigest()
+
+
 def save_artifact(
     output_dir: str | Path,
     *,
@@ -53,17 +76,19 @@ def save_artifact(
     output.mkdir(parents=True, exist_ok=True)
     payload = _json_value(dict(metadata))
     payload["schema_version"] = SCHEMA_VERSION
-    payload["metadata_sha256"] = metadata_sha256(
-        {key: value for key, value in payload.items() if key != "metadata_sha256"}
-    )
     tensors = {
         name: tensor.detach().cpu().contiguous()
         for name, tensor in model.state_dict().items()
     }
-    save_file(tensors, str(output / "model.safetensors"))
-    np.savez(
-        output / "statistics.npz",
-        **{name: np.asarray(value) for name, value in statistics.items()},
+    model_path = output / "model.safetensors"
+    statistics_path = output / "statistics.npz"
+    save_file(tensors, str(model_path))
+    statistic_arrays = {name: np.asarray(value) for name, value in statistics.items()}
+    np.savez(statistics_path, **statistic_arrays)
+    payload["model_sha256"] = _file_sha256(model_path)
+    payload["statistics_sha256"] = _statistics_sha256(statistic_arrays)
+    payload["metadata_sha256"] = metadata_sha256(
+        {key: value for key, value in payload.items() if key != "metadata_sha256"}
     )
     (output / "artifact.json").write_text(
         json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8"
@@ -94,9 +119,21 @@ def load_artifact(
     )
     if stored_hash != expected_hash:
         raise ValueError("LAMP artifact metadata hash mismatch")
+    expected_model_checksum = metadata.get("model_sha256")
+    if (
+        expected_model_checksum is not None
+        and _file_sha256(root / "model.safetensors") != expected_model_checksum
+    ):
+        raise ValueError("LAMP artifact model_sha256 mismatch")
     state = load_file(str(root / "model.safetensors"), device="cpu")
     with np.load(root / "statistics.npz", allow_pickle=False) as data:
         statistics = {name: np.asarray(data[name]).copy() for name in data.files}
+    expected_statistics_checksum = metadata.get("statistics_sha256")
+    if (
+        expected_statistics_checksum is not None
+        and _statistics_sha256(statistics) != expected_statistics_checksum
+    ):
+        raise ValueError("LAMP artifact statistics_sha256 mismatch")
     expected_keys = set(metadata.get("statistics_keys", ()))
     if expected_keys and set(statistics) != expected_keys:
         raise ValueError("LAMP artifact statistics keys do not match artifact.json")

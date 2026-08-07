@@ -14,29 +14,30 @@
 
 """DexJoCo datasets and caches for LAMP imitation learning."""
 
+from rlinf.data.datasets.lamp.bimanual_lerobot import (
+    BimanualDexjocoLeRobotDataset,
+    load_bimanual_task_dataset,
+)
+from rlinf.data.datasets.lamp.dexjoco_lerobot import (
+    DexjocoLeRobotDataset,
+    load_task_dataset,
+)
 from rlinf.data.datasets.lamp.offline_dataset import (
     LampMMapDataset,
+    lamp_steps_per_epoch,
     load_cache_metadata,
     load_cache_statistics,
     prepare_lamp_cache,
 )
 
 __all__ = [
-    "LampMMapDataset",
-    "load_cache_metadata",
-    "load_cache_statistics",
-    "prepare_lamp_cache",
-]
-
-from .bimanual_lerobot import (
-    BimanualDexjocoLeRobotDataset,
-    load_bimanual_task_dataset,
-)
-from .dexjoco_lerobot import DexjocoLeRobotDataset, load_task_dataset
-
-__all__ = [
     "BimanualDexjocoLeRobotDataset",
     "DexjocoLeRobotDataset",
+    "LampMMapDataset",
+    "lamp_steps_per_epoch",
     "load_bimanual_task_dataset",
+    "load_cache_metadata",
+    "load_cache_statistics",
     "load_task_dataset",
+    "prepare_lamp_cache",
 ]

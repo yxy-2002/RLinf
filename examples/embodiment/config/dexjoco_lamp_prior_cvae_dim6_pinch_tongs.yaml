@@ -1,10 +1,11 @@
 defaults:
-  - dexjoco_lamp_il_base
+  - dexjoco_lamp_prior_cvae
   - _self_
 
 runner:
   max_steps: 30000
   logger:
+    log_path: ./outputs/lamp_cvae_rerun
     experiment_name: dexjoco_lamp_prior_cvae_dim6_pinch_tongs
 
 cluster:
@@ -17,12 +18,7 @@ data:
   cache_root: ./outputs/lamp_cache
 
 actor:
-  global_batch_size: 256
-  micro_batch_size: 256
+  validation_interval: 30000
   model:
     hand_prior:
-      type: cvae
       latent_dim: 6
-      hidden_dim: 1024
-      posterior_kl_weight: 1.0e-4
-      prior_kl_weight: 1.0e-4

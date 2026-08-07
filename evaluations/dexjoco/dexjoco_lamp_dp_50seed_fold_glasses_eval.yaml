@@ -47,8 +47,8 @@ env:
     group_size: 1
     auto_reset: false
     ignore_terminations: false
-    max_episode_steps: 256
-    max_steps_per_rollout_epoch: 256
+    max_episode_steps: 900
+    max_steps_per_rollout_epoch: 900
     is_eval: true
     video_cfg:
       save_video: true

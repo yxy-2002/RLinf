@@ -59,6 +59,38 @@ EXPECTED_STATE_DIMS = {
     "pinch_tongs": 31,
     "water_plant": 38,
 }
+
+# Exact native 23D quaternion action produced by the legacy evaluator's
+# ``policy_action_to_env_action(CLICK_MOUSE_WARMUP_ACTION22)`` conversion.  The
+# 30 reset steps move the arm into the task's policy starting configuration.
+_CLICK_MOUSE_WARMUP_ACTION = np.asarray(
+    [
+        -4.4294e-01,
+        1.3729e-06,
+        1.5170e00,
+        1.3865922e-05,
+        -9.9999988e-01,
+        -2.2013999e-05,
+        -4.4664997e-04,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.263,
+        0.0,
+        0.0,
+        0.0,
+    ],
+    dtype=np.float32,
+)
 _RESERVED_ENV_KWARGS = {
     "policy_mode",
     "render_mode",
@@ -359,6 +391,15 @@ class DexJocoEnv(gym.Env):
         self.randomize = bool(_cfg_get(cfg, "randomize", False))
         self.randomize_dynamics = bool(_cfg_get(cfg, "randomize_dynamics", False))
         self.realtime_pacing = bool(_cfg_get(cfg, "realtime_pacing", False))
+        self.click_mouse_warmup_steps = int(
+            _cfg_get(cfg, "click_mouse_warmup_steps", 0)
+        )
+        if self.click_mouse_warmup_steps < 0:
+            raise ValueError("click_mouse_warmup_steps must be non-negative.")
+        if self.click_mouse_warmup_steps and self.task_name != "click_mouse":
+            raise ValueError(
+                "click_mouse_warmup_steps is only valid for task_name='click_mouse'."
+            )
         # The dataset audit opts into two extra MuJoCo forward passes. Normal
         # rollout environments keep this disabled to avoid unnecessary cost.
         self.dynamics_audit = bool(_cfg_get(cfg, "dynamics_audit", False))
@@ -651,6 +692,91 @@ class DexJocoEnv(gym.Env):
         self._elapsed_steps[env_idx] = 0
         self._success_once[env_idx] = False
 
+    def _apply_click_mouse_warmup(
+        self,
+        env_idx: np.ndarray,
+        observations: list[dict[str, Any]],
+        infos: list[dict[str, Any]],
+    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+        """Reproduce the legacy click-mouse reset warmup before policy rollout."""
+
+        if self.click_mouse_warmup_steps == 0:
+            return observations, infos
+        if len(observations) != len(env_idx) or len(infos) != len(env_idx):
+            raise ValueError(
+                "DexJoCo click-mouse warmup requires one observation and info "
+                f"per environment; got {len(observations)} observations, "
+                f"{len(infos)} infos, and {len(env_idx)} environment indices."
+            )
+
+        warmup_success = np.asarray(
+            [bool(info.get("succeed", info.get("success", False))) for info in infos],
+            dtype=bool,
+        )
+        warmup_steps = np.zeros(len(env_idx), dtype=np.int64)
+        active_positions = np.arange(len(env_idx), dtype=np.int64)
+        warmup_terminated = np.zeros(len(env_idx), dtype=bool)
+        warmup_truncated = np.zeros(len(env_idx), dtype=bool)
+
+        for _ in range(self.click_mouse_warmup_steps):
+            if len(active_positions) == 0:
+                break
+            active_env_idx = env_idx[active_positions]
+            actions = np.repeat(
+                _CLICK_MOUSE_WARMUP_ACTION[None], len(active_positions), axis=0
+            )
+            raw_obs, _, terminations, truncations, raw_infos = self.env.step(
+                actions, id=active_env_idx
+            )
+            step_obs = self._normalize_obs_batch(raw_obs)
+            step_infos = self._normalize_info_batch(raw_infos)
+            if len(step_obs) != len(active_positions) or len(step_infos) != len(
+                active_positions
+            ):
+                raise ValueError(
+                    "DexJoCo click-mouse warmup returned an inconsistent batch: "
+                    f"{len(step_obs)} observations and {len(step_infos)} infos "
+                    f"for {len(active_positions)} active environments."
+                )
+
+            step_terminated = np.asarray(terminations, dtype=bool).reshape(-1)
+            step_truncated = np.asarray(truncations, dtype=bool).reshape(-1)
+            for batch_pos, obs, info, terminated, truncated in zip(
+                active_positions,
+                step_obs,
+                step_infos,
+                step_terminated,
+                step_truncated,
+            ):
+                observations[int(batch_pos)] = obs
+                infos[int(batch_pos)] = info
+                warmup_steps[int(batch_pos)] += 1
+                warmup_success[int(batch_pos)] |= bool(
+                    info.get("succeed", info.get("success", False))
+                )
+                warmup_terminated[int(batch_pos)] |= bool(terminated)
+                warmup_truncated[int(batch_pos)] |= bool(truncated)
+
+            done = np.logical_or(step_terminated, step_truncated)
+            active_positions = active_positions[~done]
+
+        for idx, info in enumerate(infos):
+            info["warmup_steps"] = int(warmup_steps[idx])
+            info["warmup_success"] = bool(warmup_success[idx])
+            info["warmup_terminated"] = bool(warmup_terminated[idx])
+            info["warmup_truncated"] = bool(warmup_truncated[idx])
+            if warmup_success[idx]:
+                info["succeed"] = True
+                info["success"] = True
+
+        if warmup_terminated.any() or warmup_truncated.any():
+            raise RuntimeError(
+                "The legacy click-mouse warmup ended an episode before policy "
+                "rollout. RLinf cannot continue that episode without changing "
+                "the legacy evaluation semantics."
+            )
+        return observations, infos
+
     def _restore_initial_states(
         self, env_idx: np.ndarray, initial_states: np.ndarray
     ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
@@ -700,6 +826,13 @@ class DexJocoEnv(gym.Env):
         partial_obs = self._normalize_obs_batch(partial_raw)
         info_list = self._normalize_info_batch(raw_infos)
 
+        # The legacy evaluator applies warmup only to a normal reset. Explicit
+        # state restoration must remain exact and therefore bypasses warmup.
+        if initial_states is None:
+            partial_obs, info_list = self._apply_click_mouse_warmup(
+                reset_idx, partial_obs, info_list
+            )
+
         if self._last_raw_obs is None:
             self._last_raw_obs = partial_obs
         else:
@@ -718,10 +851,20 @@ class DexJocoEnv(gym.Env):
             self._update_hand_history(requested_idx, restored_obs, reset=True)
 
         self._reset_metrics(reset_idx)
+        reset_success = np.asarray(
+            [
+                bool(self._last_native_infos[int(idx)].get("warmup_success", False))
+                for idx in reset_idx
+            ],
+            dtype=bool,
+        )
+        self._success_once[reset_idx] = reset_success
         self._is_start = False
         obs_dict = self._wrap_obs(self._last_raw_obs)
+        reset_success_batch = np.zeros(self.num_envs, dtype=bool)
+        reset_success_batch[reset_idx] = reset_success
         reset_infos = {
-            "success": torch.zeros(self.num_envs, dtype=torch.bool),
+            "success": torch.as_tensor(reset_success_batch, dtype=torch.bool),
             "panda_qpos": torch.as_tensor(self._last_qpos.copy()),
             "native": [dict(info) for info in self._last_native_infos],
         }

@@ -48,8 +48,8 @@ from rlinf.models.embodiment.lamp.constants import is_bimanual_task
 # the fingerprint prevents a cache built by the earlier NCHW/float path from
 # being accepted after an in-place code upgrade.
 CACHE_SCHEMA_VERSION = 2
-TRAIN_RATIO = 0.95
-SPLIT_SEED = 0
+TRAIN_RATIO = 0.9
+SPLIT_SEED = 42
 STD_FLOOR = 1e-6
 
 
@@ -196,6 +196,22 @@ def load_cache_statistics(cache_dir: str | Path) -> dict[str, np.ndarray]:
     path = Path(cache_dir).expanduser().resolve() / "statistics.npz"
     with np.load(path, allow_pickle=False) as data:
         return {name: np.asarray(data[name]).copy() for name in data.files}
+
+
+def lamp_steps_per_epoch(cache_dir: str | Path, global_batch_size: int) -> int:
+    """Derive drop-last optimizer steps from a prepared LAMP train split."""
+
+    batch_size = int(global_batch_size)
+    if batch_size < 1:
+        raise ValueError(f"global_batch_size must be >= 1, got {batch_size}")
+    train_rows = int(load_cache_metadata(cache_dir)["train_rows"])
+    steps = train_rows // batch_size
+    if steps < 1:
+        raise ValueError(
+            "LAMP requires at least one full global batch per epoch: "
+            f"train_rows={train_rows}, global_batch_size={batch_size}"
+        )
+    return steps
 
 
 def write_derived_array(

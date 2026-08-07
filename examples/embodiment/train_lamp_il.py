@@ -21,7 +21,7 @@ import torch.multiprocessing as mp
 from omegaconf import OmegaConf, open_dict
 
 from rlinf.config import validate_cfg
-from rlinf.data.datasets.lamp import prepare_lamp_cache
+from rlinf.data.datasets.lamp import lamp_steps_per_epoch, prepare_lamp_cache
 from rlinf.runners.offline_runner import OfflineRunner
 from rlinf.scheduler import Cluster
 from rlinf.utils.placement import HybridComponentPlacement
@@ -47,6 +47,11 @@ def main(cfg) -> None:
     with open_dict(cfg):
         cfg.data.cache_path = str(cache_path)
     cfg = validate_cfg(cfg)
+    steps_per_epoch = None
+    if int(cfg.runner.max_steps) < 0 or "save_every_epochs" in cfg.runner:
+        steps_per_epoch = lamp_steps_per_epoch(
+            cache_path, int(cfg.actor.global_batch_size)
+        )
     print(json.dumps(OmegaConf.to_container(cfg, resolve=True), indent=2))
 
     cluster = Cluster(cluster_cfg=cfg.cluster)
@@ -56,7 +61,13 @@ def main(cfg) -> None:
         name=cfg.actor.group_name,
         placement_strategy=placement,
     )
-    runner = OfflineRunner(cfg=cfg, actor=actor, env=None, rollout=None)
+    runner = OfflineRunner(
+        cfg=cfg,
+        actor=actor,
+        env=None,
+        rollout=None,
+        steps_per_epoch=steps_per_epoch,
+    )
     runner.init_workers()
     runner.run()
 

@@ -205,8 +205,7 @@ class LampPolicy(nn.Module, BasePolicy):
             image = F.interpolate(
                 image,
                 size=(self.spec.image_size, self.spec.image_size),
-                mode="bilinear",
-                align_corners=False,
+                mode="area",
             )
         return image.contiguous()
 

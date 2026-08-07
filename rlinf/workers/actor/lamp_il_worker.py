@@ -19,7 +19,7 @@ from __future__ import annotations
 import hashlib
 import json
 import time
-from collections.abc import Iterator, Mapping
+from collections.abc import Iterable, Iterator, Mapping
 from pathlib import Path
 from typing import Any
 
@@ -44,23 +44,105 @@ from rlinf.models.embodiment.lamp.bc_policy import BCPolicy
 from rlinf.models.embodiment.lamp.bimanual_diffusion_policy import (
     LAMPBimanualDiffusionPolicy,
 )
-from rlinf.models.embodiment.lamp.single_arm_diffusion_policy import LAMPDiffusionPolicy
 from rlinf.models.embodiment.lamp.hand_pca import fit_hand_pca
-from rlinf.models.embodiment.lamp.policy_wrapper import LampPolicy, LampPolicySpec
 from rlinf.models.embodiment.lamp.hand_prior_artifact import (
     TorchHandPCA,
     build_prior_model,
     load_prior_artifact,
     sorted_vq_codebook,
 )
-from rlinf.models.embodiment.lamp.resnet18 import load_hf_resnet18_params
+from rlinf.models.embodiment.lamp.hand_vq_vae import HandVQVAE
 from rlinf.models.embodiment.lamp.il_training_utils import (
     CosineSchedule,
     beta_warmup,
     configure_torch_runtime,
 )
-from rlinf.models.embodiment.lamp.hand_vq_vae import HandVQVAE
+from rlinf.models.embodiment.lamp.policy_wrapper import LampPolicy, LampPolicySpec
+from rlinf.models.embodiment.lamp.resnet18 import load_hf_resnet18_params
+from rlinf.models.embodiment.lamp.single_arm_diffusion_policy import LAMPDiffusionPolicy
+from rlinf.models.embodiment.lamp.vq_action_normalization import (
+    VQ_HAND_ACTION_NORMALIZATION,
+    normalize_vq_hand_action,
+    vq_hand_action_bounds,
+)
 from rlinf.scheduler import Worker
+from rlinf.utils.runner_utils import resolve_training_horizon
+
+
+def _cvae_kl_weights(
+    step: int | torch.Tensor,
+    *,
+    posterior_kl_weight: float = 1e-4,
+    prior_kl_weight: float = 1e-3,
+    kl_warmup_steps: int = 2_000,
+) -> tuple[float | torch.Tensor, float | torch.Tensor]:
+    """Return JAX-compatible CVAE KL weights for a zero-based optimizer step."""
+    warmup_step = step + 1
+    return (
+        beta_warmup(warmup_step, posterior_kl_weight, kl_warmup_steps),
+        beta_warmup(warmup_step, prior_kl_weight, kl_warmup_steps),
+    )
+
+
+def _clip_gradients(
+    parameters: Iterable[nn.Parameter], max_norm: float | None
+) -> torch.Tensor:
+    """Clip gradients when configured and otherwise report their global norm."""
+    with_grad = [
+        parameter
+        for parameter in parameters
+        if parameter.requires_grad and parameter.grad is not None
+    ]
+    if max_norm is not None:
+        max_norm = float(max_norm)
+        if max_norm < 0.0:
+            raise ValueError(f"clip_grad must be non-negative or null, got {max_norm}")
+        return nn.utils.clip_grad_norm_(with_grad, max_norm)
+    if not with_grad:
+        return torch.zeros((), dtype=torch.float32)
+    per_parameter = [
+        torch.linalg.vector_norm(parameter.grad.detach().float(), ord=2)
+        for parameter in with_grad
+    ]
+    return torch.linalg.vector_norm(torch.stack(per_parameter), ord=2)
+
+
+def _nearest_vq_indices(
+    physical_hand: np.ndarray, physical_codebook: np.ndarray
+) -> np.ndarray:
+    """Match physical hand targets to the physical DQ-RISE codebook."""
+
+    hand = np.asarray(physical_hand, dtype=np.float32)
+    codebook = np.asarray(physical_codebook, dtype=np.float32)
+    if hand.shape[-1] != 16 or codebook.shape != (16, 16):
+        raise ValueError(
+            "VQ nearest-neighbor inputs must be [...,16] and [16,16], "
+            f"got {hand.shape} and {codebook.shape}"
+        )
+    distances = np.square(hand[..., None, :] - codebook).sum(axis=-1)
+    return np.argmin(distances, axis=-1)
+
+
+def _training_contract(
+    cfg: DictConfig, *, steps_per_epoch: int, max_steps: int
+) -> dict[str, Any]:
+    """Return the resolved numerical training recipe stored with artifacts."""
+    return {
+        "seed": int(cfg.actor.seed),
+        "max_epochs": int(cfg.runner.max_epochs),
+        "max_steps": int(max_steps),
+        "steps_per_epoch": int(steps_per_epoch),
+        "global_batch_size": int(cfg.actor.global_batch_size),
+        "micro_batch_size": int(cfg.actor.micro_batch_size),
+        "eval_batch_size": int(cfg.actor.eval_batch_size),
+        "optimizer": OmegaConf.to_container(cfg.actor.optim, resolve=True),
+        "model": OmegaConf.to_container(cfg.actor.model, resolve=True),
+        "torch_compile": bool(cfg.actor.get("torch_compile", True)),
+        "compile_mode": str(cfg.actor.get("compile_mode", "default")),
+        "validation_interval": int(cfg.actor.get("validation_interval", 0)),
+        "validate_at_end": bool(cfg.actor.get("validate_at_end", False)),
+        "validation_batches": int(cfg.actor.get("validation_batches", -1)),
+    }
 
 
 class DeterministicInfiniteBatchSampler(Sampler[list[int]]):
@@ -99,6 +181,7 @@ class LampILWorker(Worker):
         super().__init__()
         self.cfg = cfg
         self.stage = str(cfg.algorithm.stage)
+        self._steps_per_epoch, self._max_steps = resolve_training_horizon(cfg.runner)
         self._global_step = 0
         self.device = torch.device("cpu")
         self.model: nn.Module | None = None
@@ -147,8 +230,17 @@ class LampILWorker(Worker):
             self._setup_dp()
         else:
             raise ValueError(f"Unsupported LAMP training stage {self.stage!r}")
-        self._setup_optimizer()
         self._setup_dataloaders(cache_dir)
+        prior_type = str(self.cfg.actor.model.hand_prior.type)
+        if self.stage == "dp" or (
+            self.stage == "prior" and prior_type in {"cvae", "vq"}
+        ):
+            self._artifact_metadata["training_contract"] = _training_contract(
+                self.cfg,
+                steps_per_epoch=self._steps_per_epoch,
+                max_steps=self._max_steps,
+            )
+        self._setup_optimizer()
         if (
             bool(self.cfg.actor.get("torch_compile", True))
             and self.stage != "prior_pca"
@@ -210,6 +302,10 @@ class LampILWorker(Worker):
             "latent_dim": int(prior_cfg.get("latent_dim", 0)),
             "architecture": architecture,
         }
+        if prior_type == "vq":
+            self._artifact_metadata["hand_action_normalization"] = (
+                VQ_HAND_ACTION_NORMALIZATION
+            )
 
     def _setup_bc(self) -> None:
         if self._cache_metadata["embodiment"] != "single":
@@ -362,6 +458,29 @@ class LampILWorker(Worker):
                 expected_hand_side=side,
                 device=self.device,
             )
+            if (
+                source == "vq"
+                and payload[1].get("hand_action_normalization")
+                != VQ_HAND_ACTION_NORMALIZATION
+            ):
+                raise ValueError(
+                    "LAMP VQ prior was not trained with the fixed Allegro "
+                    "ctrlrange normalization"
+                )
+            if source == "vq":
+                expected_low, expected_high = vq_hand_action_bounds()
+                stored_low = payload[2].get("vq_hand_action_low")
+                stored_high = payload[2].get("vq_hand_action_high")
+                if not (
+                    stored_low is not None
+                    and stored_high is not None
+                    and np.array_equal(stored_low, expected_low)
+                    and np.array_equal(stored_high, expected_high)
+                ):
+                    raise ValueError(
+                        "LAMP VQ prior does not contain the expected fixed "
+                        "Allegro action bounds"
+                    )
             configured_dim = side_cfg.get("latent_dim", None)
             artifact_dim = payload[1].get("latent_dim", None)
             if configured_dim is not None and int(configured_dim) != int(artifact_dim):
@@ -440,24 +559,27 @@ class LampILWorker(Worker):
             target = np.asarray(
                 np.load(split_dir / f"{prefix}target_action23.npy", mmap_mode="r")
             )
-            future = np.asarray(
-                np.load(split_dir / f"{prefix}future_hand_norm.npy", mmap_mode="r")
-            )
             if source == "mlp":
                 chunks.append(target)
                 continue
             model, metadata, statistics = priors[side]
             if source == "pca":
+                future = np.asarray(
+                    np.load(split_dir / f"{prefix}future_hand_norm.npy", mmap_mode="r")
+                )
                 latent_dim = int(metadata["latent_dim"])
                 latent = (future - model.mean.cpu().numpy()) @ model.components[
                     :latent_dim
                 ].cpu().numpy().T
             elif source == "vq":
                 codebook = np.asarray(statistics["sorted_codebook"], np.float32)
-                distances = np.square(future[..., None, :] - codebook).sum(axis=-1)
-                index = np.argmin(distances, axis=-1).astype(np.float32)
+                physical_hand = target[..., 7:]
+                index = _nearest_vq_indices(physical_hand, codebook).astype(np.float32)
                 latent = (2.0 * index / 15.0 - 1.0)[..., None]
             else:
+                future = np.asarray(
+                    np.load(split_dir / f"{prefix}future_hand_norm.npy", mmap_mode="r")
+                )
                 history = np.asarray(
                     np.load(split_dir / f"{prefix}hand_history_norm.npy", mmap_mode="r")
                 )
@@ -510,7 +632,7 @@ class LampILWorker(Worker):
         )
         self.schedule = CosineSchedule(
             lr,
-            int(self.cfg.runner.max_steps),
+            self._max_steps,
             int(optim_cfg.warmup_steps),
             float(optim_cfg.min_lr),
         )
@@ -532,6 +654,16 @@ class LampILWorker(Worker):
                 "LAMP global_batch_size must be a positive multiple of micro_batch_size"
             )
         self._accumulation_steps = global_batch_size // micro_batch_size
+        needs_epoch_size = (
+            "steps_per_epoch" in self.cfg.runner
+            or int(self.cfg.runner.max_steps) < 0
+            or "save_every_epochs" in self.cfg.runner
+        )
+        if needs_epoch_size:
+            actual_steps_per_epoch = len(train) // global_batch_size
+            self._steps_per_epoch, self._max_steps = resolve_training_horizon(
+                self.cfg.runner, steps_per_epoch=actual_steps_per_epoch
+            )
         sampler = DeterministicInfiniteBatchSampler(
             len(train),
             micro_batch_size,
@@ -568,6 +700,8 @@ class LampILWorker(Worker):
                     f"{prefix}future_hand_norm",
                     "mask",
                 ]
+            if prior_type == "vq":
+                return [f"{prefix}target_action23"]
             return [f"{prefix}hand_target_norm"]
         if self.stage == "bc":
             return [
@@ -632,9 +766,17 @@ class LampILWorker(Worker):
                 "latent_std": output.mu.std(),
             }
         if prior_type == "cvae":
+            posterior_kl_weight, prior_kl_weight = _cvae_kl_weights(
+                step,
+                posterior_kl_weight=float(prior_cfg.get("posterior_kl_weight", 1e-4)),
+                prior_kl_weight=float(prior_cfg.get("prior_kl_weight", 1e-3)),
+                kl_warmup_steps=int(prior_cfg.get("kl_warmup_steps", 2_000)),
+            )
             output = self.model(
                 batch[f"{prefix}hand_history_norm"],
                 batch[f"{prefix}future_hand_norm"],
+                posterior_kl_weight=posterior_kl_weight,
+                prior_kl_weight=prior_kl_weight,
                 target_mask=batch["mask"],
             )
             return {
@@ -643,11 +785,18 @@ class LampILWorker(Worker):
                 "posterior_kl_loss": output.posterior_kl_loss,
                 "prior_kl_loss": output.prior_kl_loss,
                 "weighted_kl_loss": output.weighted_kl_loss,
+                "posterior_kl_weight": torch.as_tensor(
+                    posterior_kl_weight, device=self.device
+                ),
+                "prior_kl_weight": torch.as_tensor(prior_kl_weight, device=self.device),
                 "latent_std": output.mu_q.std(),
             }
-        output = self.model(
-            batch[f"{prefix}hand_target_norm"], training=True, update_ema=False
-        )
+        if prior_type == "vq":
+            physical_hand = batch[f"{prefix}target_action23"][:, 0, 7:]
+            target = normalize_vq_hand_action(physical_hand)
+        else:
+            target = batch[f"{prefix}hand_target_norm"]
+        output = self.model(target, training=self.model.training, update_ema=False)
         return output
 
     def _bc_loss(self, batch):
@@ -741,7 +890,7 @@ class LampILWorker(Worker):
         )
 
     def run_training(self) -> dict[str, float | int]:
-        max_steps = int(self.cfg.runner.max_steps)
+        max_steps = self._max_steps
         if self.stage == "prior_pca":
             self._global_step = max_steps
             metrics = self._pca_metrics()
@@ -790,13 +939,8 @@ class LampILWorker(Worker):
                             + float(value.detach()) / self._accumulation_steps
                         )
             started = time.perf_counter()
-            grad_norm = nn.utils.clip_grad_norm_(
-                [
-                    parameter
-                    for parameter in self.model.parameters()
-                    if parameter.requires_grad
-                ],
-                float(self.cfg.actor.optim.clip_grad),
+            grad_norm = _clip_gradients(
+                self.model.parameters(), self.cfg.actor.optim.get("clip_grad")
             )
             self.optimizer.step()
             if isinstance(self.model, HandVQVAE):
@@ -819,7 +963,14 @@ class LampILWorker(Worker):
             }
         )
         validation_interval = int(self.cfg.actor.get("validation_interval", 0))
-        if validation_interval > 0 and self._global_step % validation_interval < count:
+        validate_at_end = bool(self.cfg.actor.get("validate_at_end", False))
+        should_validate = validate_at_end and self._global_step == max_steps
+        should_validate |= (
+            not validate_at_end
+            and validation_interval > 0
+            and self._global_step % validation_interval < count
+        )
+        if should_validate:
             metrics.update(
                 {f"validation/{key}": value for key, value in self._validate().items()}
             )
@@ -946,6 +1097,9 @@ class LampILWorker(Worker):
             pass
         elif metadata.get("prior_type") == "vq":
             statistics["sorted_codebook"] = sorted_vq_codebook(self.model)
+            low, high = vq_hand_action_bounds()
+            statistics["vq_hand_action_low"] = low
+            statistics["vq_hand_action_high"] = high
         if metadata.get("kind") == "policy":
             wrapper_stats = _wrapper_statistics(
                 self._statistics, self._policy_spec.embodiment
@@ -972,16 +1126,23 @@ class LampILWorker(Worker):
         }
 
     def _resume_metadata(self) -> dict[str, Any]:
-        return {
+        metadata = {
             "stage": self.stage,
             "cache_fingerprint": self._cache_metadata["fingerprint"],
             "architecture_sha256": metadata_sha256(self._architecture),
             "artifact": self._artifact_metadata,
-            "max_steps": int(self.cfg.runner.max_steps),
+            "max_steps": self._max_steps,
             "global_batch_size": int(self.cfg.actor.global_batch_size),
             "micro_batch_size": int(self.cfg.actor.micro_batch_size),
             "accumulation_steps": self._accumulation_steps,
         }
+        if (
+            "steps_per_epoch" in self.cfg.runner
+            or int(self.cfg.runner.max_steps) < 0
+            or "save_every_epochs" in self.cfg.runner
+        ):
+            metadata["steps_per_epoch"] = self._steps_per_epoch
+        return metadata
 
 
 def _prior_architecture(prior_type: str, cfg: DictConfig) -> dict[str, Any]:
@@ -997,23 +1158,25 @@ def _prior_architecture(prior_type: str, cfg: DictConfig) -> dict[str, Any]:
         return {
             "hidden_dim": int(cfg.get("hidden_dim", 1024)),
             "posterior_kl_weight": float(cfg.get("posterior_kl_weight", 1e-4)),
-            "prior_kl_weight": float(cfg.get("prior_kl_weight", 1e-4)),
+            "prior_kl_weight": float(cfg.get("prior_kl_weight", 1e-3)),
             "latent_dim": latent_dim,
         }
     if prior_type == "vq":
         return {
-            "action_dim": 16,
+            "action_dim": int(cfg.get("action_dim", 16)),
             "latent_dim": int(cfg.get("code_latent_dim", 256)),
             "hidden_dim": int(cfg.get("hidden_dim", 512)),
-            "num_quantizers": 2,
-            "codebook_size": 4,
-            "layer_num": 5,
-            "commitment_weight": 1.0,
-            "ema_decay": 0.8,
-            "epsilon": 1e-5,
-            "dead_code_threshold": 0.0,
-            "reconstruction_multiplier": 3.0,
-            "vq_multiplier": 5.0,
+            "num_quantizers": int(cfg.get("num_quantizers", 2)),
+            "codebook_size": int(cfg.get("codebook_size", 4)),
+            "layer_num": int(cfg.get("layer_num", 5)),
+            "commitment_weight": float(cfg.get("commitment_weight", 1.0)),
+            "ema_decay": float(cfg.get("ema_decay", 0.8)),
+            "epsilon": float(cfg.get("epsilon", 1e-5)),
+            "dead_code_threshold": float(cfg.get("dead_code_threshold", 0.0)),
+            "reconstruction_multiplier": float(
+                cfg.get("reconstruction_multiplier", 3.0)
+            ),
+            "vq_multiplier": float(cfg.get("vq_multiplier", 5.0)),
         }
     if prior_type == "pca":
         if not 1 <= latent_dim <= 16:

@@ -43,8 +43,8 @@ env:
     group_size: 1
     auto_reset: false
     ignore_terminations: false
-    max_episode_steps: 256
-    max_steps_per_rollout_epoch: 256
+    max_episode_steps: 900
+    max_steps_per_rollout_epoch: 900
     is_eval: true
     video_cfg:
       save_video: true
@@ -55,7 +55,7 @@ rollout:
   backend: huggingface
   pipeline_stage_num: 1
   enable_offload: false
-  enable_torch_compile: true
+  enable_torch_compile: false
   torch_compile_mode: max-autotune-no-cudagraphs
   model:
     model_path: ../results/dexjoco_lamp_dp/artifact

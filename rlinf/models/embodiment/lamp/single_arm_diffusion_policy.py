@@ -24,13 +24,13 @@ import torch
 from torch import nn
 
 from rlinf.models.embodiment.lamp.bc_policy import MLP
+from rlinf.models.embodiment.lamp.conditional_unet1d import ConditionalUnet1D
 from rlinf.models.embodiment.lamp.constants import (
     ARM_JOINT_DIM,
     ARM_QUAT_ACTION_DIM,
     HAND_ACTION_DIM,
     MODEL_QUAT_ACTION_DIM,
 )
-from rlinf.models.embodiment.lamp.hand_cvae import CVAE_LATENT_DIM, DexJoCoHandCVAE
 from rlinf.models.embodiment.lamp.diffusion_math import (
     NUM_INFERENCE_STEPS,
     NUM_TRAIN_TIMESTEPS,
@@ -40,9 +40,12 @@ from rlinf.models.embodiment.lamp.diffusion_math import (
     make_diffusion_schedule,
     predict_x0_from_epsilon,
 )
-from rlinf.models.embodiment.lamp.resnet18 import HFResNet18Backbone
-from rlinf.models.embodiment.lamp.conditional_unet1d import ConditionalUnet1D
+from rlinf.models.embodiment.lamp.hand_cvae import CVAE_LATENT_DIM, DexJoCoHandCVAE
 from rlinf.models.embodiment.lamp.hand_vae import HISTORY_FRAMES
+from rlinf.models.embodiment.lamp.resnet18 import HFResNet18Backbone
+from rlinf.models.embodiment.lamp.vq_action_normalization import (
+    normalize_vq_hand_action,
+)
 
 HandPriorSource = Literal["cvae", "decoder_only", "pca", "vq_codebook", "mlp"]
 ACTION_HORIZON = 16
@@ -384,10 +387,7 @@ class LAMPDiffusionPolicy(nn.Module):
             clean_core = clean_core_norm * self.core_action_std + self.core_action_mean
             target_index = vq_normalized_to_index(clean_core[..., ARM_QUAT_ACTION_DIM])
             pred_index = decode_aux["vq_index"]
-            target_hand_norm = self.vq_codebook[target_index]
-            target_quantized_hand = (
-                target_hand_norm * self.hand_action_std + self.hand_action_mean
-            )
+            target_quantized_hand = self.vq_codebook[target_index]
             metrics.update(
                 {
                     "vq_index_accuracy_metric": _masked_mean(
@@ -479,8 +479,8 @@ class LAMPDiffusionPolicy(nn.Module):
         elif self.hand_prior_source == "vq_codebook":
             latent = core[..., ARM_QUAT_ACTION_DIM:]
             index = vq_normalized_to_index(latent[..., 0])
-            hand_norm = self.vq_codebook[index]
-            hand = hand_norm * self.hand_action_std + self.hand_action_mean
+            hand = self.vq_codebook[index]
+            hand_norm = normalize_vq_hand_action(hand)
         else:
             hand = core[..., ARM_QUAT_ACTION_DIM:]
             latent = core.new_zeros((*core.shape[:-1], self._hand_latent_dim()))

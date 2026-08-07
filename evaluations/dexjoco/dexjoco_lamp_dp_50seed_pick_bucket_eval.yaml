@@ -1,0 +1,40 @@
+defaults:
+  - dexjoco_lamp_dp_eval_50_base
+  - _self_
+
+hydra:
+  run:
+    dir: .
+  output_subdir: null
+  searchpath:
+    - file://${oc.env:EMBODIED_PATH}/config/
+
+cluster:
+  component_placement:
+    env, rollout: 1-1
+
+runner:
+  logger:
+    log_path: ./outputs/lamp_evaluations/pick_bucket
+    experiment_name: dexjoco_lamp_dp_il_decoder_only_pick_bucket_eval_50
+
+env:
+  eval:
+    task_name: pick_bucket
+    task_description: Place the boxed food into the bucket and then lift the bucket.
+    camera_mapping:
+      base: front
+      wrist: wrist
+    seed: 0
+    rollout_epoch: 1
+    total_num_envs: 50
+    group_size: 1
+    auto_reset: false
+    ignore_terminations: false
+    max_episode_steps: 900
+    max_steps_per_rollout_epoch: 900
+
+rollout:
+  enable_torch_compile: false
+  model:
+    model_path: ./outputs/lamp_dp_rerun/dexjoco_lamp_dp_il_decoder_only_pick_bucket/artifact

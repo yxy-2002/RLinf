@@ -31,6 +31,9 @@ from rlinf.models.embodiment.lamp.hand_vq_vae import (
     HandVQVAE,
     decode_all_code_combinations,
 )
+from rlinf.models.embodiment.lamp.vq_action_normalization import (
+    denormalize_vq_hand_action,
+)
 
 
 class TorchHandPCA(nn.Module):
@@ -122,9 +125,17 @@ def load_prior_artifact(
 
 
 def sorted_vq_codebook(model: HandVQVAE) -> np.ndarray:
-    """Return the deterministic 16-code export order used by LAMP DP."""
+    """Decode, physicalize, and deterministically order all 16 VQ actions.
 
-    raw = decode_all_code_combinations(model).detach().cpu().numpy().astype(np.float32)
+    DQ-RISE trains its tokenizer in ``[-1, 1]`` but exports the codebook in
+    the physical hand-action space.  PCA ordering must happen after this
+    conversion because per-joint actuator ranges are anisotropic.
+    """
+
+    decoded = (
+        decode_all_code_combinations(model).detach().cpu().numpy().astype(np.float32)
+    )
+    raw = np.asarray(denormalize_vq_hand_action(decoded), dtype=np.float32)
     centered = raw - raw.mean(axis=0, keepdims=True)
     if np.allclose(centered, 0.0):
         projection = np.zeros((len(raw),), dtype=np.float32)

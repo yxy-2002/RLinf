@@ -5,6 +5,7 @@ defaults:
 runner:
   max_steps: 30000
   logger:
+    log_path: ./outputs/lamp_dp_rerun
     experiment_name: dexjoco_lamp_dp_il_decoder_only_hammer_nail
 cluster:
   component_placement:
@@ -17,11 +18,12 @@ data:
   cache_root: ./outputs/lamp_cache
 actor:
   global_batch_size: 512
-  micro_batch_size: 64
+  micro_batch_size: 512
+  eval_batch_size: 512
   optim: {lr: 3.0e-5, warmup_steps: 1000}
   model:
     model_type: lamp_dp
     hand_prior:
       type: decoder_only
       latent_dim: 6
-      artifact_path: ./outputs/dexjoco_lamp_prior_cvae_dim6_hammer_nail/artifact
+      artifact_path: ./outputs/lamp_cvae_rerun/dexjoco_lamp_prior_cvae_dim6_hammer_nail/artifact

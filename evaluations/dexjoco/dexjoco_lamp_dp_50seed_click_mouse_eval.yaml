@@ -47,8 +47,11 @@ env:
     group_size: 1
     auto_reset: false
     ignore_terminations: false
-    max_episode_steps: 256
-    max_steps_per_rollout_epoch: 256
+    # Match the legacy LAMP evaluator: 30 scripted reset steps followed by a
+    # policy-rollout budget of 900 steps. Warmup is excluded from episode_len.
+    click_mouse_warmup_steps: 30
+    max_episode_steps: 900
+    max_steps_per_rollout_epoch: 900
     is_eval: true
     video_cfg:
       save_video: true

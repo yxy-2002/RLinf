@@ -85,7 +85,8 @@ actor:
       beta: 1.0e-4
       beta_warmup_steps: 1000
       posterior_kl_weight: 1.0e-4
-      prior_kl_weight: 1.0e-4
+      prior_kl_weight: 1.0e-3
+      kl_warmup_steps: 2000
       artifact_path: null
       right:
         artifact_path: null

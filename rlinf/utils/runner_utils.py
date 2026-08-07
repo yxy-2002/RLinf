@@ -14,11 +14,68 @@
 
 import os
 import tempfile
+from collections.abc import Mapping
 from typing import Any, Union
 
 from rlinf.utils.logging import get_logger
 
 logger = get_logger()
+
+
+def resolve_training_horizon(
+    runner_cfg: Mapping[str, Any], *, steps_per_epoch: int | None = None
+) -> tuple[int, int]:
+    """Resolve optimizer steps from epoch and optional step limits.
+
+    A runtime ``steps_per_epoch`` may be supplied after a dataset is prepared.
+    An explicit config value remains supported and must agree with the runtime
+    value. When neither exists, one preserves the historical runner behavior.
+    A negative ``max_steps`` selects the epoch-derived horizon without a cap.
+    """
+    configured_steps = runner_cfg.get("steps_per_epoch", None)
+    if steps_per_epoch is None:
+        steps_per_epoch = 1 if configured_steps is None else int(configured_steps)
+    else:
+        steps_per_epoch = int(steps_per_epoch)
+        if configured_steps is not None and int(configured_steps) != steps_per_epoch:
+            raise ValueError(
+                "runner.steps_per_epoch does not match the runtime dataset: "
+                f"configured={int(configured_steps)}, runtime={steps_per_epoch}"
+            )
+    max_epochs = int(runner_cfg.get("max_epochs", 1))
+    configured_max_steps = int(runner_cfg.get("max_steps", -1))
+    if steps_per_epoch < 1:
+        raise ValueError(f"runner.steps_per_epoch must be >= 1, got {steps_per_epoch}")
+    if max_epochs < 1:
+        raise ValueError(f"runner.max_epochs must be >= 1, got {max_epochs}")
+    if configured_max_steps < -1:
+        raise ValueError(
+            "runner.max_steps must be -1 (no step cap) or non-negative, "
+            f"got {configured_max_steps}"
+        )
+
+    max_steps = steps_per_epoch * max_epochs
+    if configured_max_steps >= 0:
+        max_steps = min(max_steps, configured_max_steps)
+    return steps_per_epoch, max_steps
+
+
+def resolve_save_interval(
+    runner_cfg: Mapping[str, Any], *, steps_per_epoch: int
+) -> int:
+    """Resolve an epoch-based checkpoint cadence after dataset preparation."""
+
+    save_every_epochs = runner_cfg.get("save_every_epochs", None)
+    if save_every_epochs is None:
+        return int(runner_cfg.get("save_interval", -1))
+    save_every_epochs = int(save_every_epochs)
+    if save_every_epochs < 1:
+        raise ValueError(
+            f"runner.save_every_epochs must be >= 1, got {save_every_epochs}"
+        )
+    if int(steps_per_epoch) < 1:
+        raise ValueError(f"steps_per_epoch must be >= 1, got {steps_per_epoch}")
+    return save_every_epochs * int(steps_per_epoch)
 
 
 def safe_is_divisible(a, b):

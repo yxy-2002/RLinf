@@ -3,16 +3,45 @@ defaults:
   - _self_
 
 runner:
-  max_steps: 30000
+  max_epochs: 1500
+  max_steps: -1
+  save_every_epochs: 100
   logger:
     experiment_name: dexjoco_lamp_prior_vq
 
+data:
+  dataset_root: ./datasets/DexJoCo-Datasets-LeRobot/dexjoco_lerobot_datasets
+
 actor:
+  seed: 233
   global_batch_size: 256
   micro_batch_size: 256
+  eval_batch_size: 512
+  validation_interval: -1
+  validate_at_end: true
+  validation_batches: -1
+  optim:
+    lr: 3.0e-4
+    min_lr: 0.0
+    warmup_steps: 150
+    weight_decay: 1.0e-6
+    adam_beta1: 0.95
+    adam_beta2: 0.999
+    adam_eps: 1.0e-8
+    clip_grad: null
   model:
     hand_prior:
       type: vq
       latent_dim: 1
+      action_dim: 16
       code_latent_dim: 256
       hidden_dim: 512
+      num_quantizers: 2
+      codebook_size: 4
+      layer_num: 5
+      commitment_weight: 1.0
+      ema_decay: 0.8
+      epsilon: 1.0e-5
+      dead_code_threshold: 0.0
+      reconstruction_multiplier: 3.0
+      vq_multiplier: 5.0
