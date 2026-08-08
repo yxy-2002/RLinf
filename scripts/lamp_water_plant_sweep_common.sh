@@ -96,6 +96,7 @@ run_eval() {
     --config-path "${REPO_ROOT}/evaluations/dexjoco" \
     --config-name dexjoco_lamp_dp_50seed_water_plant_eval \
     "cluster.component_placement.env,rollout=${gpu}-${gpu}" \
+    "env.eval.seed=20260803" \
     "env.eval.total_num_envs=${EVAL_ENVS}" \
     "rollout.model.model_path=${artifact}" \
     "runner.logger.log_path=${eval_dir}" \
