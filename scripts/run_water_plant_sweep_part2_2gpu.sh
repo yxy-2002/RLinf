@@ -1,6 +1,5 @@
 #!/usr/bin/env bash
-# Remote 2-GPU part: PCA latent_dim={2,4,6,8} plus fixed VQ.
-# Retrains all four PCA priors and the VQ prior in this repository.
+# Remote/local 2-GPU part: CVAE KL loose (z=2) + PCA/VQ baselines + decoder_only lr sweep.
 set -euo pipefail
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 export PART=part2

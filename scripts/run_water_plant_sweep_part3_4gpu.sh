@@ -1,6 +1,5 @@
 #!/usr/bin/env bash
-# Remote 4-GPU part: CVAE/decoder-only at latent_dim={4,6,8}.
-# Retrains all three required CVAE priors in this repository.
+# Remote 4-GPU part: remaining decoder-only point plus DP+CVAE points.
 set -euo pipefail
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 export PART=part3

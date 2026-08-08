@@ -1,6 +1,5 @@
 #!/usr/bin/env bash
-# Local 2-GPU part: MLP plus CVAE/decoder-only at latent_dim=2.
-# Retrains the required dim-2 CVAE prior in this repository.
+# Local 2-GPU part: CVAE KL selected/default (z=2) + decoder_only DP lr sweep + MLP.
 set -euo pipefail
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 export PART=part1
