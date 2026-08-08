@@ -234,23 +234,23 @@ case "${PART}" in
     add_decoder_only_dp 1 default 1e-4
     ;;
   part2)
-    # Remote 2-GPU: loose KL + PCA/VQ baselines.
+    # Remote 4-GPU: loose KL + PCA/VQ baselines.
     add_cvae_prior 0 loose
     PRIOR_COMMANDS+=(
       "run_train 1 dexjoco_lamp_prior_pca_dim6_water_plant prior_pca_z${LATENT_DIM} actor.model.hand_prior.latent_dim=${LATENT_DIM}"
     )
     PRIOR_COMMANDS+=(
-      "run_train 0 dexjoco_lamp_prior_vq_water_plant prior_vq"
+      "run_train 2 dexjoco_lamp_prior_vq_water_plant prior_vq"
     )
-    add_decoder_only_dp 1 loose 3e-5
-    add_decoder_only_dp 0 loose 1e-4
-    add_decoder_only_dp 1 loose 2e-4
+    add_decoder_only_dp 0 loose 3e-5
+    add_decoder_only_dp 1 loose 1e-4
+    add_decoder_only_dp 2 loose 2e-4
     DP_COMMANDS+=(
-      "run_train 0 dexjoco_lamp_dp_il_pca_water_plant dp_pca_z${LATENT_DIM} actor.model.hand_prior.latent_dim=${LATENT_DIM} actor.model.hand_prior.artifact_path=${OUTPUT_ROOT}/prior_pca_z${LATENT_DIM}/artifact actor.optim.lr=3e-5"
+      "run_train 3 dexjoco_lamp_dp_il_pca_water_plant dp_pca_z${LATENT_DIM} actor.model.hand_prior.latent_dim=${LATENT_DIM} actor.model.hand_prior.artifact_path=${OUTPUT_ROOT}/prior_pca_z${LATENT_DIM}/artifact actor.optim.lr=3e-5"
     )
     POLICY_NAMES+=("dp_pca_z${LATENT_DIM}")
     DP_COMMANDS+=(
-      "run_train 1 dexjoco_lamp_dp_il_vq_water_plant dp_vq actor.model.hand_prior.artifact_path=${OUTPUT_ROOT}/prior_vq/artifact actor.optim.lr=3e-5"
+      "run_train 0 dexjoco_lamp_dp_il_vq_water_plant dp_vq actor.model.hand_prior.artifact_path=${OUTPUT_ROOT}/prior_vq/artifact actor.optim.lr=3e-5"
     )
     POLICY_NAMES+=(dp_vq)
     ;;
@@ -258,9 +258,9 @@ case "${PART}" in
     # Remote 4-GPU: remaining default-LR point plus DP+CVAE points.
     add_cvae_prior 0 selected
     add_cvae_prior 1 default
-    add_decoder_only_dp 3 default 2e-4
-    add_cvae_dp 3 selected 3e-5
-    add_cvae_dp 0 selected 1e-4
+    add_decoder_only_dp 0 default 2e-4
+    add_cvae_dp 1 selected 3e-5
+    add_cvae_dp 2 selected 1e-4
     ;;
   *)
     echo "Unknown PART=${PART}; expected part1, part2, or part3" >&2
