@@ -218,6 +218,16 @@ add_cvae_dp() {
   POLICY_NAMES+=("${name}")
 }
 
+add_pca_dp() {
+  local gpu="$1" lr="$2"
+  local name
+  name="$(printf 'dp_pca_z%s_lr%s' "${LATENT_DIM}" "${lr}")"
+  DP_COMMANDS+=(
+    "run_train ${gpu} dexjoco_lamp_dp_il_pca_water_plant ${name} actor.model.hand_prior.latent_dim=${LATENT_DIM} actor.model.hand_prior.artifact_path=${OUTPUT_ROOT}/prior_pca_z${LATENT_DIM}/artifact actor.optim.lr=${lr}"
+  )
+  POLICY_NAMES+=("${name}")
+}
+
 case "${PART}" in
   part1)
     # This 2-GPU machine: KL selected/default + DP lr sweep on selected + partial default.
@@ -245,12 +255,11 @@ case "${PART}" in
     add_decoder_only_dp 0 loose 3e-5
     add_decoder_only_dp 1 loose 1e-4
     add_decoder_only_dp 2 loose 2e-4
+    add_pca_dp 3 3e-5
+    add_pca_dp 0 1e-4
+    add_pca_dp 1 2e-4
     DP_COMMANDS+=(
-      "run_train 3 dexjoco_lamp_dp_il_pca_water_plant dp_pca_z${LATENT_DIM} actor.model.hand_prior.latent_dim=${LATENT_DIM} actor.model.hand_prior.artifact_path=${OUTPUT_ROOT}/prior_pca_z${LATENT_DIM}/artifact actor.optim.lr=3e-5"
-    )
-    POLICY_NAMES+=("dp_pca_z${LATENT_DIM}")
-    DP_COMMANDS+=(
-      "run_train 0 dexjoco_lamp_dp_il_vq_water_plant dp_vq actor.model.hand_prior.artifact_path=${OUTPUT_ROOT}/prior_vq/artifact actor.optim.lr=3e-5"
+      "run_train 2 dexjoco_lamp_dp_il_vq_water_plant dp_vq actor.model.hand_prior.artifact_path=${OUTPUT_ROOT}/prior_vq/artifact actor.optim.lr=3e-5"
     )
     POLICY_NAMES+=(dp_vq)
     ;;
