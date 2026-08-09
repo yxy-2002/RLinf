@@ -19,6 +19,7 @@ fi
 
 export PYTHONPATH="${REPO_ROOT}${PYTHONPATH:+:${PYTHONPATH}}"
 export HYDRA_FULL_ERROR=1
+export EMBODIED_PATH="${REPO_ROOT}/examples/embodiment"
 export MUJOCO_GL="${MUJOCO_GL:-egl}"
 export PYOPENGL_PLATFORM="${PYOPENGL_PLATFORM:-egl}"
 export WANDB_MODE
@@ -83,6 +84,18 @@ EVALS=(
 )
 
 log "begin combined water_plant evals: host=$(hostname) jobs=${#EVALS[@]} n_gpus=${N_GPUS}"
+
+# Compose the full evaluation config once before spawning the batch. This catches
+# missing search paths and invalid Hydra overrides without launching 10 jobs.
+if ! "${PYTHON_BIN}" evaluations/eval_embodied_agent.py \
+  --config-path "${REPO_ROOT}/evaluations/dexjoco" \
+  --config-name dexjoco_lamp_dp_50seed_water_plant_eval \
+  --cfg job \
+  "cluster.component_placement={env\, rollout:0-0}" >/dev/null; then
+  log "FAILED evaluation config preflight"
+  exit 2
+fi
+log "evaluation config preflight passed"
 
 pids=()
 descriptions=()

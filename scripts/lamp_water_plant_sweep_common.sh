@@ -43,6 +43,7 @@ fi
 mkdir -p "${OUTPUT_ROOT}/logs" "${OUTPUT_ROOT}/eval"
 export PYTHONPATH="${REPO_ROOT}${PYTHONPATH:+:${PYTHONPATH}}"
 export HYDRA_FULL_ERROR=1
+export EMBODIED_PATH="${REPO_ROOT}/examples/embodiment"
 export MUJOCO_GL="${MUJOCO_GL:-egl}"
 export PYOPENGL_PLATFORM="${PYOPENGL_PLATFORM:-egl}"
 export WANDB_MODE
@@ -102,19 +103,17 @@ run_eval() {
   fi
   mkdir -p "${eval_dir}"
   log "start eval gpu=${gpu} policy=${policy_name}"
-  "${PYTHON_BIN}" evaluations/eval_embodied_agent.py \
+  if ! "${PYTHON_BIN}" evaluations/eval_embodied_agent.py \
     --config-path "${REPO_ROOT}/evaluations/dexjoco" \
     --config-name dexjoco_lamp_dp_50seed_water_plant_eval \
-    "cluster.component_placement.env,rollout=${gpu}-${gpu}" \
+    "cluster.component_placement={env\, rollout:${gpu}-${gpu}}" \
     "env.eval.seed=20260803" \
     "env.eval.total_num_envs=${EVAL_ENVS}" \
     "rollout.model.model_path=${artifact}" \
     "runner.logger.log_path=${eval_dir}" \
-    "runner.logger.experiment_name=${eval_name}" >"${log_file}" 2>&1
-  local rc=$?
-  if (( rc != 0 )); then
-    log "FAILED eval rc=${rc}: ${eval_name} (see ${log_file})"
-    return "${rc}"
+    "runner.logger.experiment_name=${eval_name}" >"${log_file}" 2>&1; then
+    log "FAILED eval: ${eval_name} (see ${log_file})"
+    return 1
   fi
   touch "${done_marker}"
   log "finish eval: ${eval_name}"
@@ -282,6 +281,16 @@ log "latent_dim fixed at ${LATENT_DIM}; searching CVAE KL and DP lr (no latent-d
 log "training priors locally; no checkpoint roots are shared across machines"
 run_batched prior "${PRIOR_COMMANDS[@]}"
 run_batched dp "${DP_COMMANDS[@]}"
+
+if ! "${PYTHON_BIN}" evaluations/eval_embodied_agent.py \
+  --config-path "${REPO_ROOT}/evaluations/dexjoco" \
+  --config-name dexjoco_lamp_dp_50seed_water_plant_eval \
+  --cfg job \
+  "cluster.component_placement={env\, rollout:0-0}" >/dev/null; then
+  log "FAILED evaluation config preflight"
+  exit 2
+fi
+log "evaluation config preflight passed"
 
 declare -a EVAL_COMMANDS=()
 for i in "${!POLICY_NAMES[@]}"; do
