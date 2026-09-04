@@ -17,9 +17,8 @@ import copy
 import json
 import os
 import pickle as pkl
-import shutil
 import threading
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import Future, ThreadPoolExecutor
 from typing import Optional
 
 import numpy as np
@@ -274,7 +273,11 @@ class TrajectoryReplayBuffer:
             self.logger.info(
                 f"Created replay buffer with auto_save_path: {auto_save_path}"
             )
-        self.auto_save_path = auto_save_path if self.auto_save else None
+        self.auto_save_path = (
+            os.path.abspath(os.path.expanduser(auto_save_path))
+            if self.auto_save
+            else None
+        )
         if self.auto_save_path is not None:
             os.makedirs(self.auto_save_path, exist_ok=True)
 
@@ -303,9 +306,11 @@ class TrajectoryReplayBuffer:
 
         # Async save executor for add_trajectories
         self._save_executor = ThreadPoolExecutor(max_workers=20)
+        self._trajectory_save_futures: dict[int, Future] = {}
         # Separate executor for checkpoint saves
         self._checkpoint_executor = ThreadPoolExecutor(max_workers=20)
-        self._index_lock = threading.Lock()
+        # Serializes index publication with every cache mapping/slot mutation.
+        self._index_lock = threading.RLock()
 
         # Cached window metadata for faster sampling
         self._window_cache_size = None
@@ -318,6 +323,9 @@ class TrajectoryReplayBuffer:
         # Buffer state
         self.size = 0  # Current number of trajectories
         self._total_samples = 0  # Total number of samples across all trajectories
+        self._cache_hits = 0
+        self._cache_misses = 0
+        self._disk_loads = 0
 
         # Random seed
         self.seed = seed
@@ -354,29 +362,39 @@ class TrajectoryReplayBuffer:
         base_dir = base_dir or self.auto_save_path
         return os.path.join(base_dir, "trajectory_index.json")
 
-    def _save_metadata(self, save_path: Optional[str] = None):
+    def _save_metadata(
+        self,
+        save_path: Optional[str] = None,
+        metadata: Optional[dict] = None,
+    ):
         """Save metadata to disk."""
         save_path = save_path or self.auto_save_path
-        with self._index_lock:
-            metadata = {
-                "trajectory_format": self.trajectory_format,
-                "size": self.size,
-                "total_samples": self._total_samples,
-                "trajectory_counter": self._trajectory_counter,
-                "seed": self.seed,
-            }
-            with open(self._get_metadata_path(save_path), "w") as f:
-                json.dump(metadata, f)
+        if metadata is None:
+            with self._index_lock:
+                metadata = {
+                    "trajectory_format": self.trajectory_format,
+                    "size": self.size,
+                    "total_samples": self._total_samples,
+                    "trajectory_counter": self._trajectory_counter,
+                    "seed": self.seed,
+                }
+        with open(self._get_metadata_path(save_path), "w") as f:
+            json.dump(metadata, f)
 
-    def _save_trajectory_index(self, save_path: Optional[str] = None):
+    def _save_trajectory_index(
+        self,
+        save_path: Optional[str] = None,
+        index_data: Optional[dict] = None,
+    ):
         """Save trajectory index to disk."""
-        with self._index_lock:
-            index_data = {
-                "trajectory_index": copy.deepcopy(self._trajectory_index),
-                "trajectory_id_list": list(self._trajectory_id_list),
-            }
-            with open(self._get_trajectory_index_path(save_path), "w") as f:
-                json.dump(index_data, f)
+        if index_data is None:
+            with self._index_lock:
+                index_data = {
+                    "trajectory_index": copy.deepcopy(self._trajectory_index),
+                    "trajectory_id_list": list(self._trajectory_id_list),
+                }
+        with open(self._get_trajectory_index_path(save_path), "w") as f:
+            json.dump(index_data, f)
 
     def _save_trajectory(
         self,
@@ -406,16 +424,22 @@ class TrajectoryReplayBuffer:
     def _load_trajectory(self, trajectory_id: int, model_weights_id: str) -> Trajectory:
         """Load a trajectory from disk and reconstruct Trajectory object."""
 
-        # Get trajectory info from index
-        if trajectory_id not in self._trajectory_index:
-            raise ValueError(f"Trajectory {trajectory_id} not found in index")
-
-        trajectory_info = self._trajectory_index[trajectory_id]
+        # Snapshot shared metadata under the state lock, then perform disk I/O
+        # without blocking cache publication or sampling.
+        with self._index_lock:
+            if trajectory_id not in self._trajectory_index:
+                raise ValueError(f"Trajectory {trajectory_id} not found in index")
+            trajectory_info = dict(self._trajectory_index[trajectory_id])
+            trajectory_base_dir = self._trajectory_file_path.get(trajectory_id)
+        if trajectory_base_dir is None:
+            raise FileNotFoundError(
+                f"Trajectory {trajectory_id} has no disk backing directory"
+            )
 
         trajectory_path = self._get_trajectory_path(
             trajectory_id,
             model_weights_id,
-            base_dir=self._trajectory_file_path[trajectory_id],
+            base_dir=trajectory_base_dir,
         )
 
         if not os.path.exists(trajectory_path):
@@ -452,7 +476,6 @@ class TrajectoryReplayBuffer:
         save_futures = []
         for trajectory in trajectories:
             model_weights_id = trajectory.model_weights_id
-            trajectory_id = self._trajectory_counter
 
             # Calculate total samples: T * B
             if trajectory.prev_logprobs is not None:
@@ -466,21 +489,29 @@ class TrajectoryReplayBuffer:
             else:
                 continue  # Skip empty trajectories
 
-            # Save trajectory to disk if enabled
-            if self.auto_save:
-                # Save asynchronously to reduce I/O stalls
-                save_futures.append(
-                    self._save_executor.submit(
+            cache = self._flat_trajectory_cache
+            flat_trajectory = (
+                self._flatten_trajectory(trajectory) if cache is not None else None
+            )
+
+            # Cache insertion and index publication are one transaction. A sampler
+            # can never observe an in-memory trajectory before its slot is stable.
+            with self._index_lock:
+                trajectory_id = self._trajectory_counter
+                if self.auto_save:
+                    save_future = self._save_executor.submit(
                         self._save_trajectory,
                         trajectory,
                         trajectory_id,
                         model_weights_id,
                     )
-                )
-                self._trajectory_file_path[trajectory_id] = self.auto_save_path
+                    save_futures.append(save_future)
+                    self._trajectory_save_futures[trajectory_id] = save_future
+                    self._trajectory_file_path[trajectory_id] = self.auto_save_path
 
-            # Add to index
-            with self._index_lock:
+                if cache is not None:
+                    cache.put(trajectory_id, flat_trajectory)
+
                 trajectory_info = {
                     "num_samples": num_samples,
                     "trajectory_id": trajectory_id,
@@ -491,17 +522,11 @@ class TrajectoryReplayBuffer:
                 self._trajectory_index[trajectory_id] = trajectory_info
                 self._trajectory_id_list.append(trajectory_id)
 
-                # Update counters
+                # Update counters only after the cache slot is fully populated.
                 self._trajectory_counter += 1
                 self.size += 1
                 self._total_samples += num_samples
                 self._index_version += 1
-
-            if self._flat_trajectory_cache is not None:
-                self._flat_trajectory_cache.put(
-                    trajectory_id,
-                    self._flatten_trajectory(trajectory),
-                )
 
         # Save metadata/index after all trajectory saves finish
         if self.auto_save:
@@ -560,12 +585,12 @@ class TrajectoryReplayBuffer:
         Returns:
             Dictionary with batch format [B, ...] where B = num_chunks
         """
-        if self._total_samples == 0:
-            raise RuntimeError("Cannot sample from an empty buffer.")
-
         # Sample from the most recent trajectories (windowed)
         window_size = max(0, int(self.sample_window_size))
         with self._index_lock:
+            if self._total_samples == 0:
+                raise RuntimeError("Cannot sample from an empty buffer.")
+
             if (
                 self._window_cache_size == window_size
                 and self._window_cache_version == self._index_version
@@ -596,15 +621,13 @@ class TrajectoryReplayBuffer:
                     else None
                 )
                 self._window_cache_total_samples = window_total_samples
+            cumulative_ends_tensor = self._window_cache_cumulative_ends_tensor
 
         if not window_ids:
             return {}
 
         if window_total_samples == 0:
             return {}
-
-        if num_chunks > window_total_samples:
-            num_chunks = window_total_samples
 
         # Sample chunk indices directly from total samples
         sample_ids = torch.randint(
@@ -616,7 +639,6 @@ class TrajectoryReplayBuffer:
 
         # Convert global sample indices to per-trajectory local indices
         grouped_indices: dict[str, list[tuple[int, int]]] = {}
-        cumulative_ends_tensor = self._window_cache_cumulative_ends_tensor
         if cumulative_ends_tensor is None or cumulative_ends_tensor.numel() == 0:
             return {}
 
@@ -647,50 +669,71 @@ class TrajectoryReplayBuffer:
         )
         batch_indices_tensor = torch.arange(num_chunks, dtype=torch.long)
 
-        cached_mask = None
         cache = self._flat_trajectory_cache
-        if cache is not None:
-            cached_ids = list(cache.cache.keys())
-            if cached_ids:
-                cached_ids_tensor = torch.as_tensor(cached_ids, dtype=torch.long)
-                cached_mask = torch.isin(traj_ids_tensor, cached_ids_tensor)
+        with self._index_lock:
+            if cache is not None:
+                cached_ids = list(cache.cache.keys())
+                if cached_ids:
+                    cached_ids_tensor = torch.as_tensor(cached_ids, dtype=torch.long)
+                    cached_mask = torch.isin(traj_ids_tensor, cached_ids_tensor)
+                else:
+                    cached_mask = torch.zeros_like(traj_ids_tensor, dtype=torch.bool)
             else:
                 cached_mask = torch.zeros_like(traj_ids_tensor, dtype=torch.bool)
-        else:
-            cached_mask = torch.zeros_like(traj_ids_tensor, dtype=torch.bool)
 
-        # 1) Cache hits: gather from cache buffer.
-        if torch.any(cached_mask):
-            cache_buffer = cache.get_buffer() if cache is not None else None
-            slot_len = cache.get_slot_length() if cache is not None else None
-            if cache_buffer is not None and slot_len is not None:
-                cached_traj_ids = traj_ids_tensor[cached_mask].tolist()
-                cached_slots = torch.as_tensor(
-                    [cache.cache[tid] for tid in cached_traj_ids], dtype=torch.long
-                )
-                cached_local = local_sample_indices[cached_mask]
-                buffer_indices = cached_slots * slot_len + cached_local
-                batch_indices = batch_indices_tensor[cached_mask]
-                if batch is None:
-                    batch = self._init_batch_from_buffer(cache_buffer, num_chunks)
-                self._fill_batch_from_buffer_indices(
-                    batch, cache_buffer, buffer_indices, batch_indices
-                )
+            # Cache mapping, slot geometry, and gather share the put/evict/grow lock.
+            if torch.any(cached_mask):
+                cache_buffer = cache.get_buffer() if cache is not None else None
+                slot_len = cache.get_slot_length() if cache is not None else None
+                if cache_buffer is not None and slot_len is not None:
+                    cached_traj_ids = traj_ids_tensor[cached_mask].tolist()
+                    cached_slots = torch.as_tensor(
+                        [cache.cache[tid] for tid in cached_traj_ids], dtype=torch.long
+                    )
+                    cached_local = local_sample_indices[cached_mask]
+                    buffer_indices = cached_slots * slot_len + cached_local
+                    batch_indices = batch_indices_tensor[cached_mask]
+                    if batch is None:
+                        batch = self._init_batch_from_buffer(cache_buffer, num_chunks)
+                    self._fill_batch_from_buffer_indices(
+                        batch, cache_buffer, buffer_indices, batch_indices
+                    )
+            self._cache_hits += int(cached_mask.sum().item())
 
         # 2) Cache misses: load all, concat, then gather once.
         miss_mask = ~cached_mask
         if torch.any(miss_mask):
+            self._cache_misses += int(miss_mask.sum().item())
+            # auto_save=False has no disk backing. A miss can only mean the
+            # sampled window became stale before the atomic cache gather; retry
+            # against the latest published window instead of attempting disk I/O.
+            if not self.auto_save:
+                return self.sample_chunks(num_chunks)
+
             miss_traj_ids = torch.unique(traj_ids_tensor[miss_mask]).tolist()
+            with self._index_lock:
+                miss_requests = {
+                    tid: (
+                        self._trajectory_index[tid]["model_weights_id"],
+                        self._trajectory_index[tid]["num_samples"],
+                        self._trajectory_save_futures.get(tid),
+                    )
+                    for tid in miss_traj_ids
+                }
+
             miss_flats: list[dict] = []
             traj_offsets: dict[int, int] = {}
             cursor = 0
             for tid in miss_traj_ids:
-                model_weights_id = self._trajectory_index[tid]["model_weights_id"]
+                model_weights_id, num_samples, save_future = miss_requests[tid]
+                if save_future is not None:
+                    save_future.result()
                 trajectory = self._load_trajectory(tid, model_weights_id)
+                self._disk_loads += 1
                 flat_trajectory = self._flatten_trajectory(trajectory)
                 miss_flats.append(flat_trajectory)
                 traj_offsets[tid] = cursor
-                cursor += self._trajectory_index[tid]["num_samples"]
+                cursor += num_samples
 
             concat_flat = self._concat_flat_trajectories(miss_flats)
             if batch is None:
@@ -898,54 +941,129 @@ class TrajectoryReplayBuffer:
         return self.size >= min_size
 
     def clear(self):
-        # Clear index
-        self._trajectory_index.clear()
-        self._trajectory_id_list.clear()
-        self._trajectory_file_path.clear()
+        with self._index_lock:
+            self._trajectory_index.clear()
+            self._trajectory_id_list.clear()
+            self._trajectory_file_path.clear()
+            self._trajectory_save_futures.clear()
 
-        # Clear cache
-        if self._flat_trajectory_cache is not None:
-            self._flat_trajectory_cache.clear()
+            if self._flat_trajectory_cache is not None:
+                self._flat_trajectory_cache.clear()
 
-        # Reset state
-        self.size = 0
-        self._total_samples = 0
-        self._trajectory_counter = 0
+            self.size = 0
+            self._total_samples = 0
+            self._trajectory_counter = 0
+            self._index_version += 1
+            self._window_cache_size = None
+            self._window_cache_version = None
+            self._window_cache_ids = []
+            self._window_cache_cumulative_ends = []
+            self._window_cache_cumulative_ends_tensor = None
+            self._window_cache_total_samples = 0
 
     def get_stats(self) -> dict[str, float]:
         """Get buffer statistics."""
-        stats = {
-            "num_trajectories": self.size,
-            "total_samples": self._total_samples,
-            "cache_size": len(self._flat_trajectory_cache.cache)
-            if self._flat_trajectory_cache
-            else 0,
-        }
-        return stats
+        with self._index_lock:
+            window_size = max(0, int(self.sample_window_size))
+            active_window = (
+                self.size if window_size == 0 else min(self.size, window_size)
+            )
+            total_lookups = self._cache_hits + self._cache_misses
+            return {
+                "num_trajectories": self.size,
+                "total_samples": self._total_samples,
+                "active_window_trajectories": active_window,
+                "cache_size": len(self._flat_trajectory_cache.cache)
+                if self._flat_trajectory_cache
+                else 0,
+                "cache_hits": self._cache_hits,
+                "cache_misses": self._cache_misses,
+                "cache_hit_rate": self._cache_hits / max(1, total_lookups),
+                "disk_loads": self._disk_loads,
+            }
 
     def save_checkpoint(self, save_path: str):
-        """
-        Save buffer state (metadata and indices) to save_path.
-        """
-        # Create save directory
+        """Save a recoverable snapshot of the active replay window."""
         os.makedirs(save_path, exist_ok=True)
+
+        # Snapshot cache-backed tensors while their slots are protected. With
+        # auto-save, only the durable trajectory index is checkpointed.
+        flat_snapshots: dict[int, dict] = {}
+        disk_requests: dict[int, tuple[str, str, Optional[Future]]] = {}
+        with self._index_lock:
+            window_size = max(0, int(self.sample_window_size))
+            if window_size > 0:
+                checkpoint_ids = list(self._trajectory_id_list[-window_size:])
+            else:
+                checkpoint_ids = list(self._trajectory_id_list)
+
+            checkpoint_index = {
+                trajectory_id: copy.deepcopy(self._trajectory_index[trajectory_id])
+                for trajectory_id in checkpoint_ids
+            }
+            metadata = {
+                "trajectory_format": self.trajectory_format,
+                "size": len(checkpoint_ids),
+                "total_samples": sum(
+                    info["num_samples"] for info in checkpoint_index.values()
+                ),
+                "trajectory_counter": self._trajectory_counter,
+                "seed": self.seed,
+            }
+
+            cache = self._flat_trajectory_cache
+            if not self.auto_save and cache is None:
+                raise RuntimeError("auto_save=False requires cache to save checkpoint.")
+
+            for trajectory_id in checkpoint_ids:
+                info = checkpoint_index[trajectory_id]
+                if not self.auto_save:
+                    flat = cache.get(trajectory_id)
+                    if flat is None:
+                        raise RuntimeError(
+                            "Replay cache invariant violated while checkpointing: "
+                            f"trajectory {trajectory_id} is not cached."
+                        )
+                    flat_snapshots[trajectory_id] = clone_dict_of_tensors(flat)
+                else:
+                    source_dir = self._trajectory_file_path.get(trajectory_id)
+                    if source_dir is None:
+                        raise RuntimeError(
+                            f"Trajectory {trajectory_id} has no disk backing directory."
+                        )
+                    disk_requests[trajectory_id] = (
+                        info["model_weights_id"],
+                        source_dir,
+                        self._trajectory_save_futures.get(trajectory_id),
+                    )
+
+            if self.auto_save and checkpoint_ids:
+                source_dirs = {request[1] for request in disk_requests.values()}
+                if len(source_dirs) != 1:
+                    raise RuntimeError(
+                        "Indexed replay checkpoint requires one trajectory root"
+                    )
+                source_root = os.path.abspath(source_dirs.pop())
+                metadata.update(
+                    {
+                        "external_trajectory_root": source_root,
+                        "external_trajectory_root_relative": os.path.relpath(
+                            source_root, start=os.path.abspath(save_path)
+                        ),
+                        "indexed_external_trajectories": True,
+                    }
+                )
 
         save_futures = []
         if not self.auto_save:
-            cache = self._flat_trajectory_cache
-            if cache is None:
-                raise RuntimeError("auto_save=False requires cache to save checkpoint.")
-            cached_ids = list(cache.cache.keys())
-            for trajectory_id in cached_ids:
-                flat = cache.get(trajectory_id)
-                if flat is None:
-                    continue
-                info = self._trajectory_index.get(trajectory_id, None)
-                if info is None:
-                    continue
-                shape = info.get("shape", None)
+            for trajectory_id in checkpoint_ids:
+                flat = flat_snapshots[trajectory_id]
+                info = checkpoint_index[trajectory_id]
+                shape = info.get("shape")
                 if not shape or len(shape) < 2:
-                    continue
+                    raise RuntimeError(
+                        f"Trajectory {trajectory_id} has invalid checkpoint shape {shape}."
+                    )
                 T, B = shape[:2]
                 model_weights_id = info.get("model_weights_id", "")
                 trajectory = Trajectory(
@@ -969,30 +1087,32 @@ class TrajectoryReplayBuffer:
                     )
                 )
         else:
-            for trajectory_id in self._window_cache_ids:
-                model_weights_id = self._trajectory_index[trajectory_id][
-                    "model_weights_id"
-                ]
+            for trajectory_id in checkpoint_ids:
+                model_weights_id, source_dir, save_future = disk_requests[trajectory_id]
+                if save_future is not None:
+                    save_future.result()
                 trajectory_path = self._get_trajectory_path(
-                    trajectory_id, model_weights_id
+                    trajectory_id,
+                    model_weights_id,
+                    base_dir=source_dir,
                 )
                 if not os.path.isfile(trajectory_path):
-                    continue
-
-                # copy trajectory file from trajectory_path to save_path
-                target_path = os.path.join(save_path, os.path.basename(trajectory_path))
-                save_futures.append(
-                    self._checkpoint_executor.submit(
-                        shutil.copyfile, trajectory_path, target_path
+                    raise FileNotFoundError(
+                        f"Trajectory file not found at {trajectory_path}"
                     )
-                )
+
+                # auto_save already provides durable storage. Checkpoints keep an
+                # index reference instead of duplicating the active window.
 
         for fut in save_futures:
             fut.result()
 
-        # Save metadata and trajectory index into the specified directory
-        self._save_metadata(save_path)
-        self._save_trajectory_index(save_path)
+        index_data = {
+            "trajectory_index": checkpoint_index,
+            "trajectory_id_list": checkpoint_ids,
+        }
+        self._save_metadata(save_path, metadata=metadata)
+        self._save_trajectory_index(save_path, index_data=index_data)
 
     def load_checkpoint(
         self,
@@ -1017,16 +1137,31 @@ class TrajectoryReplayBuffer:
         with open(metadata_path, "r") as f:
             metadata = json.load(f)
 
-        # Update instance attributes from metadata
-        self.trajectory_format = metadata.get(
-            "trajectory_format",
-            self.trajectory_format,
-        )
-        if "seed" in metadata:
-            self.seed = metadata["seed"]
-            self._init_random_generator(self.seed)
+        loaded_format = metadata.get("trajectory_format", self.trajectory_format)
+        trajectory_source_dir = load_path
+        if metadata.get("indexed_external_trajectories", False):
+            candidates = []
+            relative_root = metadata.get("external_trajectory_root_relative")
+            if relative_root:
+                candidates.append(
+                    os.path.abspath(os.path.join(load_path, relative_root))
+                )
+            absolute_root = metadata.get("external_trajectory_root")
+            if absolute_root:
+                candidates.append(os.path.abspath(absolute_root))
+            trajectory_source_dir = next(
+                (candidate for candidate in candidates if os.path.isdir(candidate)),
+                "",
+            )
+            if not trajectory_source_dir:
+                raise FileNotFoundError(
+                    "Replay checkpoint references an unavailable auto-save trajectory "
+                    f"root; checked {candidates}"
+                )
 
-        # Load trajectory index and uuid list from save_path
+        # Read and prepare the complete replacement state before publishing any of
+        # it. Sampling therefore sees either the old cache/index or the fully
+        # populated checkpoint state, never an empty cache with a new index.
         index_path = os.path.join(load_path, "trajectory_index.json")
         if not os.path.exists(index_path):
             raise FileNotFoundError(f"Trajectory index not found at {index_path}")
@@ -1041,88 +1176,119 @@ class TrajectoryReplayBuffer:
             int(k) for k in index_data.get("trajectory_id_list", [])
         ]
 
-        # Handle distributed loading
         if is_distributed:
+            if world_size <= 0:
+                raise ValueError(f"world_size ({world_size}) must be > 0")
             if local_rank < 0 or local_rank >= world_size:
                 raise ValueError(
                     f"local_rank ({local_rank}) must be in range [0, {world_size})"
                 )
-            if world_size <= 0:
-                raise ValueError(f"world_size ({world_size}) must be > 0")
 
-            # Split trajectory_uuid_list into world_size parts
             total_trajectories = len(full_trajectory_id_list)
             trajectories_per_split = total_trajectories // world_size
             remainder = total_trajectories % world_size
-
-            # Calculate start and end indices for this rank
             start_idx = local_rank * trajectories_per_split + min(local_rank, remainder)
             end_idx = (
                 start_idx
                 + trajectories_per_split
                 + (1 if local_rank < remainder else 0)
             )
-
-            # Extract the portion for this rank
-            self._trajectory_id_list = full_trajectory_id_list[start_idx:end_idx]
-
-            # Filter trajectory_index to only include trajectories in this rank's portion
-            self._trajectory_index = {
-                id: full_trajectory_index[id]
-                for id in self._trajectory_id_list
-                if id in full_trajectory_index
+            loaded_ids = full_trajectory_id_list[start_idx:end_idx]
+            loaded_index = {
+                trajectory_id: full_trajectory_index[trajectory_id]
+                for trajectory_id in loaded_ids
+                if trajectory_id in full_trajectory_index
             }
-
-            # Update trajectory file path
-            for trajectory_id in self._trajectory_id_list:
-                self._trajectory_file_path[trajectory_id] = load_path
-
-            # Update size, total_samples, and trajectory_counter based on loaded portion
-            self.size = len(self._trajectory_id_list)
-            self._total_samples = sum(
-                trajectory_info.get("num_samples", 0)
-                for trajectory_info in self._trajectory_index.values()
+            loaded_total_samples = sum(
+                info.get("num_samples", 0) for info in loaded_index.values()
             )
-            # trajectory_counter should be set to the max trajectory_id in the loaded portion + 1
-            if self._trajectory_index:
-                max_trajectory_id = max(
-                    trajectory_info.get("trajectory_id", 0)
-                    for trajectory_info in self._trajectory_index.values()
-                )
-                self._trajectory_counter = max_trajectory_id + 1
-            else:
-                self._trajectory_counter = 0
+            loaded_counter = (
+                max(info.get("trajectory_id", 0) for info in loaded_index.values()) + 1
+                if loaded_index
+                else 0
+            )
         else:
-            # Full load
-            self._trajectory_index = full_trajectory_index
-            self._trajectory_id_list = full_trajectory_id_list
-            for trajectory_id in self._trajectory_id_list:
-                self._trajectory_file_path[trajectory_id] = load_path
-            self.size = metadata.get("size", 0)
-            self._total_samples = metadata.get("total_samples", 0)
-            self._trajectory_counter = metadata.get("trajectory_counter", 0)
+            loaded_ids = full_trajectory_id_list
+            loaded_index = full_trajectory_index
+            loaded_total_samples = metadata.get("total_samples", 0)
+            loaded_counter = metadata.get("trajectory_counter", 0)
 
-        if self._flat_trajectory_cache is not None:
-            self._flat_trajectory_cache.clear()
-            if self._trajectory_id_list:
-                max_cache = self._flat_trajectory_cache.max_size
-                recent_ids = self._trajectory_id_list[-max_cache:]
-                for trajectory_id in recent_ids:
-                    model_weights_id = self._trajectory_index[trajectory_id][
-                        "model_weights_id"
-                    ]
-                    trajectory = self._load_trajectory(trajectory_id, model_weights_id)
-                    flat_trajectory = self._flatten_trajectory(trajectory)
-                    self._flat_trajectory_cache.put(
-                        trajectory_id,
-                        flat_trajectory,
+        extension = ".pt" if loaded_format == "pt" else ".pkl"
+        for trajectory_id in loaded_ids:
+            trajectory_info = loaded_index[trajectory_id]
+            trajectory_path = os.path.join(
+                trajectory_source_dir,
+                f"trajectory_{trajectory_id}_{trajectory_info['model_weights_id']}"
+                f"{extension}",
+            )
+            if not os.path.isfile(trajectory_path):
+                raise FileNotFoundError(
+                    "Replay checkpoint references a missing trajectory file: "
+                    f"{trajectory_path}"
+                )
+
+        preloaded_flats: dict[int, dict] = {}
+        cache = self._flat_trajectory_cache
+        if cache is not None and loaded_ids and cache.max_size > 0:
+            for trajectory_id in loaded_ids[-cache.max_size :]:
+                trajectory_info = loaded_index[trajectory_id]
+                model_weights_id = trajectory_info["model_weights_id"]
+                trajectory_path = os.path.join(
+                    trajectory_source_dir,
+                    f"trajectory_{trajectory_id}_{model_weights_id}{extension}",
+                )
+                if not os.path.exists(trajectory_path):
+                    raise FileNotFoundError(
+                        f"Trajectory file not found at {trajectory_path}"
                     )
+                if loaded_format == "pt":
+                    trajectory_dict = torch.load(trajectory_path, map_location="cpu")
+                else:
+                    with open(trajectory_path, "rb") as f:
+                        trajectory_dict = pkl.load(f)
+
+                trajectory = Trajectory(
+                    max_episode_length=trajectory_info["max_episode_length"]
+                )
+                for field_name, value in trajectory_dict.items():
+                    setattr(trajectory, field_name, value)
+                preloaded_flats[trajectory_id] = self._flatten_trajectory(trajectory)
+
+        with self._index_lock:
+            self.trajectory_format = loaded_format
+            if "seed" in metadata:
+                self.seed = metadata["seed"]
+                self._init_random_generator(self.seed)
+
+            self._trajectory_index = loaded_index
+            self._trajectory_id_list = loaded_ids
+            self._trajectory_file_path = dict.fromkeys(
+                loaded_ids, trajectory_source_dir
+            )
+            self._trajectory_save_futures.clear()
+            self.size = len(loaded_ids)
+            self._total_samples = loaded_total_samples
+            self._trajectory_counter = loaded_counter
+
+            if cache is not None:
+                cache.clear()
+                for trajectory_id, flat_trajectory in preloaded_flats.items():
+                    cache.put(trajectory_id, flat_trajectory)
+
+            self._index_version += 1
+            self._window_cache_size = None
+            self._window_cache_version = None
+            self._window_cache_ids = []
+            self._window_cache_cumulative_ends = []
+            self._window_cache_cumulative_ends_tensor = None
+            self._window_cache_total_samples = 0
 
     def clear_cache(self):
         """Clear trajectory cache."""
         self.close()
-        if self._flat_trajectory_cache is not None:
-            self._flat_trajectory_cache.clear()
+        with self._index_lock:
+            if self._flat_trajectory_cache is not None:
+                self._flat_trajectory_cache.clear()
 
 
 # python rlinf/data/replay_buffer.py --load-path /path/to/buffer --num-chunks 1024 --cache-size 10 --enable-cache

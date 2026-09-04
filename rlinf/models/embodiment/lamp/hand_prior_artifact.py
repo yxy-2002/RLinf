@@ -24,6 +24,7 @@ import torch
 from torch import nn
 
 from rlinf.models.embodiment.lamp.artifact_io import load_artifact
+from rlinf.models.embodiment.lamp.hand_ae import DexJoCoHandAE
 from rlinf.models.embodiment.lamp.hand_cvae import DexJoCoHandCVAE
 from rlinf.models.embodiment.lamp.hand_pca import HandPCA
 from rlinf.models.embodiment.lamp.hand_vae import DexJoCoHandVAE
@@ -83,6 +84,8 @@ def build_prior_model(prior_type: str, architecture: dict[str, Any]) -> nn.Modul
         return DexJoCoHandVAE(**architecture)
     if prior_type == "cvae":
         return DexJoCoHandCVAE(**architecture)
+    if prior_type == "ae":
+        return DexJoCoHandAE(**architecture)
     if prior_type == "vq":
         return HandVQVAE(**architecture)
     if prior_type == "pca":

@@ -39,6 +39,7 @@ class AsyncMultiStepRolloutWorker(MultiStepRolloutWorker):
         )
         self._weight_sync_requested = False
         self._weight_sync_work = None
+        self._weight_sync_finalize_lock = asyncio.Lock()
         self._weight_sync_apply_total = 0
         self._weight_sync_coalesced_total = 0
         self._weight_sync_request_total = 0
@@ -127,20 +128,61 @@ class AsyncMultiStepRolloutWorker(MultiStepRolloutWorker):
         self._weight_sync_requested = False
         self._weight_sync_work = asyncio.create_task(self._recv_and_apply_actor_sync())
 
-    @Worker.timer("rollout/poll_weight_sync")
-    async def _poll_background_weight_sync(self):
-        self._start_background_weight_sync_if_needed()
-        if self._weight_sync_work is None:
-            return
+    def _get_weight_sync_finalize_lock(self) -> asyncio.Lock:
+        """Return the lock serializing poll/drain task finalization."""
 
-        if not self._weight_sync_work.done():
-            return
+        lock = getattr(self, "_weight_sync_finalize_lock", None)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._weight_sync_finalize_lock = lock
+        return lock
 
-        await self._weight_sync_work
+    async def _finalize_background_weight_sync(
+        self,
+        work: asyncio.Task,
+        *,
+        wait: bool,
+    ) -> bool:
+        """Finalize the given work exactly once while the caller holds the lock."""
+
+        if not wait and not work.done():
+            return False
+        await work
+        if self._weight_sync_work is not work:
+            raise RuntimeError(
+                "Background weight-sync task changed during finalization"
+            )
         self._weight_sync_work = None
         self._weight_sync_apply_total += 1
+        return True
 
-        self._start_background_weight_sync_if_needed()
+    @Worker.timer("rollout/poll_weight_sync")
+    async def _poll_background_weight_sync(self):
+        async with self._get_weight_sync_finalize_lock():
+            self._start_background_weight_sync_if_needed()
+            work = self._weight_sync_work
+            if work is None:
+                return
+            if not await self._finalize_background_weight_sync(work, wait=False):
+                return
+            self._start_background_weight_sync_if_needed()
+
+    @Worker.timer("rollout/drain_weight_sync")
+    async def drain_actor_sync_model(self) -> int:
+        """Wait until every requested background weight apply is complete."""
+
+        async with self._get_weight_sync_finalize_lock():
+            while True:
+                self._start_background_weight_sync_if_needed()
+                work = self._weight_sync_work
+                if work is None:
+                    if self._weight_sync_requested:
+                        continue
+                    return int(self.version)
+
+                await self._finalize_background_weight_sync(work, wait=True)
+                # A request may have coalesced while the completed apply was in
+                # flight. Loop so its paired actor sender is also drained.
 
     @Worker.timer("rollout/request_weight_sync")
     async def request_actor_sync_model(self):

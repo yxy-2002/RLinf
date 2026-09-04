@@ -27,6 +27,7 @@ runner:
   save_interval: 10000
   log_interval: 100
   resume_dir: null
+  export_only: false
 
 algorithm:
   stage: prior

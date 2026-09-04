@@ -1,3 +1,3 @@
 defaults: [dexjoco_lamp_dp_il_decoder_only_water_plant, _self_]
 runner: {logger: {experiment_name: dexjoco_lamp_dp_il_pca_water_plant}}
-actor: {model: {hand_prior: {type: pca, latent_dim: 6, artifact_path: ./outputs/dexjoco_lamp_prior_pca_dim6_water_plant/artifact}}}
+actor: {model: {hand_prior: {type: pca, artifact_path: ./outputs/lamp_water_plant_base_ckpts/water_plant_prior_pca_z2/artifact}}}

@@ -59,6 +59,8 @@ rollout:
   torch_compile_mode: max-autotune-no-cudagraphs
   model:
     model_path: ../results/dexjoco_lamp_dp/artifact
+    use_temporal_ensemble: false
+    execution_horizon_override: 8
 
 reward:
   use_reward_model: false

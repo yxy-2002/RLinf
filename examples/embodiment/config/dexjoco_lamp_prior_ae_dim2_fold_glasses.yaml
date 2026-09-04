@@ -1,0 +1,4 @@
+defaults: [dexjoco_lamp_prior_ae, _self_]
+runner: {max_steps: 20000, logger: {experiment_name: dexjoco_lamp_prior_ae_dim2_fold_glasses}}
+data: {task_name: fold_glasses}
+actor: {validation_interval: 20000}

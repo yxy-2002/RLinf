@@ -1,3 +1,3 @@
 defaults: [dexjoco_lamp_dp_il_decoder_only_pinch_tongs, _self_]
 runner: {logger: {experiment_name: dexjoco_lamp_dp_il_cvae_pinch_tongs}}
-actor: {model: {hand_prior: {type: cvae, latent_dim: 6, artifact_path: ./outputs/dexjoco_lamp_prior_cvae_dim6_pinch_tongs/artifact}}}
+actor: {model: {hand_prior: {type: cvae, latent_dim: 2, artifact_path: ./outputs/lamp_cvae_rerun/dexjoco_lamp_prior_cvae_dim2_selected_pinch_tongs/artifact}}}

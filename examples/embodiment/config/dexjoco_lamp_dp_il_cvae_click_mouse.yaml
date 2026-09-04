@@ -13,5 +13,5 @@ actor:
   model:
     hand_prior:
       type: cvae
-      latent_dim: 6
-      artifact_path: ./outputs/dexjoco_lamp_prior_cvae_dim6_click_mouse/artifact
+      latent_dim: 2
+      artifact_path: ./outputs/lamp_cvae_rerun/dexjoco_lamp_prior_cvae_dim2_selected_click_mouse/artifact

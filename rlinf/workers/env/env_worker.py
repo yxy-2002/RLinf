@@ -1075,6 +1075,11 @@ class EnvWorker(Worker):
                         infer_batch_size_fn=self._infer_rollout_batch_size,
                         decoupled_mode=self.env_decoupled_mode,
                     )
+                    self.rollout_results[stage_id].attach_lamp_next_base_cache(
+                        rollout_result.forward_inputs,
+                        terminations=env_output.terminations,
+                        truncations=env_output.truncations,
+                    )
                     rewards = self.compute_bootstrap_rewards(
                         env_output, rollout_result.bootstrap_values, reward_model_output
                     )
@@ -1123,6 +1128,21 @@ class EnvWorker(Worker):
                     env_output, env_info, chunk_step_payload = self.env_interact_step(
                         rollout_result.actions, stage_id
                     )
+                    if (
+                        self.model_cfg.model_type == "lamp_residual_sac"
+                        and env_output.env_infos is not None
+                        and "primitive_valid" in env_output.env_infos
+                    ):
+                        # The rollout model cannot know which primitive action
+                        # terminated a macro step. Replace its placeholder only
+                        # after DexJoCo has executed the chunk; the dict is also
+                        # the one already retained by EmbodiedRolloutResult.
+                        rollout_result.forward_inputs["primitive_valid"] = (
+                            env_output.env_infos["primitive_valid"]
+                            .to(dtype=torch.bool)
+                            .cpu()
+                            .contiguous()
+                        )
                     stage_rollout = self.rollout_results[stage_id]
                     if isinstance(stage_rollout, EmbodiedLerobotRolloutResult):
                         stage_rollout.append_chunk_episode_data(
@@ -1189,6 +1209,11 @@ class EnvWorker(Worker):
                     merge_fn=RolloutResult.merge_rollout_results,
                     infer_batch_size_fn=self._infer_rollout_batch_size,
                     decoupled_mode=self.env_decoupled_mode,
+                )
+                self.rollout_results[stage_id].attach_lamp_next_base_cache(
+                    rollout_result.forward_inputs,
+                    terminations=env_output.terminations,
+                    truncations=env_output.truncations,
                 )
                 rewards = self.compute_bootstrap_rewards(
                     env_output, rollout_result.bootstrap_values, reward_model_output
@@ -1296,6 +1321,14 @@ class EnvWorker(Worker):
                         env_infos=infos if isinstance(infos, dict) else None,
                     )
                     env_batch = env_output.to_dict()
+                    # Evaluation environments were reset explicitly above, but
+                    # EnvOutput has no done signal on this bootstrap path. Pass
+                    # the reset through the observation so stateful policies
+                    # cannot retain a queue or RNG stream from the previous
+                    # validation round.
+                    env_batch["obs"]["reset_mask"] = torch.ones(
+                        self.eval_num_envs_per_stage, dtype=torch.bool
+                    )
                     self.send_to(
                         group_name=self.cfg.rollout.group_name,
                         channel=rollout_channel,

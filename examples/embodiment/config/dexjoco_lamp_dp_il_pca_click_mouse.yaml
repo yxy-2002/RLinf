@@ -13,5 +13,5 @@ actor:
   model:
     hand_prior:
       type: pca
-      latent_dim: 6
-      artifact_path: ./outputs/dexjoco_lamp_prior_pca_dim6_click_mouse/artifact
+      latent_dim: 2
+      artifact_path: ./outputs/dexjoco_lamp_prior_pca_dim2_click_mouse/artifact

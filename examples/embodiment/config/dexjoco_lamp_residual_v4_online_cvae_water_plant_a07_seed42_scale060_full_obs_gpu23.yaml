@@ -1,0 +1,27 @@
+defaults:
+  - env/dexjoco_water_plant@env.train
+  - env/dexjoco_water_plant@env.eval
+  - dexjoco_lamp_residual_sac
+  - _self_
+
+# Two-GPU CVAE residual-SAC experiment on global GPU ranks 2 and 3.
+# All algorithm, replay, cadence, evaluation, and optimizer settings are
+# inherited from dexjoco_lamp_residual_sac.yaml.
+cluster:
+  num_nodes: 1
+  component_placement:
+    actor: 2-2
+    env: 2-3
+    rollout: 2-3
+
+runner:
+  logger:
+    experiment_name: lamp_residual_v4_online_cvae_water_plant_a07_seed42_scale060_full_obs_gpu23
+
+actor:
+  model:
+    model_path: /vepfs-mlp2/c20250301/240906020/RLinf/outputs/lamp_prior_modes_z2_selected_lr3e-5_water_plant_pick_bucket/water_plant_dp_cvae_cvae_z2_selected_lr3e-5
+    wrist_residual_scale: 0.60
+    hand_residual_scale: 0.60
+    actor_input: pre_fusion                 # actor: 1280D
+    critic_observation_input: pre_fusion    # critic: 1280D

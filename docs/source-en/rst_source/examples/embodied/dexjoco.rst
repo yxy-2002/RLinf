@@ -9,13 +9,12 @@ DexJoCo Parallel Environment
 
 Use the DexJoCo adapter to run all 11 official MuJoCo dexterous-manipulation
 tasks through RLinf's Ray ``EnvWorker`` and subprocess vector environment. This
-phase validates environment I/O only. Model, algorithm, checkpoint, and training
-recipe integration is intentionally deferred.
+page also documents the LAMP single-arm residual online SAC integration.
 
 Overview
 --------
 
-Verify the simulator and its complete RLinf data path before wiring a policy.
+Verify the simulator and its complete RLinf data path, then run a LAMP policy.
 
 .. grid:: 2 4 4 4
    :gutter: 2
@@ -23,12 +22,12 @@ Verify the simulator and its complete RLinf data path before wiring a policy.
    .. grid-item-card:: Models
       :text-align: center
 
-      Not wired in Phase 1
+      LAMP BC · DP · Residual SAC
 
    .. grid-item-card:: Algorithms
       :text-align: center
 
-      Not wired in Phase 1
+      Online SAC for single-arm tasks
 
    .. grid-item-card:: Tasks
       :text-align: center
@@ -256,3 +255,67 @@ a hard check, pass ``--joint-limit-tolerance-rad T``; the audit then fails only
 when penetration exceeds ``T``. It also reports the final-Euler-integration
 timing offset between DexJoCo's returned TCP observation and the synchronized
 same-qpos FK check.
+
+LAMP Residual Online SAC
+------------------------
+
+``lamp_residual_sac`` uses a Policy-Decorator-style online SAC path; the
+LAMP-specific RLPD and demonstration replay converter are not supported. Its
+only contract is ``exec8_v4``. Temporal ensembling is disabled, the complete
+normalized core correction is decoded with the frozen base plan, and the first
+``K=8`` physical actions of that corrected plan are executed. Replay and both
+critics consume the exact ``[8,23]`` executed chunk flattened to 184 values.
+
+The actor is a condition-only, full ``H * D_core`` tanh-Gaussian head. A causal
+mask selects only coordinates that can affect the current execution. CVAE,
+decoder-only, and AE artifacts activate wrist coordinates for ``t < 8`` and
+hand latents for ``t < 12``. A z=2 artifact therefore has 80 random variables
+and target entropy ``-80``. PCA and raw-MLP artifacts activate all core
+coordinates for ``t < 8``. Inactive residual coordinates are exactly zero and
+do not contribute to log probability or entropy. Discrete VQ artifacts remain
+supported for standalone IL evaluation but are rejected by residual RL.
+
+Each chunk is one SAC transition. Valid primitive rewards are summed without
+within-chunk discounting and nonterminal targets apply ``gamma=0.97`` once.
+The numerical defaults are not rescaled by ``K``:
+
+.. code-block:: text
+
+   32 environments * (16 primitive steps / K=8) = 64 transitions
+   64 transitions * UTD 0.25 = 16 optimizer updates
+
+The contract retains ``gamma=0.97``, ``utd_ratio=0.25``, an 8,000
+macro-transition learning start, and 30,000 macro-transition progressive
+exploration.
+
+Collection, updates, and rollout weight synchronization are lockstep. The
+canonical replay and logger settings are:
+
+.. code-block:: yaml
+
+   runner:
+     logger:
+       step_axis: env_step
+
+   algorithm:
+     replay_buffer:
+       auto_save: true
+       cache_size: 70000
+       sample_window_size: 70000
+
+Auto-saved trajectories have no retention limit. Checkpoints store an index to
+their durable directory instead of copying the active window, and resume fails
+if a referenced trajectory is missing. ``progress/env_step`` counts macro
+transitions; ``progress/primitive_env_step`` uses the exact
+``primitive_valid`` mask.
+
+To launch Water Plant residual RL with the checked-in raw-MLP ``a07`` seed-42
+artifact and inherit the current shared SAC configuration, run:
+
+.. code-block:: bash
+
+   bash scripts/run_lamp_water_plant_residual_rl_mlp_a07_seed42.sh
+
+Append Hydra overrides when needed, for example
+``runner.max_steps=100 actor.seed=7``. Set ``RLINF_PYTHON`` to select another
+RLinf interpreter and ``LAMP_RL_LOG_ROOT`` to relocate run logs.

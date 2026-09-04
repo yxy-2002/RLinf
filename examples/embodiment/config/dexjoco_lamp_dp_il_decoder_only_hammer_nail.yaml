@@ -25,5 +25,5 @@ actor:
     model_type: lamp_dp
     hand_prior:
       type: decoder_only
-      latent_dim: 6
-      artifact_path: ./outputs/lamp_cvae_rerun/dexjoco_lamp_prior_cvae_dim6_hammer_nail/artifact
+      latent_dim: 2
+      artifact_path: ./outputs/lamp_cvae_rerun/dexjoco_lamp_prior_cvae_dim2_selected_hammer_nail/artifact

@@ -138,16 +138,47 @@ class MultiStepRolloutWorker(Worker):
             }
         self.rollout_queue_size = self.cfg.rollout.get("rollout_queue_size", 0)
 
+    @staticmethod
+    def _lamp_eval_noise_seed_offset(
+        configured_offset: int,
+        *,
+        rank: int,
+        local_batch_size: int,
+    ) -> int:
+        """Return the first global eval-environment index for one rollout rank."""
+
+        values = (int(configured_offset), int(rank), int(local_batch_size))
+        if any(value < 0 for value in values):
+            raise ValueError("LAMP eval noise offset inputs must be non-negative")
+        return values[0] + values[1] * values[2]
+
     def init_worker(self):
         rollout_model_config = copy.deepcopy(self.model_cfg)
         with open_dict(rollout_model_config):
             rollout_model_config.precision = self.cfg.rollout.model.precision
             rollout_model_config.model_path = self.cfg.rollout.model.model_path
+            model_type = SupportedModel(self.model_cfg.model_type)
+            if self.enable_eval and model_type in (
+                SupportedModel.LAMP_BC,
+                SupportedModel.LAMP_DP,
+                SupportedModel.LAMP_RESIDUAL_SAC,
+            ):
+                configured_offset = int(
+                    rollout_model_config.get("eval_base_noise_seed_offset", 0)
+                )
+                rollout_model_config.eval_base_noise_seed_offset = (
+                    self._lamp_eval_noise_seed_offset(
+                        configured_offset,
+                        rank=self._rank,
+                        local_batch_size=self.per_node_eval_batch_size,
+                    )
+                )
 
         self.hf_model: BasePolicy = get_model(rollout_model_config)
         if SupportedModel(self.model_cfg.model_type) in (
             SupportedModel.LAMP_BC,
             SupportedModel.LAMP_DP,
+            SupportedModel.LAMP_RESIDUAL_SAC,
         ):
             self.hf_model.to(self.device)
 
@@ -474,7 +505,10 @@ class MultiStepRolloutWorker(Worker):
 
     @Worker.timer("predict")
     def predict(
-        self, env_obs: dict[str, Any], mode: Literal["train", "eval"] = "train"
+        self,
+        env_obs: dict[str, Any],
+        mode: Literal["train", "eval"] = "train",
+        **policy_kwargs: Any,
     ) -> tuple[torch.Tensor, dict[str, Any]]:
         kwargs = (
             self._train_sampling_params
@@ -495,11 +529,13 @@ class MultiStepRolloutWorker(Worker):
             SupportedModel.CFG_MODEL,
             SupportedModel.LAMP_BC,
             SupportedModel.LAMP_DP,
+            SupportedModel.LAMP_RESIDUAL_SAC,
         ]:
             if self.enable_dagger:
                 kwargs = {"mode": "eval"}
             else:
                 kwargs = {"mode": mode}
+            kwargs.update(policy_kwargs)
 
         if SupportedModel(self.model_cfg.model_type) in [
             SupportedModel.CNN_POLICY,

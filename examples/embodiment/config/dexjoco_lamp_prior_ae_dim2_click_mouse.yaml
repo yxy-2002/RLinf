@@ -1,0 +1,4 @@
+defaults: [dexjoco_lamp_prior_ae, _self_]
+runner: {max_steps: 20000, logger: {experiment_name: dexjoco_lamp_prior_ae_dim2_click_mouse}}
+data: {task_name: click_mouse}
+actor: {validation_interval: 20000}

@@ -29,15 +29,25 @@ from rlinf.data.datasets.lamp.offline_dataset import (
     load_cache_statistics,
     prepare_lamp_cache,
 )
+from rlinf.data.datasets.lamp.residual_replay import (
+    LAMP_RESIDUAL_FLAT_ACTION_DIM,
+    LAMP_RESIDUAL_REPLAY_CONTRACT,
+    LAMP_RESIDUAL_REPLAY_SCHEMA_VERSION,
+    validate_lamp_residual_trajectory,
+)
 
 __all__ = [
     "BimanualDexjocoLeRobotDataset",
     "DexjocoLeRobotDataset",
     "LampMMapDataset",
+    "LAMP_RESIDUAL_FLAT_ACTION_DIM",
+    "LAMP_RESIDUAL_REPLAY_CONTRACT",
+    "LAMP_RESIDUAL_REPLAY_SCHEMA_VERSION",
     "lamp_steps_per_epoch",
     "load_bimanual_task_dataset",
     "load_cache_metadata",
     "load_cache_statistics",
     "load_task_dataset",
     "prepare_lamp_cache",
+    "validate_lamp_residual_trajectory",
 ]

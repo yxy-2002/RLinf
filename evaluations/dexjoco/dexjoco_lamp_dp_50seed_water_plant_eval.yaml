@@ -38,3 +38,5 @@ rollout:
   enable_torch_compile: false
   model:
     model_path: ./outputs/lamp_dp_rerun/dexjoco_lamp_dp_il_decoder_only_water_plant/artifact
+    use_temporal_ensemble: false
+    execution_horizon_override: 8

@@ -8,13 +8,13 @@ DexJoCo 并行环境
    图片来自 `DexJoCo 官方仓库 <https://github.com/brave-eai/dexjoco>`__。
 
 使用 DexJoCo 适配器，可将 11 个官方 MuJoCo 灵巧操作任务接入 RLinf 的
-Ray ``EnvWorker`` 和子进程向量环境。本阶段只验证环境与数据通路；模型、
-算法、checkpoint 和训练配方均留到后续阶段。
+Ray ``EnvWorker`` 和子进程向量环境。本页同时说明 LAMP 单臂 residual online
+SAC 的集成方式。
 
 概览
 ----
 
-在接入策略之前，先验证模拟器和完整 RLinf 数据通路。
+先验证模拟器和完整 RLinf 数据通路，再运行 LAMP 策略。
 
 .. grid:: 2 4 4 4
    :gutter: 2
@@ -22,12 +22,12 @@ Ray ``EnvWorker`` 和子进程向量环境。本阶段只验证环境与数据�
    .. grid-item-card:: 模型
       :text-align: center
 
-      Phase 1 暂未接入
+      LAMP BC · DP · Residual SAC
 
    .. grid-item-card:: 算法
       :text-align: center
 
-      Phase 1 暂未接入
+      单臂任务 Online SAC
 
    .. grid-item-card:: 任务
       :text-align: center
@@ -243,3 +243,64 @@ MuJoCo 将关节限位实现为求解器约束，可能出现轻微穿透；审�
 ``--joint-limit-tolerance-rad T``；只有穿透超过 ``T`` 才会失败。报告还会单独
 记录 DexJoCo 返回的 TCP 观测与同步到同一 qpos 后的 FK 检查之间，由最后一次
 Euler 积分产生的时序偏差。
+
+LAMP Residual Online SAC
+------------------------
+
+``lamp_residual_sac`` 只保留 Policy Decorator 风格的 online SAC 路径；不再支持
+LAMP 专用 RLPD 和 demonstration replay converter。唯一 contract 是
+``exec8_v4``：关闭 temporal ensemble，将完整 normalized core correction 与冻结
+base plan 一起解码，并执行 corrected plan 的前 ``K=8`` 个 physical action。
+Replay 和两个 Critic 使用环境实际执行的 ``[8,23]`` chunk，并将其展平为 184 维。
+
+Actor 是 condition-only 的完整 ``H * D_core`` tanh-Gaussian head。Causal mask
+只保留会影响当前执行的坐标。CVAE、decoder-only 和 AE artifact 的腕部坐标在
+``t < 8`` 有效，手部 latent 在 ``t < 12`` 有效；z=2 artifact 因此有 80 个随机
+变量，target entropy 为 ``-80``。PCA 和 raw-MLP artifact 的所有 core 坐标在
+``t < 8`` 有效。非活跃 residual 坐标严格为零，也不参与 log probability 或
+entropy 计算。离散 VQ artifact 仍可进行 standalone IL 评测，但 residual RL
+会明确拒绝它。
+
+每个 chunk 对应一个 SAC transition。所有有效 primitive reward 直接求和，不在
+chunk 内折扣；非终止 target 只应用一次 ``gamma=0.97``。Canonical collection
+round 不会按 ``K`` 重标定数值超参数：
+
+.. code-block:: text
+
+   32 environments * (16 primitive steps / K=8) = 64 transitions
+   64 transitions * UTD 0.25 = 16 optimizer updates
+
+该 contract 保留 ``gamma=0.97``、``utd_ratio=0.25``、8000 个 macro
+transition 后开始学习，以及 30000 个 macro transition 的 progressive
+exploration。
+
+Collection、update 和 rollout weight synchronization 按 lockstep 执行。
+Canonical replay 和 logger 配置如下：
+
+.. code-block:: yaml
+
+   runner:
+     logger:
+       step_axis: env_step
+
+   algorithm:
+     replay_buffer:
+       auto_save: true
+       cache_size: 70000
+       sample_window_size: 70000
+
+Auto-save 轨迹没有保留数量上限。Checkpoint 只保存指向持久化 trajectory 目录的
+索引，不复制 active window；引用的 trajectory 缺失时 resume 会明确失败。
+``progress/env_step`` 统计 macro transition，``progress/primitive_env_step``
+根据实际 ``primitive_valid`` mask 统计。
+
+使用仓库内 raw-MLP ``a07`` seed-42 artifact 启动 Water Plant residual RL，
+并继承当前公共 SAC 配置：
+
+.. code-block:: bash
+
+   bash scripts/run_lamp_water_plant_residual_rl_mlp_a07_seed42.sh
+
+如需临时修改参数，可在命令末尾追加 Hydra override，例如
+``runner.max_steps=100 actor.seed=7``。通过 ``RLINF_PYTHON`` 可指定其他 RLinf
+Python，通过 ``LAMP_RL_LOG_ROOT`` 可修改日志根目录。

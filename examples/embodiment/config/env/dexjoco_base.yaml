@@ -2,6 +2,8 @@ env_type: dexjoco
 task_name: null
 task_description: null
 camera_mapping: {}
+# Optional canonical H=W output size. Null preserves native simulator frames.
+observation_image_size: null
 
 randomize: false
 randomize_dynamics: false

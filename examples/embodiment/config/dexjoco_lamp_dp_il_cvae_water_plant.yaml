@@ -1,3 +1,3 @@
 defaults: [dexjoco_lamp_dp_il_decoder_only_water_plant, _self_]
 runner: {logger: {experiment_name: dexjoco_lamp_dp_il_cvae_water_plant}}
-actor: {model: {hand_prior: {type: cvae, latent_dim: 6, artifact_path: ./outputs/dexjoco_lamp_prior_cvae_dim6_water_plant/artifact}}}
+actor: {model: {hand_prior: {type: cvae}}}

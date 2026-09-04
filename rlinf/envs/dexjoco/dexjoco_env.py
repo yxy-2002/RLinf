@@ -21,6 +21,7 @@ import math
 from collections.abc import Callable, Mapping, Sequence
 from typing import Any, Optional, Union
 
+import cv2
 import gymnasium as gym
 import numpy as np
 import torch
@@ -124,6 +125,27 @@ def _to_plain_dict(value: Any) -> dict[str, Any]:
     if not isinstance(converted, Mapping):
         raise TypeError(f"Expected a mapping, got {type(value).__name__}.")
     return {str(key): item for key, item in converted.items()}
+
+
+def _resize_rgb_images(images: np.ndarray, image_size: int | None) -> np.ndarray:
+    """Resize any leading batch/view dimensions with the Phase-2 image rule."""
+
+    images = np.asarray(images, dtype=np.uint8)
+    if images.ndim < 3 or images.shape[-1] != 3:
+        raise ValueError(f"Expected RGB images, got shape {images.shape}.")
+    if image_size is None or images.shape[-3:-1] == (image_size, image_size):
+        return images
+
+    leading_shape = images.shape[:-3]
+    flattened = images.reshape(-1, *images.shape[-3:])
+    resized = np.empty((len(flattened), image_size, image_size, 3), dtype=np.uint8)
+    for index, image in enumerate(flattened):
+        resized[index] = cv2.resize(
+            image,
+            (image_size, image_size),
+            interpolation=cv2.INTER_AREA,
+        )
+    return resized.reshape(*leading_shape, image_size, image_size, 3)
 
 
 def _panda_qpos(raw_env: Any, dtype: Any = np.float32) -> np.ndarray:
@@ -364,6 +386,12 @@ class DexJocoEnv(gym.Env):
         self.task_descriptions = [self.task_description] * self.num_envs
         self.camera_mapping = _to_plain_dict(_cfg_get(cfg, "camera_mapping", None))
         self._validate_camera_mapping()
+        configured_image_size = _cfg_get(cfg, "observation_image_size", None)
+        self.observation_image_size = (
+            None if configured_image_size is None else int(configured_image_size)
+        )
+        if self.observation_image_size is not None and self.observation_image_size <= 0:
+            raise ValueError("DexJoCo observation_image_size must be positive.")
 
         self.group_size = int(_cfg_get(cfg, "group_size", 1))
         if self.group_size <= 0 or self.num_envs % self.group_size != 0:
@@ -560,6 +588,7 @@ class DexJocoEnv(gym.Env):
                 for obs, key in zip(raw_obs, main_keys)
             ]
         )
+        main_images = _resize_rgb_images(main_images, self.observation_image_size)
         if self.dual_arm:
             wrist_keys = [
                 str(self.camera_mapping["wrist_left"]),
@@ -578,6 +607,7 @@ class DexJocoEnv(gym.Env):
             wrist_images = np.stack(
                 [np.asarray(obs[wrist_key], dtype=np.uint8) for obs in raw_obs]
             )
+        wrist_images = _resize_rgb_images(wrist_images, self.observation_image_size)
 
         excluded = {"state", *main_keys}
         excluded.update(str(value) for value in self.camera_mapping.values())
@@ -591,7 +621,7 @@ class DexJocoEnv(gym.Env):
         )
         extra_images = None
         if extra_keys:
-            extra_images = torch.as_tensor(
+            extra_images = _resize_rgb_images(
                 np.stack(
                     [
                         np.stack(
@@ -599,7 +629,8 @@ class DexJocoEnv(gym.Env):
                         )
                         for obs in raw_obs
                     ]
-                )
+                ),
+                self.observation_image_size,
             )
 
         result = {
@@ -607,7 +638,9 @@ class DexJocoEnv(gym.Env):
             "panda_qpos": torch.as_tensor(self._last_qpos, dtype=torch.float32),
             "main_images": torch.as_tensor(main_images),
             "wrist_images": torch.as_tensor(wrist_images),
-            "extra_view_images": extra_images,
+            "extra_view_images": (
+                None if extra_images is None else torch.as_tensor(extra_images)
+            ),
             "task_descriptions": list(self.task_descriptions),
         }
         if self.dual_arm:

@@ -67,6 +67,8 @@ rollout:
   model:
     model_path: ''
     is_lora: false
+    use_temporal_ensemble: false
+    execution_horizon_override: 8
 
 reward:
   use_reward_model: false

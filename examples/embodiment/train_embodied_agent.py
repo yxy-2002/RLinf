@@ -53,9 +53,18 @@ def main(cfg) -> None:
             raise ValueError(
                 "runner.use_training_pipeline=True is not supported for embodied_sac."
             )
-        from rlinf.workers.actor.fsdp_sac_policy_worker import EmbodiedSACFSDPPolicy
+        if cfg.actor.model.model_type == "lamp_residual_sac":
+            from rlinf.workers.actor.fsdp_lamp_residual_sac_policy_worker import (
+                LampResidualSACFSDPPolicy,
+            )
 
-        actor_worker_cls = EmbodiedSACFSDPPolicy
+            actor_worker_cls = LampResidualSACFSDPPolicy
+        else:
+            from rlinf.workers.actor.fsdp_sac_policy_worker import (
+                EmbodiedSACFSDPPolicy,
+            )
+
+            actor_worker_cls = EmbodiedSACFSDPPolicy
     elif cfg.algorithm.loss_type == "rlt_ac":
         if use_training_pipeline:
             raise ValueError(

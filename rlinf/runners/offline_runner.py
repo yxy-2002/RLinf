@@ -270,6 +270,19 @@ class OfflineRunner:
         return aggregated_metrics, ranked_metrics_list
 
     def run(self):
+        if bool(self.cfg.runner.get("export_only", False)):
+            resume_dir = self.cfg.runner.get("resume_dir", None)
+            if resume_dir is None:
+                raise ValueError("runner.export_only requires runner.resume_dir")
+            actor_checkpoint_path = os.path.join(str(resume_dir), "actor")
+            self.logger.info(
+                "Exporting deployment artifacts from %s without training.",
+                actor_checkpoint_path,
+            )
+            self.actor.export_deployment_artifacts(actor_checkpoint_path).wait()
+            self._finish_logging()
+            return
+
         start_step = self.global_step
         start_time = time.time()
         log_interval = int(self.cfg.runner.log_interval)
@@ -371,9 +384,10 @@ class OfflineRunner:
                     _step - 1, self.max_steps, start_time, logging_metrics, start_step
                 )
 
-        self.metric_logger.finish()
+        self._finish_logging()
 
-        # Stop logging thread
+    def _finish_logging(self):
+        self.metric_logger.finish()
         self.stop_logging = True
         self.log_queue.join()  # Wait for all queued logs to be processed
         self.log_thread.join(timeout=1.0)

@@ -18,6 +18,7 @@ import json
 import pickle
 from dataclasses import asdict
 from pathlib import Path
+from unittest.mock import MagicMock
 
 import av
 import numpy as np
@@ -34,7 +35,11 @@ from rlinf.data.datasets.lamp.offline_dataset import (
     lamp_steps_per_epoch,
 )
 from rlinf.models.embodiment.lamp import get_model as get_lamp_model
-from rlinf.models.embodiment.lamp.artifact_io import save_artifact
+from rlinf.models.embodiment.lamp.artifact_io import (
+    load_training_state,
+    save_artifact,
+    save_training_state,
+)
 from rlinf.models.embodiment.lamp.bc_policy import BCPolicy
 from rlinf.models.embodiment.lamp.hand_prior_artifact import (
     load_prior_artifact,
@@ -75,6 +80,12 @@ _SINGLE_ARM_TASKS = (
     "pick_bucket",
     "pinch_tongs",
     "water_plant",
+)
+_SELECTED_Z2_TASKS = (
+    "click_mouse",
+    "fold_glasses",
+    "hammer_nail",
+    "pinch_tongs",
 )
 _VQ_STEPS_PER_EPOCH = {
     "click_mouse": 114,
@@ -119,6 +130,29 @@ def test_offline_runner_preserves_standard_metric_namespaces():
         "data/samples_per_second": 3.0,
         "time/update_seconds_per_step": 4.0,
     }
+
+
+def test_offline_runner_export_only_skips_training():
+    runner = object.__new__(OfflineRunner)
+    runner.cfg = OmegaConf.create(
+        {
+            "runner": {
+                "export_only": True,
+                "resume_dir": "/tmp/run/checkpoints/global_step_30000",
+            }
+        }
+    )
+    runner.logger = MagicMock()
+    runner.actor = MagicMock()
+    runner._finish_logging = MagicMock()
+
+    runner.run()
+
+    runner.actor.export_deployment_artifacts.assert_called_once_with(
+        "/tmp/run/checkpoints/global_step_30000/actor"
+    )
+    runner.actor.export_deployment_artifacts.return_value.wait.assert_called_once_with()
+    runner._finish_logging.assert_called_once_with()
 
 
 def test_training_horizon_preserves_zero_step_cap_and_rejects_other_negatives():
@@ -218,6 +252,10 @@ def test_configurable_vae_latent_dim_and_artifact_round_trip(tmp_path):
         "statistics_keys": sorted(statistics),
     }
     save_artifact(tmp_path, model=model, metadata=metadata, statistics=statistics)
+    assert (
+        int.from_bytes((tmp_path / "model.safetensors").read_bytes()[:8], "little") > 0
+    )
+    assert (tmp_path / "model.safetensors").stat().st_mode & 0o044 == 0o044
     restored, restored_metadata, restored_statistics = load_prior_artifact(
         tmp_path,
         expected_type="vae",
@@ -335,6 +373,197 @@ def test_temporal_ensemble_aligns_quaternion_sign_and_resets_rows():
     torch.testing.assert_close(zero_action[..., 4:7], torch.zeros(1, 4, 3))
 
 
+def test_temporal_ensemble_preview_matches_commit_without_changing_state():
+    controller = LampTemporalEnsembleController()
+    committed_reference = LampTemporalEnsembleController()
+    assert controller.execution_horizon == 4
+    assert controller.decay == 0.25
+
+    first = torch.zeros(1, 16, 23)
+    first[..., 3] = 1.0
+    first[..., 7:] = 1.0
+    second = first.clone()
+    second[..., 7:] = 3.0
+
+    apply_action = controller.apply(first)
+    commit_action = committed_reference.commit(first)
+    torch.testing.assert_close(apply_action, commit_action, rtol=0.0, atol=0.0)
+
+    reset_preview = controller.preview(second, reset_mask=torch.tensor([True]))
+    torch.testing.assert_close(
+        reset_preview[..., 7:],
+        torch.full((1, 4, 16), 3.0),
+        rtol=0.0,
+        atol=0.0,
+    )
+    preview = controller.preview(second)
+    repeated_preview = controller.preview(second)
+    expected = committed_reference.commit(second)
+    torch.testing.assert_close(preview, expected, rtol=0.0, atol=0.0)
+    torch.testing.assert_close(repeated_preview, expected, rtol=0.0, atol=0.0)
+    assert torch.all((preview[..., 7:] > 1.0) & (preview[..., 7:] < 3.0))
+
+    committed = controller.commit(second)
+    torch.testing.assert_close(committed, expected, rtol=0.0, atol=0.0)
+
+
+def test_temporal_ensemble_preview_can_persist_only_confirmed_reset_rows():
+    controller = LampTemporalEnsembleController()
+    committed_reference = LampTemporalEnsembleController()
+
+    first = torch.zeros(2, 16, 23)
+    first[..., 3] = 1.0
+    first[0, ..., 7:] = 1.0
+    first[1, ..., 7:] = 10.0
+    controller.commit(first)
+    committed_reference.commit(first)
+
+    candidate = first.clone()
+    candidate[0, ..., 7:] = 3.0
+    candidate[1, ..., 7:] = 30.0
+    reset_mask = torch.tensor([True, False])
+    preview = controller.preview(
+        candidate,
+        reset_mask=reset_mask,
+        confirmed_reset=True,
+    )
+    torch.testing.assert_close(preview[0, ..., 7:], torch.full((4, 16), 3.0))
+    assert torch.all((preview[1, ..., 7:] > 10.0) & (preview[1, ..., 7:] < 30.0))
+
+    following = first.clone()
+    following[0, ..., 7:] = 5.0
+    following[1, ..., 7:] = 50.0
+    committed = controller.commit(following)
+    expected = committed_reference.commit(following, reset_mask=reset_mask)
+    torch.testing.assert_close(committed, expected, rtol=0.0, atol=0.0)
+
+
+def test_dp_policy_can_execute_newest_plan_without_temporal_ensemble(monkeypatch):
+    spec = LampPolicySpec(
+        task="pick_bucket",
+        policy_family="dp",
+        embodiment="single",
+        hand_prior_type="mlp",
+        action_horizon=16,
+        execution_horizon=4,
+        core_action_dim=23,
+        physical_action_dim=23,
+        image_size=32,
+        image_keys=("front", "wrist"),
+        latent_dims={"single": 0},
+    )
+    policy = LampPolicy(
+        torch.nn.Identity(),
+        spec,
+        {},
+        use_temporal_ensemble=False,
+    )
+    core = torch.arange(16 * 23, dtype=torch.float32).reshape(1, 16, 23)
+    physical = core + 1000.0
+    monkeypatch.setattr(policy, "_processed_inputs", lambda _: ())
+    monkeypatch.setattr(
+        policy,
+        "_predict_plan_from_processed",
+        lambda: (core, physical),
+    )
+
+    actions, extra = policy.predict_action_batch(env_obs={})
+
+    torch.testing.assert_close(actions, physical[:, :4])
+    torch.testing.assert_close(extra["core_action_norm"], core)
+    assert actions.shape == (1, 4, 23)
+
+
+def test_dp_policy_can_override_open_loop_execution_horizon(monkeypatch):
+    spec = LampPolicySpec(
+        task="water_plant",
+        policy_family="dp",
+        embodiment="single",
+        hand_prior_type="mlp",
+        action_horizon=16,
+        execution_horizon=4,
+        core_action_dim=23,
+        physical_action_dim=23,
+        image_size=32,
+        image_keys=("front", "wrist"),
+        latent_dims={"single": 0},
+    )
+    policy = LampPolicy(
+        torch.nn.Identity(),
+        spec,
+        {},
+        use_temporal_ensemble=False,
+        execution_horizon_override=16,
+    )
+    core = torch.arange(16 * 23, dtype=torch.float32).reshape(1, 16, 23)
+    physical = core + 1000.0
+    monkeypatch.setattr(policy, "_processed_inputs", lambda _: ())
+    monkeypatch.setattr(
+        policy,
+        "_predict_plan_from_processed",
+        lambda: (core, physical),
+    )
+
+    actions, _ = policy.predict_action_batch(env_obs={})
+
+    torch.testing.assert_close(actions, physical)
+    assert policy.controller.execution_horizon == 16
+
+
+def test_dp_policy_rejects_invalid_execution_horizon_override():
+    spec = LampPolicySpec(
+        task="water_plant",
+        policy_family="dp",
+        embodiment="single",
+        hand_prior_type="mlp",
+        action_horizon=16,
+        execution_horizon=4,
+        core_action_dim=23,
+        physical_action_dim=23,
+        image_size=32,
+        image_keys=("front", "wrist"),
+        latent_dims={"single": 0},
+    )
+
+    with pytest.raises(ValueError, match="execution_horizon_override"):
+        LampPolicy(
+            torch.nn.Identity(),
+            spec,
+            {},
+            use_temporal_ensemble=False,
+            execution_horizon_override=17,
+        )
+
+
+def test_dp_policy_applies_inference_step_override():
+    class _InferenceCore(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.num_inference_steps = 16
+
+        def set_num_inference_steps(self, value):
+            self.num_inference_steps = int(value)
+
+    spec = LampPolicySpec(
+        task="water_plant",
+        policy_family="dp",
+        embodiment="single",
+        hand_prior_type="mlp",
+        action_horizon=16,
+        execution_horizon=4,
+        core_action_dim=23,
+        physical_action_dim=23,
+        image_size=32,
+        image_keys=("front", "wrist"),
+        latent_dims={"single": 0},
+    )
+    core = _InferenceCore()
+
+    LampPolicy(core, spec, {}, num_inference_steps_override=32)
+
+    assert core.num_inference_steps == 32
+
+
 def test_deterministic_sampler_resumes_from_consumed_batch():
     sampler = DeterministicInfiniteBatchSampler(10, 2, seed=7)
     iterator = iter(sampler)
@@ -395,6 +624,42 @@ def test_cvae_dim6_task_configs_match_selected_jax_recipe(task, max_steps):
     assert cfg.runner.max_steps == max_steps
     assert cfg.actor.validation_interval == max_steps
     assert cfg.actor.model.hand_prior.latent_dim == 6
+
+
+@pytest.mark.parametrize("task", _SELECTED_Z2_TASKS)
+def test_selected_dim2_prior_configs_fix_sweep_hyperparameters(task):
+    cvae = _compose_lamp_config(f"dexjoco_lamp_prior_cvae_dim2_selected_{task}")
+    prior = cvae.actor.model.hand_prior
+    assert cvae.data.task_name == task
+    assert prior.latent_dim == 2
+    assert prior.posterior_kl_weight == 1e-4
+    assert prior.prior_kl_weight == 3e-4
+
+    pca = _compose_lamp_config(f"dexjoco_lamp_prior_pca_dim2_{task}")
+    assert pca.data.task_name == task
+    assert pca.actor.model.hand_prior.type == "pca"
+    assert pca.actor.model.hand_prior.latent_dim == 2
+
+
+@pytest.mark.parametrize("task", _SELECTED_Z2_TASKS)
+@pytest.mark.parametrize("mode", ("decoder_only", "cvae", "pca", "vq", "mlp"))
+def test_selected_dim2_dp_configs_fix_sweep_hyperparameters(task, mode):
+    cfg = _compose_lamp_config(f"dexjoco_lamp_dp_il_{mode}_{task}")
+    prior = cfg.actor.model.hand_prior
+
+    assert cfg.data.task_name == task
+    assert cfg.actor.optim.lr == 3e-5
+    assert cfg.actor.optim.backbone_lr_ratio == 0.1
+    if mode in ("decoder_only", "cvae"):
+        assert prior.latent_dim == 2
+        assert f"cvae_dim2_selected_{task}/artifact" in prior.artifact_path
+    elif mode == "pca":
+        assert prior.latent_dim == 2
+        assert f"pca_dim2_{task}/artifact" in prior.artifact_path
+    elif mode == "vq":
+        assert prior.latent_dim == 1
+    else:
+        assert prior.artifact_path is None
 
 
 @pytest.mark.parametrize(("task", "steps_per_epoch"), _VQ_STEPS_PER_EPOCH.items())
@@ -475,6 +740,70 @@ def test_null_gradient_clip_reports_norm_without_changing_gradients():
 
     torch.testing.assert_close(norm, torch.tensor(10.0))
     torch.testing.assert_close(parameter.grad, before)
+
+
+def test_training_state_resume_tolerates_float_roundoff(tmp_path):
+    model = torch.nn.Linear(2, 2)
+    stored = {
+        "architecture_sha256": "old-derived-hash",
+        "artifact": {"architecture": {"mean": [0.032320454716682434]}},
+        "max_steps": 30_000,
+    }
+    save_training_state(
+        tmp_path,
+        model=model,
+        optimizer=None,
+        scheduler=None,
+        global_step=10_000,
+        sampler_state=None,
+        metadata=stored,
+    )
+    expected = {
+        "architecture_sha256": "new-derived-hash",
+        "artifact": {"architecture": {"mean": [0.03232046216726303]}},
+        "max_steps": 30_000,
+    }
+
+    step, sampler = load_training_state(
+        tmp_path,
+        model=model,
+        optimizer=None,
+        scheduler=None,
+        expected_metadata=expected,
+    )
+
+    assert step == 10_000
+    assert sampler is None
+
+
+def test_training_state_resume_rejects_material_metadata_change(tmp_path):
+    model = torch.nn.Linear(2, 2)
+    metadata = {
+        "architecture_sha256": "old-derived-hash",
+        "artifact": {"training_contract": {"optimizer": {"lr": 1e-5}}},
+    }
+    save_training_state(
+        tmp_path,
+        model=model,
+        optimizer=None,
+        scheduler=None,
+        global_step=10_000,
+        sampler_state=None,
+        metadata=metadata,
+    )
+    expected = {
+        "architecture_sha256": "new-derived-hash",
+        "artifact": {"training_contract": {"optimizer": {"lr": 3e-5}}},
+    }
+
+    with pytest.raises(ValueError, match=r"metadata\.artifact.*optimizer\.lr"):
+        load_training_state(
+            tmp_path,
+            model=model,
+            optimizer=None,
+            scheduler=None,
+            expected_metadata=expected,
+        )
 
 
 def test_bc_policy_artifact_round_trip_and_online_inference(tmp_path):

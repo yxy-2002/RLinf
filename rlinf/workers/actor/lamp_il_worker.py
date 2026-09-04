@@ -233,7 +233,7 @@ class LampILWorker(Worker):
         self._setup_dataloaders(cache_dir)
         prior_type = str(self.cfg.actor.model.hand_prior.type)
         if self.stage == "dp" or (
-            self.stage == "prior" and prior_type in {"cvae", "vq"}
+            self.stage == "prior" and prior_type in {"ae", "cvae", "vq"}
         ):
             self._artifact_metadata["training_contract"] = _training_contract(
                 self.cfg,
@@ -370,12 +370,23 @@ class LampILWorker(Worker):
         model_cfg = self.cfg.actor.model
         source = str(model_cfg.hand_prior.type)
         policy_source = "vq_codebook" if source == "vq" else source
-        if policy_source not in ("cvae", "decoder_only", "pca", "vq_codebook", "mlp"):
+        if policy_source not in (
+            "ae",
+            "cvae",
+            "decoder_only",
+            "pca",
+            "vq_codebook",
+            "mlp",
+        ):
             raise ValueError(f"Unsupported LAMP DP hand prior {source!r}")
         backbone_config, backbone_state, _ = load_hf_resnet18_params(
             model_cfg.resnet_path
         )
         embodiment = self._cache_metadata["embodiment"]
+        if policy_source == "ae" and embodiment != "single":
+            raise ValueError(
+                "LAMP AE diffusion policies currently support single-arm tasks only"
+            )
         priors = self._load_dp_priors(source, embodiment)
         core_stats, namespace = self._prepare_dp_targets(source, priors)
         self._derived_namespace = namespace
@@ -391,7 +402,9 @@ class LampILWorker(Worker):
             model: nn.Module = LAMPDiffusionPolicy(**architecture)
             model.front_backbone.resnet.load_state_dict(backbone_state, strict=True)
             model.wrist_backbone.resnet.load_state_dict(backbone_state, strict=True)
-            if policy_source in ("cvae", "decoder_only"):
+            if policy_source == "ae":
+                model.ae.load_state_dict(priors["single"][0].state_dict(), strict=True)
+            elif policy_source in ("cvae", "decoder_only"):
                 model.cvae.load_state_dict(
                     priors["single"][0].state_dict(), strict=True
                 )
@@ -576,6 +589,21 @@ class LampILWorker(Worker):
                 physical_hand = target[..., 7:]
                 index = _nearest_vq_indices(physical_hand, codebook).astype(np.float32)
                 latent = (2.0 * index / 15.0 - 1.0)[..., None]
+            elif source == "ae":
+                future = np.asarray(
+                    np.load(split_dir / f"{prefix}future_hand_norm.npy", mmap_mode="r")
+                )
+                latent_parts = []
+                model.eval()
+                with torch.inference_mode():
+                    for start in range(0, len(future), 512):
+                        end = min(start + 512, len(future))
+                        latent = model.encode(
+                            torch.from_numpy(future[start:end]).to(self.device),
+                            torch.from_numpy(mask[start:end]).to(self.device),
+                        )
+                        latent_parts.append(latent.cpu().numpy().astype(np.float32))
+                latent = np.concatenate(latent_parts)
             else:
                 future = np.asarray(
                     np.load(split_dir / f"{prefix}future_hand_norm.npy", mmap_mode="r")
@@ -700,6 +728,8 @@ class LampILWorker(Worker):
                     f"{prefix}future_hand_norm",
                     "mask",
                 ]
+            if prior_type == "ae":
+                return [f"{prefix}future_hand_norm", "mask"]
             if prior_type == "vq":
                 return [f"{prefix}target_action23"]
             return [f"{prefix}hand_target_norm"]
@@ -790,6 +820,16 @@ class LampILWorker(Worker):
                 ),
                 "prior_kl_weight": torch.as_tensor(prior_kl_weight, device=self.device),
                 "latent_std": output.mu_q.std(),
+            }
+        if prior_type == "ae":
+            output = self.model(
+                batch[f"{prefix}future_hand_norm"],
+                target_mask=batch["mask"],
+            )
+            return {
+                "total_loss": output.total_loss,
+                "reconstruction_loss": output.reconstruction_loss,
+                "latent_std": output.latent.std(),
             }
         if prior_type == "vq":
             physical_hand = batch[f"{prefix}target_action23"][:, 0, 7:]
@@ -1067,6 +1107,13 @@ class LampILWorker(Worker):
         self._save_deployment_artifact(output / "artifact")
         self._save_deployment_artifact(self._output_dir / "artifact")
 
+    def export_deployment_artifacts(self, checkpoint_base_path: str) -> None:
+        """Re-export deployment artifacts from the currently loaded checkpoint."""
+
+        checkpoint = Path(checkpoint_base_path).expanduser().resolve()
+        self._save_deployment_artifact(checkpoint / "artifact")
+        self._save_deployment_artifact(self._output_dir / "artifact")
+
     def load_checkpoint(self, load_base_path: str) -> None:
         step, sampler = load_training_state(
             load_base_path,
@@ -1161,6 +1208,11 @@ def _prior_architecture(prior_type: str, cfg: DictConfig) -> dict[str, Any]:
             "prior_kl_weight": float(cfg.get("prior_kl_weight", 1e-3)),
             "latent_dim": latent_dim,
         }
+    if prior_type == "ae":
+        return {
+            "hidden_dim": int(cfg.get("hidden_dim", 1024)),
+            "latent_dim": latent_dim,
+        }
     if prior_type == "vq":
         return {
             "action_dim": int(cfg.get("action_dim", 16)),
@@ -1208,7 +1260,9 @@ def _single_dp_architecture(
         "hand_action_mean": statistics["hand_action_mean"].tolist(),
         "hand_action_std": statistics["hand_action_std"].tolist(),
     }
-    if source in ("cvae", "decoder_only"):
+    if source == "ae":
+        kwargs["ae_model_config"] = dict(prior[1]["architecture"])
+    elif source in ("cvae", "decoder_only"):
         kwargs["cvae_model_config"] = dict(prior[1]["architecture"])
     elif source == "pca":
         latent_dim = int(prior_cfg.latent_dim)

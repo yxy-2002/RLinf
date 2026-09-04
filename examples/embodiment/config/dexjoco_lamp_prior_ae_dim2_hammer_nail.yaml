@@ -1,0 +1,4 @@
+defaults: [dexjoco_lamp_prior_ae, _self_]
+runner: {max_steps: 30000, logger: {experiment_name: dexjoco_lamp_prior_ae_dim2_hammer_nail}}
+data: {task_name: hammer_nail}
+actor: {validation_interval: 30000}

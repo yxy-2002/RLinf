@@ -202,6 +202,34 @@ def test_reset_observation_cameras_qpos_and_seed_partition():
         assert all(not process.is_alive() for process in processes)
 
 
+def test_observation_image_size_canonicalizes_every_camera_tensor():
+    env = _make_env(num_envs=2, observation_image_size=3)
+    try:
+        obs, _ = env.reset()
+        assert obs["main_images"].shape == (2, 3, 3, 3)
+        assert obs["wrist_images"].shape == (2, 3, 3, 3)
+        assert obs["extra_view_images"].shape == (2, 5, 3, 3, 3)
+        assert obs["main_images"].dtype == torch.uint8
+        assert obs["wrist_images"].dtype == torch.uint8
+        assert obs["extra_view_images"].dtype == torch.uint8
+    finally:
+        env.close()
+
+    with pytest.raises(ValueError, match="observation_image_size must be positive"):
+        _make_env(observation_image_size=0)
+
+
+def test_dual_arm_observation_image_size_preserves_view_dimension():
+    env = _make_env("bimanual_hanoi", observation_image_size=3)
+    try:
+        obs, _ = env.reset()
+        assert obs["main_images"].shape == (2, 3, 3, 3)
+        assert obs["wrist_images"].shape == (2, 2, 3, 3, 3)
+        assert obs["extra_view_images"].shape[-3:] == (3, 3, 3)
+    finally:
+        env.close()
+
+
 def test_dual_arm_images_and_chunk_auto_reset_final_values():
     env = _make_env("bimanual_hanoi", max_episode_steps=2)
     try:

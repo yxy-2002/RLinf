@@ -46,13 +46,32 @@ def main(cfg) -> None:
     actor_placement = component_placement.get_strategy("actor")
 
     if cfg.algorithm.loss_type == "embodied_sac":
-        from rlinf.runners.async_embodied_runner import AsyncEmbodiedRunner
-        from rlinf.workers.actor.async_fsdp_sac_policy_worker import (
-            AsyncEmbodiedSACFSDPPolicy,
-        )
+        if cfg.actor.model.model_type == "lamp_residual_sac":
+            async_cfg = cfg.algorithm.get("async", None)
+            if (
+                async_cfg is None
+                or cfg.algorithm.get("utd_ratio", None) is None
+                or cfg.algorithm.get("learning_starts_macro_transitions", None) is None
+            ):
+                raise ValueError(
+                    "Async lamp_residual_sac v4 requires algorithm.utd_ratio and "
+                    "algorithm.learning_starts_macro_transitions"
+                )
+            from rlinf.runners.async_embodied_runner import AsyncEmbodiedRunner
+            from rlinf.workers.actor.async_fsdp_lamp_residual_sac_policy_worker import (
+                AsyncLampResidualSACFSDPPolicy,
+            )
 
-        runner_cls = AsyncEmbodiedRunner
-        actor_worker_cls = AsyncEmbodiedSACFSDPPolicy
+            runner_cls = AsyncEmbodiedRunner
+            actor_worker_cls = AsyncLampResidualSACFSDPPolicy
+        else:
+            from rlinf.runners.async_embodied_runner import AsyncEmbodiedRunner
+            from rlinf.workers.actor.async_fsdp_sac_policy_worker import (
+                AsyncEmbodiedSACFSDPPolicy,
+            )
+
+            runner_cls = AsyncEmbodiedRunner
+            actor_worker_cls = AsyncEmbodiedSACFSDPPolicy
     elif cfg.algorithm.loss_type == "rlt_ac":
         from rlinf.runners.async_embodied_runner import AsyncEmbodiedRunner
         from rlinf.workers.actor.fsdp_rlt_ac_policy_worker import AsyncRLTACFSDPPolicy

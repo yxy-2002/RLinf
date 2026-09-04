@@ -191,8 +191,17 @@ class EmbodiedSACFSDPPolicy(EmbodiedFSDPActor):
             ),
         )
 
+        demo_cfg = self.cfg.algorithm.get("demo_buffer", None)
+        default_demo_fraction = 0.5 if demo_cfg is not None else 0.0
+        self.demo_fraction = float(
+            self.cfg.algorithm.get("demo_fraction", default_demo_fraction)
+        )
+        if self.demo_fraction not in (0.0, 0.5):
+            raise ValueError("SAC demo_fraction currently supports only 0.0 or 0.5")
+        if self.demo_fraction > 0.0 and demo_cfg is None:
+            raise ValueError("SAC demo_fraction=0.5 requires algorithm.demo_buffer")
         min_demo_buffer_size = 0
-        if self.cfg.algorithm.get("demo_buffer", None) is not None:
+        if self.demo_fraction > 0.0:
             auto_save_path = self.cfg.algorithm.demo_buffer.get("auto_save_path", None)
             if auto_save_path is None:
                 auto_save_path = os.path.join(
@@ -222,13 +231,19 @@ class EmbodiedSACFSDPPolicy(EmbodiedFSDPActor):
             buffer_dataset_cls = PreloadReplayBufferDataset
         else:
             buffer_dataset_cls = ReplayBufferDataset
+        replay_batch_size = self.cfg.actor.global_batch_size // self._world_size
+        if self.demo_fraction == 0.5 and replay_batch_size % 2 != 0:
+            raise ValueError(
+                "Per-rank SAC batch size must be even for demo_fraction=0.5"
+            )
         self.buffer_dataset = buffer_dataset_cls(
             replay_buffer=self.replay_buffer,
             demo_buffer=self.demo_buffer,
-            batch_size=self.cfg.actor.global_batch_size // self._world_size,
+            batch_size=replay_batch_size,
             min_replay_buffer_size=self.cfg.algorithm.replay_buffer.min_buffer_size,
             min_demo_buffer_size=min_demo_buffer_size,
             prefetch_size=self.cfg.algorithm.replay_buffer.get("prefetch_size", 10),
+            demo_fraction=self.demo_fraction,
         )
         self.buffer_dataloader = DataLoader(
             self.buffer_dataset,

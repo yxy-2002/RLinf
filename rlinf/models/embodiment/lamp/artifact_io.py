@@ -18,6 +18,10 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
+import os
+import shutil
+import tempfile
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
@@ -26,6 +30,9 @@ import numpy as np
 import torch
 
 SCHEMA_VERSION = 1
+RESUME_FLOAT_RTOL = 1e-7
+RESUME_FLOAT_ATOL = 1e-7
+_ARTIFACT_FILENAMES = ("artifact.json", "model.safetensors", "statistics.npz")
 
 
 def canonical_json(value: Mapping[str, Any]) -> str:
@@ -61,6 +68,25 @@ def _statistics_sha256(statistics: Mapping[str, np.ndarray]) -> str:
     return digest.hexdigest()
 
 
+def _copy_file_portably(source: Path, destination: Path) -> None:
+    """Copy a locally staged file without relying on filesystem rename support."""
+
+    with source.open("rb") as reader, destination.open("wb") as writer:
+        shutil.copyfileobj(reader, writer, length=16 * 1024 * 1024)
+        writer.flush()
+        os.fsync(writer.fileno())
+    destination.chmod(0o644)
+
+
+def _validate_safetensors_header(path: Path) -> None:
+    """Parse a safetensors header without materializing tensor payloads."""
+
+    from safetensors import safe_open
+
+    with safe_open(str(path), framework="pt", device="cpu", backend="pread") as data:
+        tuple(data.keys())
+
+
 def save_artifact(
     output_dir: str | Path,
     *,
@@ -74,6 +100,8 @@ def save_artifact(
 
     output = Path(output_dir).expanduser().resolve()
     output.mkdir(parents=True, exist_ok=True)
+    metadata_path = output / "artifact.json"
+    metadata_path.unlink(missing_ok=True)
     payload = _json_value(dict(metadata))
     payload["schema_version"] = SCHEMA_VERSION
     tensors = {
@@ -82,17 +110,36 @@ def save_artifact(
     }
     model_path = output / "model.safetensors"
     statistics_path = output / "statistics.npz"
-    save_file(tensors, str(model_path))
     statistic_arrays = {name: np.asarray(value) for name, value in statistics.items()}
-    np.savez(statistics_path, **statistic_arrays)
-    payload["model_sha256"] = _file_sha256(model_path)
+    staging_root = os.environ.get("RLINF_ARTIFACT_STAGING_DIR")
+    with tempfile.TemporaryDirectory(
+        prefix="rlinf-lamp-artifact-", dir=staging_root
+    ) as staging_dir:
+        staged_model = Path(staging_dir) / "model.safetensors"
+        staged_statistics = Path(staging_dir) / "statistics.npz"
+        save_file(tensors, str(staged_model))
+        _validate_safetensors_header(staged_model)
+        np.savez(staged_statistics, **statistic_arrays)
+        expected_model_sha = _file_sha256(staged_model)
+        _copy_file_portably(staged_model, model_path)
+        _copy_file_portably(staged_statistics, statistics_path)
+    if _file_sha256(model_path) != expected_model_sha:
+        raise OSError(f"LAMP artifact copy verification failed for {model_path}")
+    _validate_safetensors_header(model_path)
+    with np.load(statistics_path, allow_pickle=False) as stored_statistics:
+        if set(stored_statistics.files) != set(statistic_arrays):
+            raise OSError(
+                f"LAMP artifact statistics verification failed for {statistics_path}"
+            )
+    payload["model_sha256"] = expected_model_sha
     payload["statistics_sha256"] = _statistics_sha256(statistic_arrays)
     payload["metadata_sha256"] = metadata_sha256(
         {key: value for key, value in payload.items() if key != "metadata_sha256"}
     )
-    (output / "artifact.json").write_text(
+    metadata_path.write_text(
         json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8"
     )
+    metadata_path.chmod(0o644)
     return output
 
 
@@ -103,11 +150,7 @@ def load_artifact(
 
     from safetensors.torch import load_file
 
-    root = Path(artifact_dir).expanduser().resolve()
-    required = ("artifact.json", "model.safetensors", "statistics.npz")
-    missing = [name for name in required if not (root / name).is_file()]
-    if missing:
-        raise FileNotFoundError(f"LAMP artifact {root} is missing {missing}")
+    root = resolve_artifact_dir(artifact_dir)
     metadata = json.loads((root / "artifact.json").read_text(encoding="utf-8"))
     if metadata.get("schema_version") != SCHEMA_VERSION:
         raise ValueError(
@@ -138,6 +181,28 @@ def load_artifact(
     if expected_keys and set(statistics) != expected_keys:
         raise ValueError("LAMP artifact statistics keys do not match artifact.json")
     return metadata, state, statistics
+
+
+def resolve_artifact_dir(artifact_path: str | Path) -> Path:
+    """Resolve a LAMP artifact from one of three deterministic locations.
+
+    ``artifact_path`` may be the artifact itself, a training run containing an
+    ``artifact`` directory, or a run whose actor owns the artifact. Deliberately
+    avoid recursive search and latest-checkpoint selection: an ambiguous run
+    layout must be fixed by the caller instead of being guessed here.
+    """
+
+    root = Path(artifact_path).expanduser().resolve()
+    candidates = (root, root / "artifact", root / "actor" / "artifact")
+    for candidate in candidates:
+        if all((candidate / name).is_file() for name in _ARTIFACT_FILENAMES):
+            return candidate
+    checked = ", ".join(str(candidate) for candidate in candidates)
+    required = ", ".join(_ARTIFACT_FILENAMES)
+    raise FileNotFoundError(
+        "Could not resolve a complete LAMP artifact. "
+        f"Checked [{checked}] for [{required}]"
+    )
 
 
 def save_training_state(
@@ -186,8 +251,14 @@ def load_training_state(
     payload = torch.load(path, map_location="cpu", weights_only=False)
     if payload.get("schema_version") != SCHEMA_VERSION:
         raise ValueError("Unsupported LAMP training checkpoint schema")
-    if payload.get("metadata") != _json_value(dict(expected_metadata)):
-        raise ValueError("LAMP resume metadata differs from the current config/data")
+    stored_metadata = payload.get("metadata")
+    expected_metadata = _json_value(dict(expected_metadata))
+    mismatches = _resume_metadata_mismatches(stored_metadata, expected_metadata)
+    if mismatches:
+        details = "; ".join(mismatches[:8])
+        raise ValueError(
+            "LAMP resume metadata differs from the current config/data: " + details
+        )
     model.load_state_dict(payload["model_state"], strict=True)
     if optimizer is not None:
         if payload.get("optimizer_state") is None:
@@ -203,6 +274,64 @@ def load_training_state(
         torch.cuda.set_rng_state_all(rng["cuda"])
     np.random.set_state(rng["numpy"])
     return int(payload["global_step"]), payload.get("sampler_state")
+
+
+def _resume_metadata_mismatches(
+    stored: Any,
+    expected: Any,
+    *,
+    path: str = "metadata",
+) -> list[str]:
+    """Return semantic resume-metadata differences with float tolerance."""
+
+    if isinstance(stored, Mapping) and isinstance(expected, Mapping):
+        mismatches = []
+        stored_keys = set(stored)
+        expected_keys = set(expected)
+        for key in sorted(stored_keys ^ expected_keys):
+            mismatches.append(f"{path}.{key}: missing key")
+        for key in sorted(stored_keys & expected_keys):
+            # This is derived from the architecture payload compared below. A tiny
+            # floating-point tail changes the hash despite semantic compatibility.
+            if path == "metadata" and key == "architecture_sha256":
+                continue
+            mismatches.extend(
+                _resume_metadata_mismatches(
+                    stored[key], expected[key], path=f"{path}.{key}"
+                )
+            )
+        return mismatches
+    if isinstance(stored, list) and isinstance(expected, list):
+        if len(stored) != len(expected):
+            return [f"{path}: length {len(stored)} != {len(expected)}"]
+        mismatches = []
+        for index, (stored_item, expected_item) in enumerate(zip(stored, expected)):
+            mismatches.extend(
+                _resume_metadata_mismatches(
+                    stored_item, expected_item, path=f"{path}[{index}]"
+                )
+            )
+        return mismatches
+    if (
+        isinstance(stored, (int, float))
+        and not isinstance(stored, bool)
+        and isinstance(expected, (int, float))
+        and not isinstance(expected, bool)
+    ):
+        if isinstance(stored, int) and isinstance(expected, int):
+            return [] if stored == expected else [f"{path}: {stored!r} != {expected!r}"]
+        if math.isclose(
+            float(stored),
+            float(expected),
+            rel_tol=RESUME_FLOAT_RTOL,
+            abs_tol=RESUME_FLOAT_ATOL,
+        ):
+            return []
+    elif type(stored) is not type(expected):
+        return [f"{path}: type {type(stored).__name__} != {type(expected).__name__}"]
+    if stored != expected:
+        return [f"{path}: {stored!r} != {expected!r}"]
+    return []
 
 
 def _json_value(value: Any) -> Any:
@@ -228,6 +357,7 @@ __all__ = [
     "load_artifact",
     "load_training_state",
     "metadata_sha256",
+    "resolve_artifact_dir",
     "save_artifact",
     "save_training_state",
 ]

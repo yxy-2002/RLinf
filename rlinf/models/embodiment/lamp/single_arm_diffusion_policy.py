@@ -40,6 +40,7 @@ from rlinf.models.embodiment.lamp.diffusion_math import (
     make_diffusion_schedule,
     predict_x0_from_epsilon,
 )
+from rlinf.models.embodiment.lamp.hand_ae import AE_LATENT_DIM, DexJoCoHandAE
 from rlinf.models.embodiment.lamp.hand_cvae import CVAE_LATENT_DIM, DexJoCoHandCVAE
 from rlinf.models.embodiment.lamp.hand_vae import HISTORY_FRAMES
 from rlinf.models.embodiment.lamp.resnet18 import HFResNet18Backbone
@@ -47,7 +48,7 @@ from rlinf.models.embodiment.lamp.vq_action_normalization import (
     normalize_vq_hand_action,
 )
 
-HandPriorSource = Literal["cvae", "decoder_only", "pca", "vq_codebook", "mlp"]
+HandPriorSource = Literal["ae", "cvae", "decoder_only", "pca", "vq_codebook", "mlp"]
 ACTION_HORIZON = 16
 VQ_CODE_COUNT = 16
 VQ_INDEX_EPS = 4.0 * np.finfo(np.float32).eps
@@ -97,13 +98,14 @@ def _has_values(values: Sequence[Any]) -> bool:
 
 
 class LAMPDiffusionPolicy(nn.Module):
-    """Two-view DP with a CVAE, decoder-only, PCA, VQ, or direct hand path."""
+    """Two-view DP with an AE, CVAE, PCA, VQ, or direct hand path."""
 
     def __init__(
         self,
         backbone_config: dict[str, Any],
         *,
         hand_prior_source: HandPriorSource = "cvae",
+        ae_model_config: dict[str, Any] | None = None,
         cvae_model_config: dict[str, Any] | None = None,
         pca_mean: Sequence[float] = (),
         pca_components: Sequence[Sequence[float]] = (),
@@ -132,6 +134,7 @@ class LAMPDiffusionPolicy(nn.Module):
             names = ", ".join(sorted(removed_architecture_options))
             raise ValueError(f"unsupported DP architecture options: {names}")
         if hand_prior_source not in (
+            "ae",
             "cvae",
             "decoder_only",
             "pca",
@@ -173,8 +176,18 @@ class LAMPDiffusionPolicy(nn.Module):
 
         self.hand_prior_source = hand_prior_source
         self.pca_latent_dim = int(pca_latent_dim)
+        self.ae_model_config = dict(ae_model_config) if ae_model_config else None
         self.cvae_model_config = dict(cvae_model_config) if cvae_model_config else None
-        if hand_prior_source in ("cvae", "decoder_only"):
+        if hand_prior_source == "ae":
+            if self.ae_model_config is None:
+                raise ValueError("ae_model_config is required for an AE hand prior")
+            if self.cvae_model_config is not None:
+                raise ValueError("AE policies forbid cvae_model_config")
+            self.ae = DexJoCoHandAE(**self.ae_model_config)
+            self.ae.requires_grad_(False).eval()
+        elif hand_prior_source in ("cvae", "decoder_only"):
+            if self.ae_model_config is not None:
+                raise ValueError("CVAE policies forbid ae_model_config")
             if self.cvae_model_config is None:
                 raise ValueError(
                     "cvae_model_config is required for a neural hand prior"
@@ -183,8 +196,8 @@ class LAMPDiffusionPolicy(nn.Module):
             for parameter in self.cvae.parameters():
                 parameter.requires_grad_(False)
             self.cvae.eval()
-        elif cvae_model_config is not None:
-            raise ValueError("cvae_model_config is forbidden for PCA/VQ/MLP")
+        elif ae_model_config is not None or cvae_model_config is not None:
+            raise ValueError("neural prior configs are forbidden for PCA/VQ/MLP")
 
         latent_dim = self._hand_latent_dim()
         if hand_prior_source == "pca":
@@ -275,9 +288,23 @@ class LAMPDiffusionPolicy(nn.Module):
         schedule = make_diffusion_schedule()
         for name, value in schedule.items():
             self.register_buffer(f"_schedule_{name}", value, persistent=False)
+        self.num_inference_steps = int(num_inference_steps)
+
+    def set_num_inference_steps(self, num_inference_steps: int) -> None:
+        """Override the deployment DDIM step count without changing the artifact."""
+
+        steps = int(num_inference_steps)
+        if not 1 <= steps <= NUM_TRAIN_TIMESTEPS:
+            raise ValueError(
+                "num_inference_steps must be between 1 and "
+                f"{NUM_TRAIN_TIMESTEPS}, got {steps}"
+            )
+        self.num_inference_steps = steps
 
     def train(self, mode: bool = True):
         super().train(mode)
+        if hasattr(self, "ae"):
+            self.ae.eval()
         if hasattr(self, "cvae"):
             self.cvae.eval()
         return self
@@ -452,7 +479,7 @@ class LAMPDiffusionPolicy(nn.Module):
     def _ddim_sample(
         self, sample: torch.Tensor, condition: torch.Tensor
     ) -> torch.Tensor:
-        timesteps = inference_timesteps()
+        timesteps = inference_timesteps(NUM_TRAIN_TIMESTEPS, self.num_inference_steps)
         schedule = self._schedule()
         for index, timestep in enumerate(timesteps):
             previous = timesteps[index + 1] if index + 1 < len(timesteps) else -1
@@ -468,7 +495,11 @@ class LAMPDiffusionPolicy(nn.Module):
     ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
         core = core_norm * self.core_action_std + self.core_action_mean
         arm = core[..., :ARM_QUAT_ACTION_DIM]
-        if self.hand_prior_source in ("cvae", "decoder_only"):
+        if self.hand_prior_source == "ae":
+            latent = core[..., ARM_QUAT_ACTION_DIM:]
+            hand_norm = self.ae.decode(latent)
+            hand = hand_norm * self.hand_action_std + self.hand_action_mean
+        elif self.hand_prior_source in ("cvae", "decoder_only"):
             latent = core[..., ARM_QUAT_ACTION_DIM:]
             hand_norm = self.cvae.decode(latent)
             hand = hand_norm * self.hand_action_std + self.hand_action_mean
@@ -509,6 +540,8 @@ class LAMPDiffusionPolicy(nn.Module):
         }
 
     def _hand_latent_dim(self) -> int:
+        if self.hand_prior_source == "ae":
+            return int((self.ae_model_config or {}).get("latent_dim", AE_LATENT_DIM))
         if self.hand_prior_source in ("cvae", "decoder_only"):
             return int(
                 (self.cvae_model_config or {}).get("latent_dim", CVAE_LATENT_DIM)

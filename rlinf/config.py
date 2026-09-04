@@ -15,6 +15,7 @@
 import dataclasses
 import importlib.util
 import logging
+import math
 import os
 from dataclasses import asdict
 from typing import TYPE_CHECKING, Callable, ClassVar, Optional, Union
@@ -109,6 +110,9 @@ SupportedModel.STEAM_VALUE_MODEL = SupportedModel.register(
 )
 SupportedModel.LAMP_BC = SupportedModel.register("lamp_bc", force=True)
 SupportedModel.LAMP_DP = SupportedModel.register("lamp_dp", force=True)
+SupportedModel.LAMP_RESIDUAL_SAC = SupportedModel.register(
+    "lamp_residual_sac", force=True
+)
 
 SupportedModel.QWEN2_5_VL_SFT = SupportedModel.register("qwen2.5_vl", force=True)
 SupportedModel.QWEN3_VL_SFT = SupportedModel.register("qwen3_vl", force=True)
@@ -142,6 +146,7 @@ EMBODIED_MODEL = set(
         SupportedModel.STEAM_VALUE_MODEL,
         SupportedModel.LAMP_BC,
         SupportedModel.LAMP_DP,
+        SupportedModel.LAMP_RESIDUAL_SAC,
     }
 )
 
@@ -826,6 +831,127 @@ def validate_megatron_cfg(cfg: DictConfig) -> DictConfig:
     return cfg
 
 
+def validate_lamp_async_cfg(cfg: DictConfig) -> None:
+    """Validate a transition-counted async LAMP residual contract.
+
+    This helper does not construct a cluster or initialize Ray, which makes it
+    safe to use from configuration preflight and CPU-only unit tests.
+    """
+    contract_version = int(cfg.actor.model.get("contract_version", 0))
+    assert contract_version == 4, (
+        "Async LAMP residual supports only contract_version 4"
+    )
+    contract_name = f"v{contract_version}"
+    assert cfg.runner.get("execution_mode", "sync") == "async", (
+        f"LAMP residual contract {contract_name} requires runner.execution_mode=async"
+    )
+    assert not cfg.runner.get("enable_decoupled_mode", False), (
+        "Async lamp_residual_sac requires fixed env-to-rollout routing so every "
+        "action uses one exact global online-macro-transition count"
+    )
+    async_cfg = cfg.algorithm.get("async", None)
+    assert async_cfg is not None, (
+        "Async lamp_residual_sac requires an algorithm.async config"
+    )
+    assert async_cfg.get("max_learner_rounds_per_collector", None) is None, (
+        f"Residual {contract_name} derives optimizer updates from "
+        "algorithm.utd_ratio; "
+        "max_learner_rounds_per_collector is not supported"
+    )
+    pending_rounds = async_cfg.get("max_pending_collector_rounds", None)
+    assert (
+        isinstance(pending_rounds, int)
+        and not isinstance(pending_rounds, bool)
+        and pending_rounds > 0
+    ), "algorithm.async.max_pending_collector_rounds must be a positive integer"
+
+    utd_ratio = cfg.algorithm.get("utd_ratio", None)
+    assert (
+        isinstance(utd_ratio, (int, float))
+        and not isinstance(utd_ratio, bool)
+        and math.isfinite(float(utd_ratio))
+        and float(utd_ratio) > 0.0
+    ), "algorithm.utd_ratio must be a positive finite number"
+    learning_starts = cfg.algorithm.get("learning_starts_macro_transitions", None)
+    progressive_steps = cfg.algorithm.get("progressive_exploration_macro_steps", None)
+    assert (
+        isinstance(learning_starts, int)
+        and not isinstance(learning_starts, bool)
+        and learning_starts >= 0
+    ), "learning_starts_macro_transitions must be a non-negative integer"
+    assert (
+        isinstance(progressive_steps, int)
+        and not isinstance(progressive_steps, bool)
+        and progressive_steps > 0
+    ), "progressive_exploration_macro_steps must be a positive integer"
+    assert (
+        int(cfg.actor.model.get("learning_starts_macro_transitions", -1))
+        == learning_starts
+    ), "Actor and learner learning-start thresholds must match"
+    assert (
+        int(cfg.actor.model.get("progressive_exploration_macro_steps", -1))
+        == progressive_steps
+    ), "Actor and learner progressive-exploration schedules must match"
+
+    placement = cfg.cluster.component_placement
+    assert placement.env == placement.rollout, (
+        f"Async LAMP residual {contract_name} requires identical env and rollout "
+        "placement"
+    )
+    assert int(cfg.rollout.pipeline_stage_num) == 1, (
+        f"Async LAMP residual {contract_name} exact transition counting requires "
+        "one rollout "
+        "pipeline stage"
+    )
+    assert not cfg.actor.get("enable_offload", False), (
+        "Actor offload is not supported by async lamp_residual_sac"
+    )
+    assert not cfg.rollout.get("enable_offload", False), (
+        "Rollout offload is not supported by async lamp_residual_sac"
+    )
+    assert not cfg.env.train.get("enable_offload", False), (
+        "Train env offload is not supported by async lamp_residual_sac"
+    )
+    assert not cfg.env.eval.get("enable_offload", False), (
+        "Eval env offload is not supported by async lamp_residual_sac"
+    )
+
+
+def validate_lamp_residual_contract_cfg(cfg: DictConfig, model_cfg: DictConfig) -> int:
+    """Validate the model-facing v4 contract without initializing Ray."""
+
+    assert int(model_cfg.action_dim) == 23
+    assert int(model_cfg.action_horizon) == 16
+    contract_version = int(model_cfg.get("contract_version", 0))
+    assert contract_version == 4, "LAMP residual supports only contract_version 4"
+    residual_application = model_cfg.get("residual_application", None)
+    base_use_temporal_ensemble = model_cfg.get("base_use_temporal_ensemble", None)
+    assert int(model_cfg.num_action_chunks) == 8, (
+        "LAMP residual exec8_v4 requires num_action_chunks=8"
+    )
+    assert residual_application == "corrected_plan_crop", (
+        "LAMP residual v4 requires residual_application='corrected_plan_crop'"
+    )
+    assert base_use_temporal_ensemble is False, (
+        "LAMP residual v4 requires base temporal ensembling disabled"
+    )
+
+    assert model_cfg.get("actor_input", "condition") in (
+        "condition",
+        "pre_fusion",
+    )
+    assert model_cfg.get("critic_observation_input", None) in (
+        "condition",
+        "pre_fusion",
+    )
+    assert model_cfg.get("entropy_scope", None) == "decoder_causal"
+    assert tuple(model_cfg.get("actor_hidden_dims", ())) == (256, 256, 256)
+    assert float(model_cfg.get("log_std_min", 0.0)) == -20.0
+    assert float(model_cfg.get("log_std_max", 0.0)) == 2.0
+    assert float(model_cfg.get("init_log_std", 0.0)) == -9.0
+    return contract_version
+
+
 def validate_embodied_cfg(cfg):
     only_eval = (
         cfg.runner.get("only_eval", False)
@@ -1053,6 +1179,64 @@ def validate_embodied_cfg(cfg):
             if cfg.env.get("eval", None) is not None
             else None
         )
+        if model_type == SupportedModel.LAMP_RESIDUAL_SAC:
+            assert not only_eval, (
+                "lamp_residual_sac standalone evaluation is not yet supported; "
+                "use online validation through runner.val_check_interval"
+            )
+            assert cfg.algorithm.loss_type == "embodied_sac"
+            assert train_env_type == SupportedEnvType.DEXJOCO
+            contract_version = validate_lamp_residual_contract_cfg(cfg, model_cfg)
+            contract_name = f"v{contract_version}"
+
+            legacy_residual_scale = float(model_cfg.get("residual_scale", 0.05))
+            wrist_residual_scale = float(
+                model_cfg.get("wrist_residual_scale", legacy_residual_scale)
+            )
+            hand_residual_scale = float(
+                model_cfg.get("hand_residual_scale", legacy_residual_scale)
+            )
+            assert wrist_residual_scale > 0.0 and hand_residual_scale > 0.0, (
+                "LAMP wrist/hand residual scales must be positive"
+            )
+
+            entropy_cfg = cfg.algorithm.entropy_tuning
+            assert entropy_cfg.get("alpha_type", None) == "exp"
+            initial_alpha = float(entropy_cfg.get("initial_alpha", 0.0))
+            assert math.isfinite(initial_alpha) and initial_alpha > 0.0, (
+                f"LAMP residual {contract_name} initial_alpha must be finite and positive"
+            )
+            assert cfg.algorithm.get("backup_entropy", False), (
+                f"Residual {contract_name} requires entropy backup"
+            )
+            demo_fraction = float(cfg.algorithm.get("demo_fraction", 0.0))
+            assert demo_fraction == 0.0, f"LAMP residual {contract_name} is online-only"
+            assert cfg.algorithm.get("demo_buffer", None) is None, (
+                f"LAMP residual {contract_name} does not accept a demo buffer"
+            )
+            num_q_heads = int(model_cfg.num_q_heads)
+            actor_agg_q = cfg.algorithm.get("actor_agg_q", None)
+            assert cfg.algorithm.get("agg_q", "min") == "min"
+            assert num_q_heads == 2, (
+                f"LAMP residual {contract_name} requires exactly two Qs"
+            )
+            assert actor_agg_q == "min", (
+                f"LAMP residual {contract_name} requires the min-Q actor objective"
+            )
+            assert float(cfg.algorithm.gamma) == 0.97
+            async_cfg = cfg.algorithm.get("async", {}) or {}
+            assert bool(async_cfg.get("lockstep_updates", False)), (
+                f"LAMP residual {contract_name} requires lockstep "
+                "collector/learner updates"
+            )
+            assert int(async_cfg.get("max_pending_collector_rounds", 0)) == 1
+            assert not bool(cfg.actor.get("sync_weight_no_wait", False))
+
+            assert int(cfg.algorithm.get("critic_actor_ratio", 0)) == 1
+            assert int(cfg.algorithm.get("target_update_freq", 0)) == 1
+            assert cfg.rollout.collect_transitions
+            assert not cfg.rollout.get("enable_torch_compile", False)
+            validate_lamp_async_cfg(cfg)
         dexjoco_tasks = {
             "bimanual_assembly",
             "bimanual_hanoi",

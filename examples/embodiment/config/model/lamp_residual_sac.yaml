@@ -1,0 +1,39 @@
+model_type: lamp_residual_sac
+model_path: ""
+precision: "32"
+is_lora: false
+
+# Residual contract v4: the actor predicts a full H=16 core residual, while the
+# environment, replay, and critic use only the executed K=8 physical chunk.
+contract_version: 4
+residual_application: corrected_plan_crop
+base_use_temporal_ensemble: false
+# Frozen feature consumed by the residual actor: the fused 256D diffusion
+# condition or the flattened 1280D pre-fusion visual/state feature.
+actor_input: condition
+# Frozen feature consumed by the Q ensemble, independently selectable from the
+# actor input.  ``pre_fusion`` is 512+512+128+128=1280D.
+critic_observation_input: condition
+entropy_scope: decoder_causal
+action_dim: 23
+action_horizon: 16
+num_action_chunks: 8
+num_q_heads: 2
+
+residual_scale: 0.05
+wrist_residual_scale: 0.05
+hand_residual_scale: 0.05
+actor_hidden_dims: [256, 256, 256]
+log_std_min: -20.0
+log_std_max: 2.0
+init_log_std: -9.0
+
+# Match simulator evaluation seeds without consuming the construction/global RNG.
+eval_base_noise_seed: ${env.eval.seed}
+eval_base_noise_seeds: []
+eval_base_noise_seed_offset: 0
+
+target_entropy: ${algorithm.entropy_tuning.target_entropy}
+learning_starts_macro_transitions: ${algorithm.learning_starts_macro_transitions}
+progressive_exploration_macro_steps: ${algorithm.progressive_exploration_macro_steps}
+hand_prior: null

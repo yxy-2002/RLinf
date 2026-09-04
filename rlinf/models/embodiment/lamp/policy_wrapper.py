@@ -16,6 +16,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -40,6 +41,176 @@ def _unit_quaternion(quaternion: torch.Tensor) -> torch.Tensor:
     identity = torch.zeros_like(quaternion)
     identity[..., 0] = 1.0
     return torch.where(norm > 1e-12, normalized, identity)
+
+
+def canonicalize_single_arm_core_quaternion(
+    core_action_norm: torch.Tensor,
+    base_core_action_norm: torch.Tensor,
+    core_action_mean: torch.Tensor,
+    core_action_std: torch.Tensor,
+) -> torch.Tensor:
+    """Return a core chunk with quaternion coordinates safe and base-aligned.
+
+    Only normalized quaternion coordinates are replaced. All other core
+    coordinates remain bitwise identical to the candidate core.
+    """
+
+    if (
+        core_action_norm.shape != base_core_action_norm.shape
+        or core_action_norm.ndim < 1
+        or core_action_norm.shape[-1] < 7
+    ):
+        raise ValueError(
+            "Single-arm core/base chunks must have equal [..., D>=7] shapes"
+        )
+    action_dim = int(core_action_norm.shape[-1])
+    mean = torch.as_tensor(
+        core_action_mean,
+        device=core_action_norm.device,
+        dtype=core_action_norm.dtype,
+    ).reshape(-1)
+    std = torch.as_tensor(
+        core_action_std,
+        device=core_action_norm.device,
+        dtype=core_action_norm.dtype,
+    ).reshape(-1)
+    if mean.numel() != action_dim or std.numel() != action_dim:
+        raise ValueError("Core action statistics do not match the core dimension")
+
+    quaternion_slice = slice(3, 7)
+    candidate_quaternion_norm = core_action_norm[..., quaternion_slice]
+    base_quaternion_norm = base_core_action_norm[..., quaternion_slice]
+    quaternion_unchanged = torch.all(
+        candidate_quaternion_norm == base_quaternion_norm, dim=-1, keepdim=True
+    )
+    quaternion_mean = mean[quaternion_slice]
+    quaternion_std = std[quaternion_slice].clamp_min(1e-6)
+    base_quaternion = base_quaternion_norm * quaternion_std + quaternion_mean
+    base_quaternion = _unit_quaternion(base_quaternion)
+
+    quaternion = candidate_quaternion_norm * quaternion_std + quaternion_mean
+    norm = torch.linalg.vector_norm(quaternion, dim=-1, keepdim=True)
+    quaternion = torch.where(
+        norm > 1e-12,
+        quaternion / norm.clamp_min(1e-12),
+        base_quaternion,
+    )
+    alignment = torch.sum(quaternion * base_quaternion, dim=-1, keepdim=True)
+    # Near a 180-degree relative rotation, both signs are equally aligned.
+    # Use a sign-invariant index and force its selected coordinate positive.
+    largest_coordinate = quaternion.abs().argmax(dim=-1, keepdim=True)
+    canonical_flip = torch.gather(quaternion, -1, largest_coordinate) < 0.0
+    flip = torch.where(
+        alignment.abs() <= 1e-6,
+        canonical_flip,
+        alignment < 0.0,
+    )
+    quaternion = quaternion * torch.where(flip, -1.0, 1.0)
+    canonical_quaternion_norm = (quaternion - quaternion_mean) / quaternion_std
+    corrected = core_action_norm.clone()
+    corrected[..., quaternion_slice] = torch.where(
+        quaternion_unchanged,
+        candidate_quaternion_norm,
+        canonical_quaternion_norm,
+    )
+    return corrected
+
+
+class _LampEvalNoiseStreams:
+    """Per-environment deterministic diffusion-noise streams for evaluation."""
+
+    def __init__(
+        self,
+        *,
+        seed: int | None,
+        seeds: Sequence[int] | None,
+        seed_offset: int,
+    ) -> None:
+        self._generators: list[torch.Generator] = []
+        self._generator_device: torch.device | None = None
+        self.configure(seed=seed, seeds=seeds, seed_offset=seed_offset)
+
+    @property
+    def configuration(self) -> tuple[int | None, tuple[int, ...], int]:
+        return self.seed, self.seeds, self.seed_offset
+
+    @property
+    def enabled(self) -> bool:
+        return self.seed is not None or bool(self.seeds)
+
+    def configure(
+        self,
+        *,
+        seed: int | None,
+        seeds: Sequence[int] | None,
+        seed_offset: int,
+    ) -> None:
+        seed_offset = int(seed_offset)
+        if seed_offset < 0:
+            raise ValueError("eval_base_noise_seed_offset must be non-negative")
+        self.seed = None if seed is None else int(seed)
+        self.seeds = tuple(int(value) for value in (seeds or ()))
+        self.seed_offset = seed_offset
+        self._generators = []
+        self._generator_device = None
+
+    def _seed_for(self, local_env_id: int) -> int:
+        global_env_id = self.seed_offset + int(local_env_id)
+        if self.seeds:
+            if global_env_id >= len(self.seeds):
+                raise ValueError(
+                    "eval_base_noise_seeds is shorter than the requested global "
+                    f"environment index {global_env_id}"
+                )
+            return self.seeds[global_env_id]
+        assert self.seed is not None
+        return self.seed + global_env_id
+
+    def sample(
+        self,
+        reference: torch.Tensor,
+        *,
+        horizon: int,
+        action_dim: int,
+        reset_mask: torch.Tensor | Sequence[bool] | None,
+    ) -> torch.Tensor | None:
+        """Draw one noise chunk per row and reset only requested streams."""
+
+        if not self.enabled:
+            return None
+        if reference.ndim < 1:
+            raise ValueError("LAMP eval noise reference must have a batch dimension")
+        batch = int(reference.shape[0])
+        if reset_mask is None:
+            reset = torch.zeros(batch, dtype=torch.bool)
+        else:
+            reset = torch.as_tensor(reset_mask, dtype=torch.bool).reshape(-1).cpu()
+            if reset.numel() != batch:
+                raise ValueError(
+                    "LAMP eval reset_mask must have one value per environment; "
+                    f"got {reset.numel()} for batch {batch}"
+                )
+
+        device = reference.device
+        rebuild = len(self._generators) != batch or self._generator_device != device
+        if rebuild:
+            self._generators = [torch.Generator(device=device) for _ in range(batch)]
+            self._generator_device = device
+
+        chunks = []
+        for env_id, generator in enumerate(self._generators):
+            if rebuild or bool(reset[env_id]):
+                generator.manual_seed(self._seed_for(env_id))
+            chunks.append(
+                torch.randn(
+                    int(horizon),
+                    int(action_dim),
+                    dtype=reference.dtype,
+                    device=device,
+                    generator=generator,
+                )
+            )
+        return torch.stack(chunks)
 
 
 @dataclass(frozen=True)
@@ -92,6 +263,67 @@ class LampTemporalEnsembleController:
     def reset(self) -> None:
         self._steps = []
         self._plans = []
+
+    def commit(
+        self,
+        plan: torch.Tensor,
+        *,
+        reset_mask: torch.Tensor | None = None,
+        bimanual: bool = False,
+    ) -> torch.Tensor:
+        """Insert ``plan``, return its ensemble, and advance by one chunk.
+
+        This is the explicit state-mutating counterpart to :meth:`preview`.
+        It intentionally delegates to the original :meth:`apply` path so
+        standalone LAMP inference retains identical numerical behavior.
+        """
+
+        return self.apply(plan, reset_mask=reset_mask, bimanual=bimanual)
+
+    def preview(
+        self,
+        plan: torch.Tensor,
+        *,
+        reset_mask: torch.Tensor | None = None,
+        bimanual: bool = False,
+        confirmed_reset: bool = False,
+    ) -> torch.Tensor:
+        """Return the next ensemble without inserting or advancing ``plan``.
+
+        ``reset_mask`` is applied while calculating the preview. By default it
+        is also non-mutating. Set ``confirmed_reset`` when the corresponding
+        episodes have actually reset; those rows are then persistently cleared
+        after the preview while the candidate plan remains uncommitted.
+        """
+
+        saved_steps = list(self._steps)
+        saved_plans = [list(entries) for entries in self._plans]
+        try:
+            actions = self.apply(
+                plan,
+                reset_mask=reset_mask,
+                bimanual=bimanual,
+            )
+        finally:
+            self._steps = saved_steps
+            self._plans = saved_plans
+
+        if confirmed_reset and reset_mask is not None:
+            batch = int(plan.shape[0])
+            reset = reset_mask.to(
+                device=plan.device,
+                dtype=torch.bool,
+            ).reshape(batch)
+            if bool(reset.any()):
+                if len(self._steps) != batch:
+                    self._steps = [0 for _ in range(batch)]
+                    self._plans = [[] for _ in range(batch)]
+                else:
+                    for env_id in range(batch):
+                        if bool(reset[env_id]):
+                            self._steps[env_id] = 0
+                            self._plans[env_id].clear()
+        return actions
 
     def apply(
         self,
@@ -168,13 +400,51 @@ class LampPolicy(nn.Module, BasePolicy):
         statistics: dict[str, torch.Tensor | list[float]],
         *,
         temporal_ensemble_decay: float = 0.25,
+        use_temporal_ensemble: bool = True,
+        execution_horizon_override: int | None = None,
+        num_inference_steps_override: int | None = None,
+        eval_base_noise_seed: int | None = None,
+        eval_base_noise_seeds: Sequence[int] | None = None,
+        eval_base_noise_seed_offset: int = 0,
     ) -> None:
         nn.Module.__init__(self)
         self.core = core
         self.spec = spec
+        self.execution_horizon = (
+            spec.execution_horizon
+            if execution_horizon_override is None
+            else int(execution_horizon_override)
+        )
+        if not 1 <= self.execution_horizon <= spec.action_horizon:
+            raise ValueError(
+                "execution_horizon_override must be between 1 and "
+                f"the artifact action horizon {spec.action_horizon}, got "
+                f"{self.execution_horizon}"
+            )
+        if num_inference_steps_override is not None:
+            if spec.policy_family != "dp" or not hasattr(
+                core, "set_num_inference_steps"
+            ):
+                raise ValueError(
+                    "num_inference_steps_override is supported only by LAMP DP"
+                )
+            core.set_num_inference_steps(int(num_inference_steps_override))
         self.controller = LampTemporalEnsembleController(
-            execution_horizon=spec.execution_horizon,
+            execution_horizon=self.execution_horizon,
             decay=temporal_ensemble_decay,
+        )
+        self.use_temporal_ensemble = bool(use_temporal_ensemble)
+        self.eval_base_noise_seed = (
+            None if eval_base_noise_seed is None else int(eval_base_noise_seed)
+        )
+        self.eval_base_noise_seeds = tuple(
+            int(seed) for seed in (eval_base_noise_seeds or ())
+        )
+        self.eval_base_noise_seed_offset = int(eval_base_noise_seed_offset)
+        self._eval_noise_streams = _LampEvalNoiseStreams(
+            seed=self.eval_base_noise_seed,
+            seeds=self.eval_base_noise_seeds,
+            seed_offset=self.eval_base_noise_seed_offset,
         )
         for name, value in statistics.items():
             tensor = torch.as_tensor(value, dtype=torch.float32)
@@ -216,13 +486,15 @@ class LampPolicy(nn.Module, BasePolicy):
         ).clamp_min(1e-6)
 
     def _normalize_physical_quaternions(self, physical: torch.Tensor) -> torch.Tensor:
-        result = physical.clone()
         offsets = (3, 26) if self.spec.embodiment == "bimanual" else (3,)
+        parts = []
+        cursor = 0
         for offset in offsets:
-            result[..., offset : offset + 4] = _unit_quaternion(
-                result[..., offset : offset + 4]
-            )
-        return result
+            parts.append(physical[..., cursor:offset])
+            parts.append(_unit_quaternion(physical[..., offset : offset + 4]))
+            cursor = offset + 4
+        parts.append(physical[..., cursor:])
+        return torch.cat(parts, dim=-1)
 
     def _processed_inputs(self, env_obs: dict[str, Any]) -> tuple[torch.Tensor, ...]:
         main = self._image(env_obs["main_images"])
@@ -365,6 +637,50 @@ class LampPolicy(nn.Module, BasePolicy):
         self.core.requires_grad_(False)
         self.core.eval()
 
+    def set_eval_base_noise_seed_offset(self, seed_offset: int) -> None:
+        """Assign this rollout shard's first global evaluation environment."""
+
+        self.eval_base_noise_seed_offset = int(seed_offset)
+        self._sync_eval_noise_configuration()
+
+    def _sync_eval_noise_configuration(self) -> None:
+        configuration = (
+            self.eval_base_noise_seed,
+            tuple(self.eval_base_noise_seeds),
+            self.eval_base_noise_seed_offset,
+        )
+        if self._eval_noise_streams.configuration != configuration:
+            self._eval_noise_streams.configure(
+                seed=configuration[0],
+                seeds=configuration[1],
+                seed_offset=configuration[2],
+            )
+
+    def _eval_initial_noise(
+        self,
+        reference: torch.Tensor,
+        *,
+        reset_mask: torch.Tensor | Sequence[bool] | None = None,
+        reset_all: bool | None = None,
+    ) -> torch.Tensor | None:
+        """Return deterministic per-environment DP noise for evaluation."""
+
+        if reset_all is not None:
+            if reset_mask is not None:
+                raise ValueError("Pass only one of reset_mask and reset_all")
+            reset_mask = torch.full(
+                (int(reference.shape[0]),),
+                bool(reset_all),
+                dtype=torch.bool,
+            )
+        self._sync_eval_noise_configuration()
+        return self._eval_noise_streams.sample(
+            reference,
+            horizon=self.spec.action_horizon,
+            action_dim=self.spec.core_action_dim,
+            reset_mask=reset_mask,
+        )
+
     def forward(self, forward_type=ForwardType.DEFAULT, **kwargs):
         return BasePolicy.forward(self, forward_type=forward_type, **kwargs)
 
@@ -380,16 +696,35 @@ class LampPolicy(nn.Module, BasePolicy):
         return_obs: bool = False,
         **_: Any,
     ) -> tuple[torch.Tensor, dict[str, Any]]:
-        inputs = self._processed_inputs(env_obs)
-        predict = self._compiled_predict or self._predict_plan_from_processed
-        core, physical = predict(*inputs)
         reset_mask = env_obs.get("reset_mask")
-        if self.spec.policy_family == "dp":
+        mode = str(_.get("mode", "eval"))
+        self._sync_eval_noise_configuration()
+        use_seeded_eval = (
+            self.spec.policy_family == "dp"
+            and mode != "train"
+            and self._eval_noise_streams.enabled
+        )
+        if use_seeded_eval:
+            features = self.encode_observation(env_obs)
+            initial_noise = self._eval_initial_noise(
+                features.condition, reset_mask=reset_mask
+            )
+            plan = self.sample_base_plan(features, initial_noise=initial_noise)
+            core, physical = plan.core_action_norm, plan.physical_plan
+        else:
+            inputs = self._processed_inputs(env_obs)
+            predict = self._compiled_predict or self._predict_plan_from_processed
+            core, physical = predict(*inputs)
+        if self.spec.policy_family == "dp" and self.use_temporal_ensemble:
             actions = self.controller.apply(
                 physical,
                 reset_mask=reset_mask,
                 bimanual=self.spec.embodiment == "bimanual",
             )
+        elif self.spec.policy_family == "dp":
+            # Standard receding-horizon DP evaluation: predict H steps, execute
+            # only the newest plan's first K steps, then replan from fresh obs.
+            actions = physical[:, : self.execution_horizon]
         else:
             actions = physical
         if self.spec.embodiment == "bimanual":
@@ -421,6 +756,7 @@ class LampPolicy(nn.Module, BasePolicy):
 
 
 __all__ = [
+    "canonicalize_single_arm_core_quaternion",
     "LampObservationFeatures",
     "LampPlan",
     "LampPolicy",
