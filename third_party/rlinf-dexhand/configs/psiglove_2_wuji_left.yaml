@@ -1,0 +1,13 @@
+schema_version: 1
+glove:
+  type: psiglove_2
+  side: left
+  port: /dev/serial/by-id/usb-PsiBot_SynGlove_336F344F3333-if00
+  baudrate: 115200
+retargeting:
+  type: wuji_tier2
+  mapping_file: ./calibrations/psiglove_2_left_mapping.yaml
+  scale_file: ./calibrations/wuji_left_scale.yaml
+hand:
+  type: wuji1hand
+  side: left

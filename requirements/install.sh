@@ -1,5 +1,11 @@
 #! /bin/bash
 
+# Hand-only collection is independent of embodied training/model environments.
+if [[ "${1:-}" == "dexhand" ]]; then
+  shift
+  exec bash "$(dirname "${BASH_SOURCE[0]}")/install_dexhand.sh" "$@"
+fi
+
 set -eo pipefail
 
 TARGET=""

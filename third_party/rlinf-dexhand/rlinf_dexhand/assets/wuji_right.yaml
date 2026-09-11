@@ -1,0 +1,70 @@
+# Tier 2 retargeting config (Xin2025 Eq.6 hand-only): glove -> Wuji RIGHT.
+# All tunables live here; the optimizer/bridge read from this file.
+# The bridge resolves urdf_path to the wuji_hand_description package share at runtime.
+#
+# Finger order is thumb-first (finger1=thumb .. finger5=pinky), matching the
+# MediaPipe 21-point ordering emitted by the glove skeleton node. 20 DOF total
+# (4 joints per finger, including the thumb -- unlike DH01's 21).
+retargeting:
+  type: Xin2025Tier2
+  urdf_path: wuji_hand_description/urdf/right-ros.urdf
+
+  # robot frame wiring (wuji URDF link names are already side-prefixed)
+  wrist_link_name: right_palm_link
+  fingertip_link_names: [right_finger1_tip_link, right_finger2_tip_link, right_finger3_tip_link, right_finger4_tip_link, right_finger5_tip_link]
+  dip_link_names: [right_finger1_link4, right_finger2_link4, right_finger3_link4, right_finger4_link4, right_finger5_link4]
+  target_joint_names:
+    [right_finger1_joint1, right_finger1_joint2, right_finger1_joint3, right_finger1_joint4,
+     right_finger2_joint1, right_finger2_joint2, right_finger2_joint3, right_finger2_joint4,
+     right_finger3_joint1, right_finger3_joint2, right_finger3_joint3, right_finger3_joint4,
+     right_finger4_joint1, right_finger4_joint2, right_finger4_joint3, right_finger4_joint4,
+     right_finger5_joint1, right_finger5_joint2, right_finger5_joint3, right_finger5_joint4]
+
+  # loss weights (lambda)
+  lambda_fingertip_pos: 2.0
+  lambda_fingertip_rot: 4.5
+  lambda_pinch: 10.0
+
+  # pinch continuous sigmoid + distance rescaling (in scaled = robot space, meters)
+  epsilon1: 0.1
+  epsilon2: 0.01
+  sigmoid_w: 10.0
+  huber_delta: 0.02
+
+  # human->robot hand-size scalar; 'auto' = calibrate at startup (robot/human wrist->middle_tip)
+  scaling_factor: calibrated  # "calibrated" = use the saved wuji_{hand}_scale_calibrated.yml (run calibrate_scale.sh once); falls back to auto if absent
+
+  # joint regularization (toward rest = 0). Only the abduction/spread joints
+  # (fingerN_joint2, symmetric +/-0.37 limits, identified via test_wuji_urdf)
+  # and the thumb opposition (finger1_joint1, analog of DH01's Joint_1_0A) are
+  # nonzero -- keeps fingers from flailing while leaving curl free.
+  # thumb joint2/joint3 also weighted: without it they drift into a palmward
+  # curl (nullspace -- the tip position can be matched with mid-joints curled).
+  # 0.5 biases them toward 0 (extended); cuts spurious curl ~70% while still
+  # tracking real curl. Tune 0.3 (more agile) .. 1.0 (stiffer, less curl).
+  joint_pos_ref: 0.0           # q_bar (scalar broadcast to 20)
+  joint_pos_weights:
+    right_finger1_joint1: 0.0
+    right_finger1_joint2: 0.0
+    right_finger1_joint3: 0.0
+    right_finger2_joint2: 0.0
+    right_finger3_joint2: 0.0
+    right_finger4_joint2: 0.0
+    right_finger5_joint2: 0.0
+  joint_vel_weight: 0.01
+
+  # forbid hyperextension (反关节). The wuji URDF lets flexion joints go negative
+  # (hyperextend); the optimizer then prefers the反关节 solution in the nullspace
+  # when pos+ori are both satisfiable (wuji CAN反关节, unlike a human DIP). Clamp
+  # the flexion joints (joint1/3/4 -- MCP/PIP/DIP) lower bound to 0 so they can
+  # only flex (human-like). Abduction (joint2, symmetric +/-) is left alone.
+  # Set false to allow hyperextension; flexion_lower_bound < 0 (e.g. -0.05) for a
+  # small hyperextension margin.
+  forbid_flexion_hyperextension: true
+  flexion_lower_bound: 0.0
+
+  # solver
+  opt_ftol_abs: 1.0e-6
+  opt_maxtime: 0.02            # 50Hz budget cap
+  opt_maxeval: 50
+  low_pass_alpha: 0.3

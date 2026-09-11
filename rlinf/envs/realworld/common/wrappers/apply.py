@@ -112,6 +112,13 @@ def apply_single_arm_wrappers(env: gym.Env, cfg: Mapping[str, Any]) -> gym.Env:
     if not env.config.is_dummy and use_spacemouse:
         if is_dex_hand:
             glove_cfg = cfg.get("glove_config", {})
+            if glove_cfg.get("type", "psiglove_1") != "psiglove_1":
+                raise ValueError(
+                    "Franka dexhand wrapper supports psiglove_1; use the standalone Wuji collector for psiglove_2"
+                )
+            retarget_cfg = cfg.get("retargeting", {})
+            if retarget_cfg.get("type", "channel_linear") != "channel_linear":
+                raise ValueError("Ruiyan requires channel_linear")
             DexHandIntervention = _load_dexhand_intervention()
             env = DexHandIntervention(
                 env,

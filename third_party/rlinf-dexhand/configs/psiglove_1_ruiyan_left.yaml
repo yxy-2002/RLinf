@@ -1,0 +1,11 @@
+schema_version: 1
+glove:
+  type: psiglove_1
+  side: left
+  port: /dev/serial/by-id/usb-Teleo_SynGlove_317337863033-if00
+  baudrate: 115200
+retargeting:
+  type: channel_linear
+hand:
+  type: ruiyanhand
+  side: left

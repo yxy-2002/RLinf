@@ -1,0 +1,18 @@
+[build-system]
+requires = ["setuptools>=68,<80"]
+build-backend = "setuptools.build_meta"
+[project]
+name = "RLinf-dexterous-hands"
+version = "0.2.0"
+requires-python = ">=3.10"
+dependencies = ["numpy", "pyserial", "pyyaml"]
+[project.optional-dependencies]
+glove = ["pyyaml"]
+aoyi = ["pymodbus==2.5.3"]
+all = ["pymodbus==2.5.3"]
+wuji = ["pin", "nlopt", "torch"]
+test = ["pytest"]
+[tool.setuptools.packages.find]
+include = ["rlinf_dexhand*"]
+[tool.setuptools.package-data]
+rlinf_dexhand = ["assets/**/*", "glove/psi_glove_driver/*.yaml"]

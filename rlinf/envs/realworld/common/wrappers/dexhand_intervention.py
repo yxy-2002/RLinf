@@ -88,7 +88,7 @@ class DexHandIntervention(gym.ActionWrapper):
         if self.left or self.right:
             self._last_intervene = time.time()
 
-        glove_raw = self._glove.get_angles()
+        glove_raw = np.asarray(self._glove.get_target().values, dtype=np.float64)
 
         if self.left:
             if not self._prev_left:

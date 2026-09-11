@@ -1,0 +1,185 @@
+# Master-Slave Teleoperation Configuration
+# 主从手遥操作配置文件
+
+# ==================== Master Hand (PSI Glove) ====================
+master_hand:
+  # 左手串口配置
+  left_hand_serial:
+    port: "/dev/ttyACM3"  # Windows: COMx, Linux: /dev/ttyUSBx
+    baudrate: 500000
+    timeout: 0.006  # 6ms
+  # 右手串口配置
+  right_hand_serial:
+    port: "/dev/ttyACM0"  # Windows: COMx, Linux: /dev/ttyUSBx
+    baudrate: 500000
+    timeout: 0.006  # 6ms
+  # 数据平滑
+  smoothing_window: 10
+
+  # 左手关节限位 (21个关节，ADC值 0-4095)
+  left_hand_limits:
+    # 拇指 (6个关节)
+    thumb:
+    - {joint_id: 0, name: "tip", min: 1105, max: 2064}          # 指尖
+    - {joint_id: 1, name: "mid", min: 2081, max: 2454}         # 中间
+    - {joint_id: 2, name: "back", min: 3198, max: 2861}        # 根部
+    - {joint_id: 3, name: "side", min: 1238, max: 1580}        # 侧向（闭手2000，张手2500）
+    - {joint_id: 4, name: "rotate", min: 2887, max: 2535}      # 旋转（闭手3300，张手3500）
+    - {joint_id: 5, name: "back2", min: 957, max: 1725}        # 第二根部（新增）
+    # 食指 (4个关节)
+    index:
+    - {joint_id: 6, name: "tip", min: 1104, max: 2044}
+    - {joint_id: 7, name: "mid", min: 2404, max: 2118}
+    - {joint_id: 8, name: "back", min: 3025, max: 967}
+    - {joint_id: 9, name: "side", min: 2217, max: 1913}
+    # 中指 (4个关节)
+    middle:
+    - {joint_id: 10, name: "tip", min: 1098, max: 2050}
+    - {joint_id: 11, name: "mid", min: 2405, max: 2095}
+    - {joint_id: 12, name: "back", min: 3044, max: 788}
+    - {joint_id: 13, name: "side", min: 2223, max: 1886}
+    # 无名指 (4个关节)
+    ring:
+    - {joint_id: 14, name: "tip", min: 1101, max: 2051}
+    - {joint_id: 15, name: "mid", min: 2420, max: 2080}
+    - {joint_id: 16, name: "back", min: 3011, max: 828}
+    - {joint_id: 17, name: "side", min: 2225, max: 1902}
+    # 小指 (4个关节)
+    pinky:
+    - {joint_id: 18, name: "tip", min: 1096, max: 2061}
+    - {joint_id: 19, name: "mid", min: 2092, max: 2471}
+    - {joint_id: 20, name: "back", min: 2994, max: 946}
+    - {joint_id: 21, name: "side", min: 2231, max: 1911}
+  # 右手关节限位 (配置与左手相同)
+  right_hand_limits:
+    # 拇指 (6个关节)
+    thumb:
+    - {joint_id: 0, name: "tip", min: 1079, max: 2047}          # 指尖
+    - {joint_id: 1, name: "mid", min: 2107, max: 2491}         # 中间
+    - {joint_id: 2, name: "back", min: 3136, max: 2789}        # 根部
+    - {joint_id: 3, name: "side", min: 652, max: 302}         # 侧向（闭手2000，张手2500）
+    - {joint_id: 4, name: "rotate", min: 619, max: 310}       # 旋转（闭手3300，张手3500）
+    - {joint_id: 5, name: "back2", min: 3151, max: 2367}      # 第二根部（新增）
+    # 食指 (4个关节)
+    index:
+    - {joint_id: 6, name: "tip", min: 1092, max: 2044}
+    - {joint_id: 7, name: "mid", min: 2431, max: 2107}
+    - {joint_id: 8, name: "back", min: 3056, max: 938}
+    - {joint_id: 9, name: "side", min: 1886, max: 2147}
+    # 中指 (4个关节)
+    middle:
+    - {joint_id: 10, name: "tip", min: 1091, max: 2066}
+    - {joint_id: 11, name: "mid", min: 2439, max: 2088}
+    - {joint_id: 12, name: "back", min: 3047, max: 911}
+    - {joint_id: 13, name: "side", min: 1919, max: 2174}
+    # 无名指 (4个关节)
+    ring:
+    - {joint_id: 14, name: "tip", min: 1091, max: 2071}
+    - {joint_id: 15, name: "mid", min: 2464, max: 2132}
+    - {joint_id: 16, name: "back", min: 3043, max: 893}
+    - {joint_id: 17, name: "side", min: 1934, max: 2185}
+    # 小指 (4个关节)
+    pinky:
+    - {joint_id: 18, name: "tip", min: 1080, max: 2046}
+    - {joint_id: 19, name: "mid", min: 2100, max: 2468}
+    - {joint_id: 20, name: "back", min: 2970, max: 1074}
+    - {joint_id: 21, name: "side", min: 1915, max: 2141}
+
+
+
+
+# ==================== SynGlove Air ====================
+synglove_air:
+  # URDF路径配置 (使用MuJoCo版本的URDF，mesh文件使用相对路径)
+  left_hand_urdf: "SynGlove_Air_URDF/SynGlove_Air_left_001/meshes/SynGlove_Air_left_03_mujoco.urdf"
+  right_hand_urdf: "SynGlove_Air_URDF/SynGlove_Air_right_004/meshes/SynGlove_Air_right_04_mujoco.urdf"
+
+  # MuJoCo仿真配置
+  simulation:
+    timestep: 0.001  # 1ms, 1000Hz
+  # 左手关节限位 (22个可控关节，单位：弧度)
+  left_hand_limits:
+    thumb:
+    - {joint_id: 0, name: "Thumb_Back2", min: 1.05, max: 0.00}
+    - {joint_id: 1, name: "Thumb_Joint0", min: 0.26, max: -0.26}
+    - {joint_id: 2, name: "Thumb_Joint1", min: 1.57, max: 2.09}
+    - {joint_id: 3, name: "Thumb_Joint2", min: 0.52, max: 1.05}
+    - {joint_id: 4, name: "Thumb_Joint3", min: -1.57, max: -1.05}
+    - {joint_id: 5, name: "Thumb_Joint4", min: 0.00, max: 1.57}
+    index:
+    - {joint_id: 6, name: "Index_Joint0", min: -0.17, max: 0.17}
+    - {joint_id: 7, name: "Index_Joint1", min: 0.35, max: 3.55}
+    - {joint_id: 8, name: "Index_Joint2", min: -0.97, max: -1.49}
+    - {joint_id: 9, name: "Index_Joint3", min: 0.00, max: 1.57}
+    middle:
+    - {joint_id: 10, name: "Middle_Joint0", min: -0.17, max: 0.17}
+    - {joint_id: 11, name: "Middle_Joint1", min: 0.35, max: 3.55}
+    - {joint_id: 12, name: "Middle_Joint2", min: -0.97, max: -1.49}
+    - {joint_id: 13, name: "Middle_Joint3", min: 0.00, max: 1.57}
+    ring:
+    - {joint_id: 14, name: "Ring_Joint0", min: -0.17, max: 0.17}
+    - {joint_id: 15, name: "Ring_Joint1", min: 0.35, max: 3.55}
+    - {joint_id: 16, name: "Ring_Joint2", min: -0.97, max: -1.49}
+    - {joint_id: 17, name: "Ring_Joint3", min: 0.00, max: 1.57}
+    little:
+    - {joint_id: 18, name: "Little_Joint0", min: -0.17, max: 0.17}
+    - {joint_id: 19, name: "Little_Joint1", min: 0.55, max: 3.45}
+    - {joint_id: 20, name: "Little_Joint2", min: -1.57, max: -1.05}
+    - {joint_id: 21, name: "Little_Joint3", min: 0.00, max: 1.57}
+  # 右手关节限位 (与左手相同)
+  right_hand_limits:
+    # 拇指 (6个关节)
+    thumb:
+    - {joint_id: 0, name: "Thumb_Back2", min: 1.05, max: 0}
+    - {joint_id: 1, name: "Thumb_Joint0", min: 0.26, max: -0.26}
+    - {joint_id: 2, name: "Thumb_Joint1", min: 1.57, max: 2.09}
+    - {joint_id: 3, name: "Thumb_Joint2", min: 0.52, max: 1.05}
+    - {joint_id: 4, name: "Thumb_Joint3", min: -1.57, max: -1.05}
+    - {joint_id: 5, name: "Thumb_Joint4", min: 0.0, max: 1.57}
+    # 食指 (4个关节)
+    index:
+    - {joint_id: 6, name: "Index_Joint0", min: 0.17, max: -0.17}
+    - {joint_id: 7, name: "Index_Joint1", min: 0.35, max: 3.55}
+    - {joint_id: 8, name: "Index_Joint2", min: -0.97, max: -1.49}
+    - {joint_id: 9, name: "Index_Joint3", min: 0.0, max: 1.57}
+    # 中指 (4个关节)
+    middle:
+    - {joint_id: 10, name: "Middle_Joint0", min: -0.17, max: 0.17}
+    - {joint_id: 11, name: "Middle_Joint1", min: 0.35, max: 3.55}
+    - {joint_id: 12, name: "Middle_Joint2", min: -0.97, max: -1.49}
+    - {joint_id: 13, name: "Middle_Joint3", min: 0.0, max: 1.57}
+    # 无名指 (4个关节)
+    ring:
+    - {joint_id: 14, name: "Ring_Joint0", min: -0.17, max: 0.17}
+    - {joint_id: 15, name: "Ring_Joint1", min: 0.35, max: 3.55}
+    - {joint_id: 16, name: "Ring_Joint2", min: -0.97, max: -1.49}
+    - {joint_id: 17, name: "Ring_Joint3", min: 0.0, max: 1.57}
+    # 小指 (4个关节)
+    little:
+    - {joint_id: 18, name: "Little_Joint0", min: -0.17, max: 0.17}
+    - {joint_id: 19, name: "Little_Joint1", min: 0.55, max: 3.45}
+    - {joint_id: 20, name: "Little_Joint2", min: -1.57, max: -1.05}
+    - {joint_id: 21, name: "Little_Joint3", min: 0.0, max: 1.57}
+
+  # 指尖Link名称（用于位置计算；须为 MuJoCo 内存在的 body/site）
+  fingertip_links:
+    thumb: "Thumb_Link5"
+    index: "Index_Link3"
+    middle: "Middle_Link3"
+    ring: "Ring_Link3"
+    little: "Little_Link3"
+
+  # 在对应 link 局部系下，到指尖参考系的位姿：T_w_tip = T_w_link @ T_offset
+  fingertip_frame_offsets:
+    left:
+      thumb: {pos: [0.014392, 0.0, 0.0], rpy: [-1.5708, 0.0, -1.1974]}
+      index: {pos: [0.014392, 0.0, 0.0], rpy: [1.5708, 0.0, 1.1974]}
+      middle: {pos: [0.014392, 0.0, 0.0], rpy: [-1.5708, 0.0, -1.1974]}
+      ring: {pos: [0.014392, 0.0, 0.0], rpy: [-1.5708, 0.0, -1.1974]}
+      little: {pos: [0.014392, 0.0, 0.0], rpy: [-1.5708, 0.0, -1.1974]}
+    right:
+      thumb: {pos: [0.014392, 0.0, 0.0], rpy: [1.5708, 0.0, 1.9442]}
+      index: {pos: [0.014392, 0.0, 0.0], rpy: [-1.5708, 0.0, -1.1974]}
+      middle: {pos: [0.014392, 0.0, 0.0], rpy: [-1.5708, 0.0, -1.1974]}
+      ring: {pos: [0.014392, 0.0, 0.0], rpy: [-1.5708, 0.0, -1.1974]}
+      little: {pos: [0.014392, 0.0, 0.0], rpy: [-1.5708, 0.0, -1.1974]}

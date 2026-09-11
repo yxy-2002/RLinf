@@ -1,0 +1,1672 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- This URDF was automatically created by SolidWorks to URDF Exporter! Originally created by Stephen Brawner (brawner@gmail.com) 
+     Commit Version: 1.6.0-4-g7f85cfe  Build Version: 1.6.7995.38578
+     For more information, please see http://wiki.ros.org/sw_urdf_exporter -->
+<robot
+  name="260430AirR">
+  <!-- Virtual root: +90° about Y (ROS URDF rpy pitch on Y) -->
+  <link name="glove_root">
+    <inertial>
+      <origin xyz="0 0 0" rpy="0 0 0" />
+      <mass value="1e-6" />
+      <inertia ixx="1e-9" ixy="0" ixz="0" iyy="1e-9" iyz="0" izz="1e-9" />
+    </inertial>
+  </link>
+  <link name="palm_base_link" />
+  <joint name="glove_root_to_palm_base" type="fixed">
+    <origin xyz="0.02 0 0" rpy="0 0 0" />
+    <parent link="glove_root" />
+    <child link="palm_base_link" />
+  </joint>
+  <link
+    name="base_link">
+    <inertial>
+      <origin
+        xyz="0.00109334793546533 -0.0396247149803879 0.0181279752425776"
+        rpy="0 0 0" />
+      <mass
+        value="0.0742980783785697" />
+      <inertia
+        ixx="5.02125361014935E-05"
+        ixy="-4.43051809856775E-07"
+        ixz="-2.34253757715909E-06"
+        iyy="3.53884965089509E-05"
+        iyz="7.03539844400061E-09"
+        izz="7.96120131564757E-05" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="base_link.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.792156862745098 0.819607843137255 0.929411764705882 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="base_link.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint name="glove_root_to_base" type="fixed">
+    <origin xyz="0 0 0" rpy="0 -1.5707963267948966 0" />
+    <parent link="glove_root" />
+    <child link="base_link" />
+  </joint>
+  <link
+    name="Thumb_Link0">
+    <inertial>
+      <origin
+        xyz="0.00710410435297912 -0.00809370233077181 3.43858873303599E-06"
+        rpy="0 0 0" />
+      <mass
+        value="0.00156896593438376" />
+      <inertia
+        ixx="5.87101120753183E-08"
+        ixy="2.71804197154639E-08"
+        ixz="-2.48257608829351E-12"
+        iyy="5.38396916286898E-08"
+        iyz="5.07921119156012E-11"
+        izz="9.19314139895083E-08" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="Thumb_Link0.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.623529411764706 0.780392156862745 1 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="Thumb_Link0.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="Thumb_Joint0"
+    type="continuous">
+    <origin
+      xyz="-0.0085914 0.053969 0"
+      rpy="1.5708 -0.7854 2.3562" />
+    <parent
+      link="base_link" />
+    <child
+      link="Thumb_Link0" />
+    <axis
+      xyz="0 0 -1" />
+    <limit
+      lower="0"
+      upper="1.7444"
+      effort="100"
+      velocity="1" />
+  </joint>
+  <link
+    name="Thumb_Link1">
+    <inertial>
+      <origin
+        xyz="0.0163104320292001 -0.00448946825030083 0.0221922713584967"
+        rpy="0 0 0" />
+      <mass
+        value="0.00855476909268162" />
+      <inertia
+        ixx="1.49509302269924E-06"
+        ixy="2.20163936677882E-07"
+        ixz="1.24459353317263E-06"
+        iyy="3.09500143768649E-06"
+        iyz="-1.64990083434621E-07"
+        izz="2.04117718938942E-06" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="Thumb_Link1.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.345098039215686 0.396078431372549 0.23921568627451 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="Thumb_Link1.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="Thumb_Joint1"
+    type="continuous">
+    <origin
+      xyz="0.00964 -0.05072 0"
+      rpy="1.5711 1.5708 -3.1415" />
+    <parent
+      link="Thumb_Link0" />
+    <child
+      link="Thumb_Link1" />
+    <axis
+      xyz="0 0 -1" />
+    <limit
+      lower="-1.3"
+      upper="1.3"
+      effort="100"
+      velocity="1" />
+  </joint>
+  <link
+    name="Thumb_Link2">
+    <inertial>
+      <origin
+        xyz="0.0172732520482581 0.000556067600519523 -0.0239612669827736"
+        rpy="0 0 0" />
+      <mass
+        value="0.0163208553532395" />
+      <inertia
+        ixx="1.13908734722044E-06"
+        ixy="-5.23644181727453E-08"
+        ixz="5.12228068906654E-09"
+        iyy="4.61336298730029E-06"
+        iyz="4.60624440391096E-09"
+        izz="5.23070848802789E-06" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="Thumb_Link2.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="1 1 1 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="Thumb_Link2.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="Thumb_Joint2"
+    type="continuous">
+    <origin
+      xyz="0.036053 -0.0261 0"
+      rpy="-1.5708 -0.11289 -3.1416" />
+    <parent
+      link="Thumb_Link1" />
+    <child
+      link="Thumb_Link2" />
+    <axis
+      xyz="0 0 1" />
+    <limit
+      lower="0"
+      upper="1.2211"
+      effort="100"
+      velocity="1" />
+  </joint>
+  <link
+    name="Thumb_Link3">
+    <inertial>
+      <origin
+        xyz="0.024255137221798 -0.000544836909415633 -0.00194352971883806"
+        rpy="0 0 0" />
+      <mass
+        value="0.00451797734983959" />
+      <inertia
+        ixx="1.05392458871595E-07"
+        ixy="5.33520468147466E-09"
+        ixz="-1.49494442358949E-09"
+        iyy="1.63098235007759E-06"
+        iyz="-3.60208597775011E-10"
+        izz="1.70869507890261E-06" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="Thumb_Link3.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.576470588235294 0.501960784313725 0.541176470588235 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="Thumb_Link3.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="Thumb_Joint3"
+    type="continuous">
+    <origin
+      xyz="0.0267 0 0"
+      rpy="-1.5708 -1.5473 0" />
+    <parent
+      link="Thumb_Link2" />
+    <child
+      link="Thumb_Link3" />
+    <axis
+      xyz="0 0 1" />
+    <limit
+      lower="0"
+      upper="1.9188"
+      effort="100"
+      velocity="1" />
+  </joint>
+  <link
+    name="Thumb_Link4">
+    <inertial>
+      <origin
+        xyz="0.0370892489619293 -0.00747689607822016 -0.0005763356568151"
+        rpy="0 0 0" />
+      <mass
+        value="0.00497829839278607" />
+      <inertia
+        ixx="2.529111599937E-07"
+        ixy="-1.83668060802699E-07"
+        ixz="-3.6984174131947E-08"
+        iyy="1.85667452929704E-06"
+        iyz="6.72208404758691E-09"
+        izz="2.07491192895918E-06" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="Thumb_Link4.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.0235294117647059 0.250980392156863 0.415686274509804 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="Thumb_Link4.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="Thumb_Joint4"
+    type="continuous">
+    <origin
+      xyz="0.05 0 0"
+      rpy="0 0 2.7998" />
+    <parent
+      link="Thumb_Link3" />
+    <child
+      link="Thumb_Link4" />
+    <axis
+      xyz="0 0 1" />
+    <limit
+      lower="0"
+      upper="1.9188"
+      effort="100"
+      velocity="1" />
+  </joint>
+  <link
+    name="Thumb_Link5">
+    <inertial>
+      <origin
+        xyz="0.0108628900245561 -0.00568323042972479 -3.5092261971556E-05"
+        rpy="0 0 0" />
+      <mass
+        value="0.0020003702903484" />
+      <inertia
+        ixx="7.8616886843565E-08"
+        ixy="2.7288146474901E-08"
+        ixz="-6.36141615869411E-10"
+        iyy="1.01953355303116E-07"
+        iyz="1.9730369409719E-10"
+        izz="1.32355434888443E-07" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="Thumb_Link5.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.513725490196078 1 0.803921568627451 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="Thumb_Link5.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="Thumb_Joint5"
+    type="continuous">
+    <origin
+      xyz="0.06 0 0"
+      rpy="0 0 -0.82057" />
+    <parent
+      link="Thumb_Link4" />
+    <child
+      link="Thumb_Link5" />
+    <axis
+      xyz="0 0 1" />
+    <limit
+      lower="0"
+      upper="2.6829"
+      effort="100"
+      velocity="1" />
+  </joint>
+  <link
+    name="Thumb_Link6">
+    <inertial>
+      <origin
+        xyz="-4.56630566691985E-12 2.0719537197067E-14 -0.00050000000272412"
+        rpy="0 0 0" />
+      <mass
+        value="3.14159265358979E-06" />
+      <inertia
+        ixx="1.04719755119659E-12"
+        ixy="1.26217744835362E-28"
+        ixz="2.52435489670724E-28"
+        iyy="1.04719755119659E-12"
+        iyz="-2.77679038637796E-28"
+        izz="1.57079632679489E-12" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="Thumb_Link6.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="1 1 1 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="Thumb_Link6.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="Thumb_Joint6"
+    type="fixed">
+    <origin
+      xyz="0.014392 0 0"
+      rpy="1.5708 0 1.9442" />
+    <parent
+      link="Thumb_Link5" />
+    <child
+      link="Thumb_Link6" />
+    <axis
+      xyz="0 0 0" />
+  </joint>
+  <link
+    name="Index_Link0">
+    <inertial>
+      <origin
+        xyz="0.0133313048518152 -1.7468480989536E-05 0.00516849088047754"
+        rpy="0 0 0" />
+      <mass
+        value="0.00258713386470219" />
+      <inertia
+        ixx="8.5502989030042E-08"
+        ixy="1.6923084600274E-09"
+        ixz="7.54311126245394E-08"
+        iyy="4.9418305939571E-07"
+        iyz="-2.7770197370266E-10"
+        izz="4.73867799011707E-07" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="Index_Link0.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="1 1 1 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="Index_Link0.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="Index_Joint0"
+    type="continuous">
+    <origin
+      xyz="0.020499 0.034499 0.0014998"
+      rpy="0 0 0" />
+    <parent
+      link="base_link" />
+    <child
+      link="Index_Link0" />
+    <axis
+      xyz="0 0 -1" />
+    <limit
+      lower="-0.5233"
+      upper="0.5233"
+      effort="100"
+      velocity="1" />
+  </joint>
+  <link
+    name="Index_Link1">
+    <inertial>
+      <origin
+        xyz="0.0310914315757394 -0.000805047642775641 -0.0018482396842627"
+        rpy="0 0 0" />
+      <mass
+        value="0.00553617443631193" />
+      <inertia
+        ixx="1.33908504174344E-07"
+        ixy="1.66632074115241E-08"
+        ixz="-4.51448790325376E-10"
+        iyy="2.85522368269055E-06"
+        iyz="-7.78876152643394E-10"
+        izz="2.9556942382353E-06" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="Index_Link1.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.662745098039216 1 0.690196078431373 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="Index_Link1.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="Index_Joint1"
+    type="continuous">
+    <origin
+      xyz="0.032 0 0"
+      rpy="1.5708 -1.3178 3.1416" />
+    <parent
+      link="Index_Link0" />
+    <child
+      link="Index_Link1" />
+    <axis
+      xyz="0 0 1" />
+    <limit
+      lower="0"
+      upper="3.8813"
+      effort="100"
+      velocity="1" />
+  </joint>
+  <link
+    name="Index_Link2">
+    <inertial>
+      <origin
+        xyz="0.0421617275202036 -0.00861973952810419 -0.000585737452960824"
+        rpy="0 0 0" />
+      <mass
+        value="0.00532613992042574" />
+      <inertia
+        ixx="3.13753799987422E-07"
+        ixy="-1.98382498034496E-07"
+        ixz="-4.14488760437018E-08"
+        iyy="2.57232654998112E-06"
+        iyz="8.39861085757267E-09"
+        izz="2.85049806969795E-06" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="Index_Link2.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.776470588235294 0.8 0.788235294117647 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="Index_Link2.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="Index_Joint2"
+    type="continuous">
+    <origin
+      xyz="0.063 0 0"
+      rpy="0 0 2.8061" />
+    <parent
+      link="Index_Link1" />
+    <child
+      link="Index_Link2" />
+    <axis
+      xyz="0 0 1" />
+    <limit
+      lower="0"
+      upper="2.0811"
+      effort="100"
+      velocity="1" />
+  </joint>
+  <link
+    name="Index_Link3">
+    <inertial>
+      <origin
+        xyz="0.010862886276105 -0.00568329962991804 -3.50862307932354E-05"
+        rpy="0 0 0" />
+      <mass
+        value="0.0020003736796376" />
+      <inertia
+        ixx="7.86154896673642E-08"
+        ixy="2.72877329537441E-08"
+        ixz="-6.35856758596445E-10"
+        iyy="1.01952510550109E-07"
+        iyz="1.97259601656518E-10"
+        izz="1.3235537759535E-07" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="Index_Link3.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.513725490196078 1 0.803921568627451 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="Index_Link3.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="Index_Joint3"
+    type="continuous">
+    <origin
+      xyz="0.067883 0 0"
+      rpy="0 0 -0.74093" />
+    <parent
+      link="Index_Link2" />
+    <child
+      link="Index_Link3" />
+    <axis
+      xyz="0 0 1" />
+    <limit
+      lower="0"
+      upper="2.68"
+      effort="100"
+      velocity="1" />
+  </joint>
+  <link
+    name="Index_Link4">
+    <inertial>
+      <origin
+        xyz="0 3.46944695195361E-18 -0.000500000000000007"
+        rpy="0 0 0" />
+      <mass
+        value="3.14159265358978E-06" />
+      <inertia
+        ixx="1.04719755119659E-12"
+        ixy="-2.09405418321219E-28"
+        ixz="-7.06819371078027E-28"
+        iyy="1.04719755119659E-12"
+        iyz="1.24825547944874E-28"
+        izz="1.57079632679489E-12" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="Index_Link4.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="1 1 1 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="Index_Link4.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="Index_Joint4"
+    type="fixed">
+    <origin
+      xyz="0.014392 0 0"
+      rpy="-1.5708 0 -1.1974" />
+    <parent
+      link="Index_Link3" />
+    <child
+      link="Index_Link4" />
+    <axis
+      xyz="0 0 0" />
+  </joint>
+  <link
+    name="Middle_Link0">
+    <inertial>
+      <origin
+        xyz="0.0160272298041299 -1.60826197806133E-05 0.00562437683772364"
+        rpy="0 0 0" />
+      <mass
+        value="0.00280557530953326" />
+      <inertia
+        ixx="9.75967042911164E-08"
+        ixy="1.92151775158935E-09"
+        ixz="8.44374912520853E-08"
+        iyy="6.69799219370518E-07"
+        iyz="-2.98720202903692E-10"
+        izz="6.44802389304584E-07" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="Middle_Link0.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="1 1 1 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="Middle_Link0.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="Middle_Joint0"
+    type="continuous">
+    <origin
+      xyz="0.020499 0.011499 0.0014998"
+      rpy="0 0 0" />
+    <parent
+      link="base_link" />
+    <child
+      link="Middle_Link0" />
+    <axis
+      xyz="0 0 1" />
+    <limit
+      lower="-0.5233"
+      upper="0.5233"
+      effort="100"
+      velocity="1" />
+  </joint>
+  <link
+    name="Middle_Link1">
+    <inertial>
+      <origin
+        xyz="0.0310914316314479 -0.000805047647884277 -0.00184823967950304"
+        rpy="0 0 0" />
+      <mass
+        value="0.00553617444200248" />
+      <inertia
+        ixx="1.33908504199268E-07"
+        ixy="1.66632076396959E-08"
+        ixz="-4.5144887023276E-10"
+        iyy="2.85522368395346E-06"
+        iyz="-7.78876145306844E-10"
+        izz="2.95569423952082E-06" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="Middle_Link1.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.662745098039216 1 0.690196078431373 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="Middle_Link1.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="Middle_Joint1"
+    type="continuous">
+    <origin
+      xyz="0.037 0 0"
+      rpy="1.5708 -1.3178 -3.1416" />
+    <parent
+      link="Middle_Link0" />
+    <child
+      link="Middle_Link1" />
+    <axis
+      xyz="0 0 1" />
+    <limit
+      lower="0"
+      upper="3.8813"
+      effort="100"
+      velocity="1" />
+  </joint>
+  <link
+    name="Middle_Link2">
+    <inertial>
+      <origin
+        xyz="0.0421617272715913 -0.00861973954732574 -0.000585737502095704"
+        rpy="0 0 0" />
+      <mass
+        value="0.00532613996581697" />
+      <inertia
+        ixx="3.13753798949694E-07"
+        ixy="-1.98382495983164E-07"
+        ixz="-4.14488764199978E-08"
+        iyy="2.57232659928406E-06"
+        iyz="8.39861071292499E-09"
+        izz="2.85049811802461E-06" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="Middle_Link2.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.776470588235294 0.8 0.788235294117647 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="Middle_Link2.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="Middle_Joint2"
+    type="continuous">
+    <origin
+      xyz="0.063 0 0"
+      rpy="0 0 2.8061" />
+    <parent
+      link="Middle_Link1" />
+    <child
+      link="Middle_Link2" />
+    <axis
+      xyz="0 0 1" />
+    <limit
+      lower="0"
+      upper="2.0811"
+      effort="100"
+      velocity="1" />
+  </joint>
+  <link
+    name="Middle_Link3">
+    <inertial>
+      <origin
+        xyz="0.010862886276105 -0.00568329962991798 -3.50862307932427E-05"
+        rpy="0 0 0" />
+      <mass
+        value="0.00200037367963759" />
+      <inertia
+        ixx="7.86154896673635E-08"
+        ixy="2.72877329537441E-08"
+        ixz="-6.35856758596471E-10"
+        iyy="1.01952510550109E-07"
+        iyz="1.97259601656514E-10"
+        izz="1.32355377595349E-07" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="Middle_Link3.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.513725490196078 1 0.803921568627451 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="Middle_Link3.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="Middle_Joint3"
+    type="continuous">
+    <origin
+      xyz="0.067883 0 0"
+      rpy="0 0 -0.74093" />
+    <parent
+      link="Middle_Link2" />
+    <child
+      link="Middle_Link3" />
+    <axis
+      xyz="0 0 1" />
+    <limit
+      lower="0"
+      upper="2.6829"
+      effort="100"
+      velocity="1" />
+  </joint>
+  <link
+    name="Middle_Link4">
+    <inertial>
+      <origin
+        xyz="-2.77555756156289E-17 -3.46944695195361E-18 -0.0005"
+        rpy="0 0 0" />
+      <mass
+        value="3.14159265358979E-06" />
+      <inertia
+        ixx="1.04719755119659E-12"
+        ixy="-3.38361095975257E-28"
+        ixz="-5.55358077275592E-28"
+        iyy="1.04719755119659E-12"
+        iyz="1.0453977734238E-28"
+        izz="1.57079632679489E-12" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="Middle_Link4.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="1 1 1 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="Middle_Link4.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="Middle_Joint4"
+    type="fixed">
+    <origin
+      xyz="0.014392 0 0"
+      rpy="-1.5708 0 -1.1974" />
+    <parent
+      link="Middle_Link3" />
+    <child
+      link="Middle_Link4" />
+    <axis
+      xyz="0 0 0" />
+  </joint>
+  <link
+    name="Ring_Link0">
+    <inertial>
+      <origin
+        xyz="0.0133313048518152 -1.74684809895499E-05 0.00516849088047754"
+        rpy="0 0 0" />
+      <mass
+        value="0.0025871338647022" />
+      <inertia
+        ixx="8.5502989030042E-08"
+        ixy="1.69230846002753E-09"
+        ixz="7.54311126245392E-08"
+        iyy="4.94183059395711E-07"
+        iyz="-2.77701973702485E-10"
+        izz="4.73867799011707E-07" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="Ring_Link0.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="1 1 1 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="Ring_Link0.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="Ring_Joint0"
+    type="continuous">
+    <origin
+      xyz="0.020499 -0.0115 0.0014998"
+      rpy="0 0 0" />
+    <parent
+      link="base_link" />
+    <child
+      link="Ring_Link0" />
+    <axis
+      xyz="0 0 1" />
+    <limit
+      lower="-0.5233"
+      upper="0.5233"
+      effort="100"
+      velocity="1" />
+  </joint>
+  <link
+    name="Ring_Link1">
+    <inertial>
+      <origin
+        xyz="0.0310914315757393 -0.000805047642775614 -0.00184823968426269"
+        rpy="0 0 0" />
+      <mass
+        value="0.0055361744363119" />
+      <inertia
+        ixx="1.33908504174344E-07"
+        ixy="1.66632074115235E-08"
+        ixz="-4.51448790324949E-10"
+        iyy="2.85522368269053E-06"
+        iyz="-7.78876152643373E-10"
+        izz="2.95569423823528E-06" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="Ring_Link1.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.662745098039216 1 0.690196078431373 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="Ring_Link1.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="Ring_Joint1"
+    type="continuous">
+    <origin
+      xyz="0.032 0 0"
+      rpy="1.5708 -1.3178 3.1416" />
+    <parent
+      link="Ring_Link0" />
+    <child
+      link="Ring_Link1" />
+    <axis
+      xyz="0 0 1" />
+    <limit
+      lower="0"
+      upper="3.8813"
+      effort="100"
+      velocity="1" />
+  </joint>
+  <link
+    name="Ring_Link2">
+    <inertial>
+      <origin
+        xyz="0.042161723436373 -0.00861974215438152 -0.000585738295674848"
+        rpy="0 0 0" />
+      <mass
+        value="0.00532613888917303" />
+      <inertia
+        ixx="3.13753640973863E-07"
+        ixy="-1.98382121193277E-07"
+        ixz="-4.14488360637756E-08"
+        iyy="2.57232560246068E-06"
+        iyz="8.39862662780652E-09"
+        izz="2.85049696679808E-06" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="Ring_Link2.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.470588235294118 0.501960784313725 0.513725490196078 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="Ring_Link2.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="Ring_Joint2"
+    type="continuous">
+    <origin
+      xyz="0.063 0 0"
+      rpy="0 0 2.8061" />
+    <parent
+      link="Ring_Link1" />
+    <child
+      link="Ring_Link2" />
+    <axis
+      xyz="0 0 1" />
+    <limit
+      lower="0"
+      upper="2.0811"
+      effort="100"
+      velocity="1" />
+  </joint>
+  <link
+    name="Ring_Link3">
+    <inertial>
+      <origin
+        xyz="0.010862886276105 -0.00568329962991798 -3.50862307932284E-05"
+        rpy="0 0 0" />
+      <mass
+        value="0.00200037367963761" />
+      <inertia
+        ixx="7.86154896673642E-08"
+        ixy="2.72877329537441E-08"
+        ixz="-6.35856758596543E-10"
+        iyy="1.01952510550109E-07"
+        iyz="1.97259601656492E-10"
+        izz="1.3235537759535E-07" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="Ring_Link3.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="1 0.427450980392157 1 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="Ring_Link3.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="Ring_Joint3"
+    type="continuous">
+    <origin
+      xyz="0.067883 0 0"
+      rpy="0 0 -0.74093" />
+    <parent
+      link="Ring_Link2" />
+    <child
+      link="Ring_Link3" />
+    <axis
+      xyz="0 0 1" />
+    <limit
+      lower="0"
+      upper="2.6829"
+      effort="100"
+      velocity="1" />
+  </joint>
+  <link
+    name="Ring_Link4">
+    <inertial>
+      <origin
+        xyz="0 3.46944695195361E-18 -0.00049999999999998"
+        rpy="0 0 0" />
+      <mass
+        value="3.14159265358978E-06" />
+      <inertia
+        ixx="1.04719755119659E-12"
+        ixy="-2.09405418321219E-28"
+        ixz="-6.56332273143882E-28"
+        iyy="1.04719755119659E-12"
+        iyz="1.24825547944874E-28"
+        izz="1.57079632679489E-12" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="Ring_Link4.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="1 1 1 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="Ring_Link4.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="Ring_Joint4"
+    type="fixed">
+    <origin
+      xyz="0.014392 0 0"
+      rpy="-1.5708 0 -1.1974" />
+    <parent
+      link="Ring_Link3" />
+    <child
+      link="Ring_Link4" />
+    <axis
+      xyz="0 0 0" />
+  </joint>
+  <link
+    name="Little_Link0">
+    <inertial>
+      <origin
+        xyz="0.0133313048518152 -1.74684809895326E-05 0.00516849088047754"
+        rpy="0 0 0" />
+      <mass
+        value="0.0025871338647022" />
+      <inertia
+        ixx="8.5502989030042E-08"
+        ixy="1.69230846002741E-09"
+        ixz="7.54311126245391E-08"
+        iyy="4.9418305939571E-07"
+        iyz="-2.77701973702611E-10"
+        izz="4.73867799011707E-07" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="Little_Link0.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="1 1 1 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="Little_Link0.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="Little_Joint0"
+    type="continuous">
+    <origin
+      xyz="0.020499 -0.0345 0.0014998"
+      rpy="0 0 0" />
+    <parent
+      link="base_link" />
+    <child
+      link="Little_Link0" />
+    <axis
+      xyz="0 0 1" />
+    <limit
+      lower="-0.5233"
+      upper="0.5233"
+      effort="100"
+      velocity="1" />
+  </joint>
+  <link
+    name="Little_Link1">
+    <inertial>
+      <origin
+        xyz="0.024255071317159 -0.000544766990491677 -0.00194340524260194"
+        rpy="0 0 0" />
+      <mass
+        value="0.00451803634044752" />
+      <inertia
+        ixx="1.05396799373706E-07"
+        ixy="5.33358153011612E-09"
+        ixz="-1.50174695600145E-09"
+        iyy="1.63097277486818E-06"
+        iyz="-3.61665609584553E-10"
+        izz="1.70868866439836E-06" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="Little_Link1.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.576470588235294 0.501960784313725 0.541176470588235 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="Little_Link1.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="Little_Joint1"
+    type="continuous">
+    <origin
+      xyz="0.032 0 0"
+      rpy="1.5708 -1.2802 3.1416" />
+    <parent
+      link="Little_Link0" />
+    <child
+      link="Little_Link1" />
+    <axis
+      xyz="0 0 1" />
+    <limit
+      lower="0"
+      upper="3.8813"
+      effort="100"
+      velocity="1" />
+  </joint>
+  <link
+    name="Little_Link2">
+    <inertial>
+      <origin
+        xyz="0.0370893430391722 -0.0074758952545584 -0.000576669816469172"
+        rpy="0 0 0" />
+      <mass
+        value="0.00497811891131292" />
+      <inertia
+        ixx="2.52897655706995E-07"
+        ixy="-1.83647134616662E-07"
+        ixz="-3.69601193356939E-08"
+        iyy="1.85686932515127E-06"
+        iyz="6.72171542965087E-09"
+        izz="2.07509386288848E-06" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="Little_Link2.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.0235294117647059 0.250980392156863 0.415686274509804 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="Little_Link2.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="Little_Joint2"
+    type="continuous">
+    <origin
+      xyz="0.05 0 0"
+      rpy="0 0 2.7998" />
+    <parent
+      link="Little_Link1" />
+    <child
+      link="Little_Link2" />
+    <axis
+      xyz="0 0 1" />
+    <limit
+      lower="0"
+      upper="1.9188"
+      effort="100"
+      velocity="1" />
+  </joint>
+  <link
+    name="Little_Link3">
+    <inertial>
+      <origin
+        xyz="0.0105725082617 -0.0049421888881712 -3.50843427420686E-05"
+        rpy="0 0 0" />
+      <mass
+        value="0.00200037109819701" />
+      <inertia
+        ixx="7.86150923962855E-08"
+        ixy="2.72876543334237E-08"
+        ixz="-6.35853067594657E-10"
+        iyy="1.01952210305461E-07"
+        iyz="1.97285283674492E-10"
+        izz="1.32355370522809E-07" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="Little_Link3.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.513725490196078 1 0.803921568627451 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="Little_Link3.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="Little_Joint3"
+    type="continuous">
+    <origin
+      xyz="0.06 0 0"
+      rpy="0 0 -0.82057" />
+    <parent
+      link="Little_Link2" />
+    <child
+      link="Little_Link3" />
+    <axis
+      xyz="0 0 1" />
+    <limit
+      lower="0"
+      upper="2.6829"
+      effort="100"
+      velocity="1" />
+  </joint>
+  <link
+    name="Little_Link4">
+    <inertial>
+      <origin
+        xyz="0 6.93889390390723E-18 -0.000500000000000014"
+        rpy="0 0 0" />
+      <mass
+        value="3.14159265358978E-06" />
+      <inertia
+        ixx="1.04719755119659E-12"
+        ixy="3.06303945152095E-29"
+        ixz="-2.52435489670724E-28"
+        iyy="1.04719755119659E-12"
+        iyz="-5.41023870670001E-30"
+        izz="1.57079632679489E-12" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="Little_Link4.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="1 1 1 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="Little_Link4.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="Little_Joint4"
+    type="fixed">
+    <origin
+      xyz="0.014392 0 0"
+      rpy="-1.5708 0 -1.1974" />
+    <parent
+      link="Little_Link3" />
+    <child
+      link="Little_Link4" />
+    <axis
+      xyz="0 0 0" />
+  </joint>
+  <link
+    name="human_thumb_finger_tip" />
+  <joint
+    name="Thumb_Link6_to_human_thumb_finger_tip"
+    type="fixed">
+    <origin
+      xyz="-0.02 0 0.01"
+      rpy="0 0 0" />
+    <parent
+      link="Thumb_Link6" />
+    <child
+      link="human_thumb_finger_tip" />
+  </joint>
+  <link
+    name="human_index_finger_tip" />
+  <joint
+    name="Index_Link4_to_human_index_finger_tip"
+    type="fixed">
+    <origin
+      xyz="0.02 0 0.01"
+      rpy="0 0 0" />
+    <parent
+      link="Index_Link4" />
+    <child
+      link="human_index_finger_tip" />
+  </joint>
+  <link
+    name="human_middle_finger_tip" />
+  <joint
+    name="Middle_Link4_to_human_middle_finger_tip"
+    type="fixed">
+    <origin
+      xyz="0.02 0 0.01"
+      rpy="0 0 0" />
+    <parent
+      link="Middle_Link4" />
+    <child
+      link="human_middle_finger_tip" />
+  </joint>
+  <link
+    name="human_ring_finger_tip" />
+  <joint
+    name="Ring_Link4_to_human_ring_finger_tip"
+    type="fixed">
+    <origin
+      xyz="0.02 0 0.01"
+      rpy="0 0 0" />
+    <parent
+      link="Ring_Link4" />
+    <child
+      link="human_ring_finger_tip" />
+  </joint>
+  <link
+    name="human_little_finger_tip" />
+  <joint
+    name="Little_Link4_to_human_little_finger_tip"
+    type="fixed">
+    <origin
+      xyz="0.02 0 0.01"
+      rpy="0 0 0" />
+    <parent
+      link="Little_Link4" />
+    <child
+      link="human_little_finger_tip" />
+  </joint>
+</robot>

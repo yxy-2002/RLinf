@@ -60,3 +60,8 @@ Each section gives the setup path for teleoperation, data collection, sim-to-rea
    GimArm <embodied/gim_arm>
    XSquare Turtle2 <embodied/xsquare_turtle2>
    DOS-W1 <embodied/dosw1>
+
+.. toctree::
+   :hidden:
+
+   embodied/dexhand_collection

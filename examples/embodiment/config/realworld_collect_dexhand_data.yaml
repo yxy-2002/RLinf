@@ -42,7 +42,10 @@ env:
     no_gripper: False
     use_spacemouse: True
     max_episode_steps: 10000
+    retargeting:
+      type: channel_linear
     glove_config:
+      type: psiglove_1
       left_port: /path/to/glove_port # (e.g. /dev/ttyACM0)
       frequency: 30
     override_cfg:

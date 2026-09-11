@@ -1,0 +1,54 @@
+# Tier 2 retargeting config (Xin2025 Eq.6 hand-only): glove -> Wuji LEFT.
+# Same as right; only urdf_path + the side prefix on every name differs.
+retargeting:
+  type: Xin2025Tier2
+  urdf_path: wuji_hand_description/urdf/left-ros.urdf
+
+  # robot frame wiring (wuji URDF link names are already side-prefixed)
+  wrist_link_name: left_palm_link
+  fingertip_link_names: [left_finger1_tip_link, left_finger2_tip_link, left_finger3_tip_link, left_finger4_tip_link, left_finger5_tip_link]
+  dip_link_names: [left_finger1_link4, left_finger2_link4, left_finger3_link4, left_finger4_link4, left_finger5_link4]
+  target_joint_names:
+    [left_finger1_joint1, left_finger1_joint2, left_finger1_joint3, left_finger1_joint4,
+     left_finger2_joint1, left_finger2_joint2, left_finger2_joint3, left_finger2_joint4,
+     left_finger3_joint1, left_finger3_joint2, left_finger3_joint3, left_finger3_joint4,
+     left_finger4_joint1, left_finger4_joint2, left_finger4_joint3, left_finger4_joint4,
+     left_finger5_joint1, left_finger5_joint2, left_finger5_joint3, left_finger5_joint4]
+
+  # loss weights (lambda)
+  lambda_fingertip_pos: 2.0
+  lambda_fingertip_rot: 4.5
+  lambda_pinch: 10.0
+
+  # pinch continuous sigmoid + distance rescaling
+  epsilon1: 0.1
+  epsilon2: 0.01
+  sigmoid_w: 10.0
+  huber_delta: 0.02
+
+  # human->robot hand-size scalar; 'auto' = calibrate at startup (robot/human wrist->middle_tip)
+  scaling_factor: calibrated  # "calibrated" = use the saved wuji_{hand}_scale_calibrated.yml (run calibrate_scale.sh once); falls back to auto if absent
+
+  # joint regularization (abduction joints + thumb opposition; see right config)
+  # thumb joint2/joint3 weighted toward 0 to stop palmward curl drift (see right).
+  joint_pos_ref: 0.0
+  joint_pos_weights:
+    left_finger1_joint1: 0.0
+    left_finger1_joint2: 0.0
+    left_finger1_joint3: 0.0
+    left_finger2_joint2: 0.0
+    left_finger3_joint2: 0.0
+    left_finger4_joint2: 0.0
+    left_finger5_joint2: 0.0
+  joint_vel_weight: 0.01
+
+  # forbid hyperextension (反关节) -- see wuji_right_tier2.yml. wuji joints can
+  # go negative; clamp flexion joints (joint1/3/4) lower bound to 0 (flexion only).
+  forbid_flexion_hyperextension: true
+  flexion_lower_bound: 0.0
+
+  # solver
+  opt_ftol_abs: 1.0e-6
+  opt_maxtime: 0.02
+  opt_maxeval: 50
+  low_pass_alpha: 0.3
