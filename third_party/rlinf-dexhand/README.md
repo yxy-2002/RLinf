@@ -42,6 +42,8 @@ finally:
 
 `channel_linear` 保留原六通道选取、两阶段映射、每帧变化量限幅和最多十帧平均。`wuji_tier2` 保留 ADC 映射、十帧整数平均、URDF 正向运动学、骨架偏移、逐指缩放及 Tier2 优化目标；无需 ROS TF。不同采样频率下滤波窗口的实际时长不同，调用方应明确设置频率。
 
+Wuji 优化器输出保留双精度关节角，避免限位处转换为 `float32` 后因舍入误差触发 `Target outside hand limits`。关节限位校验仍然有效；更新源码后重启重定向进程即可应用，无需重新标定。
+
 旧 `GloveExpert.get_angles()` 仍兼容原 PSI1/Ruiyan 调用，`get_target()` 返回结构化目标。旧 Ruiyan/Aoyi 驱动导出保留，原 Franka 12 维相对接管流程不变。新算法接口不要求打开灵巧手硬件。
 
 ## 标定

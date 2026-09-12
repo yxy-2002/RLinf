@@ -24,12 +24,13 @@
 #
 # Robot model: pinocchio via robot_pinocchio.RobotPinocchio (no mimic; DOA==DOF).
 
-from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Tuple
+from dataclasses import dataclass
+from typing import Optional
 
 import nlopt
 import numpy as np
 import torch
+
 from .robot_pinocchio import RobotPinocchio
 
 Vec3 = np.ndarray
@@ -42,9 +43,9 @@ class Tier2Config:
 
     # Robot frame wiring
     wrist_link_name: str
-    fingertip_link_names: List[str]   # 5, thumb-first
-    dip_link_names: List[str]         # 5, robot DIP frames (Link_X_3)
-    target_joint_names: List[str]     # 21
+    fingertip_link_names: list[str]  # 5, thumb-first
+    dip_link_names: list[str]  # 5, robot DIP frames (Link_X_3)
+    target_joint_names: list[str]  # 21
     # loss weights (lambda)
     lambda_fingertip_pos: float
     lambda_fingertip_rot: float
@@ -54,11 +55,11 @@ class Tier2Config:
     epsilon2: float
     sigmoid_w: float
     huber_delta: float
-    scaling_factor: float            # human->robot scalar; resolved (auto calibrated upstream)
+    scaling_factor: float  # human->robot scalar; resolved (auto calibrated upstream)
     # joint regularization
-    joint_pos_ref: np.ndarray        # (21,) q_bar
-    joint_pos_weights: np.ndarray    # (21,) w_pos
-    joint_vel_weight: float          # w_vel (scalar)
+    joint_pos_ref: np.ndarray  # (21,) q_bar
+    joint_pos_weights: np.ndarray  # (21,) w_pos
+    joint_vel_weight: float  # w_vel (scalar)
     # solver
     opt_ftol_abs: float
     opt_maxtime: float
@@ -94,7 +95,9 @@ class Tier2Optimizer:
         self.robot = robot
         self.cfg = cfg
         self.n = len(cfg.target_joint_names)
-        assert self.n == robot.dof, f"target_joint_names {self.n} != robot.dof {robot.dof}"
+        assert self.n == robot.dof, (
+            f"target_joint_names {self.n} != robot.dof {robot.dof}"
+        )
 
         # Pin pinocchio joint order to the config order.
         self.dof_joint_names = robot.dof_joint_names
@@ -116,11 +119,15 @@ class Tier2Optimizer:
                     self._lower[i] = max(self._lower[i], cfg.flexion_lower_bound)
 
         # Frames computed each eval: wrist + 5 tip + 5 DIP = 11 (wrist may overlap a tip? no)
-        self.computed_frames: List[str] = list(
-            dict.fromkeys([cfg.wrist_link_name, *cfg.fingertip_link_names, *cfg.dip_link_names])
+        self.computed_frames: list[str] = list(
+            dict.fromkeys(
+                [cfg.wrist_link_name, *cfg.fingertip_link_names, *cfg.dip_link_names]
+            )
         )
         self._wrist_idx = self.computed_frames.index(cfg.wrist_link_name)
-        self._tip_idx = [self.computed_frames.index(n) for n in cfg.fingertip_link_names]
+        self._tip_idx = [
+            self.computed_frames.index(n) for n in cfg.fingertip_link_names
+        ]
         self._dip_idx = [self.computed_frames.index(n) for n in cfg.dip_link_names]
         # pinch: thumb (finger 0) -> primary fingers (1..4)
         self._pinch_origin = self._tip_idx[0]
@@ -143,12 +150,12 @@ class Tier2Optimizer:
     # ---- public API ----
 
     def retarget(
-        self, ref_values: Dict[str, np.ndarray], qpos_init: Optional[np.ndarray] = None
+        self, ref_values: dict[str, np.ndarray], qpos_init: Optional[np.ndarray] = None
     ) -> np.ndarray:
         """Solve one retargeting step. ref_values keys: wrist_tip, thumb_primary,
         dip_tip, (all (N,3) SCALED human vectors); qpos_init optional warm start."""
-        x0 = (
-            (qpos_init if qpos_init is not None else self._last_qpos).astype(np.float64)
+        x0 = (qpos_init if qpos_init is not None else self._last_qpos).astype(
+            np.float64
         )
         x0 = np.clip(x0, self._lower, self._upper)
         self._ref = ref_values  # stash for the objective closure
@@ -166,7 +173,9 @@ class Tier2Optimizer:
             self._lp_y = self._lp_y + self._lp_alpha * (qpos - self._lp_y)
             qpos = self._lp_y.copy()
         self._last_qpos = qpos.copy()
-        return qpos.astype(np.float32)
+        # Preserve the URDF limit precision: float32 can round a clipped angle
+        # outside the physical bounds and fail HandSpec validation.
+        return qpos.copy()
 
     def auto_calibrate_scaling(
         self, human_wrist_tip: np.ndarray, middle_idx: int = 2
@@ -223,37 +232,43 @@ class Tier2Optimizer:
 
         # ---- human (scaled) reference vectors (detached) ----
         wrist_pos = pos_t[self._wrist_idx]
-        tip_pos = pos_t[self._tip_idx]            # (5,3)
-        dip_pos = pos_t[self._dip_idx]            # (5,3)
+        tip_pos = pos_t[self._tip_idx]  # (5,3)
+        dip_pos = pos_t[self._dip_idx]  # (5,3)
 
-        ref_wrist_tip = torch.as_tensor(self._ref["wrist_tip"], dtype=torch.float64)   # (5,3)
-        ref_pinch = torch.as_tensor(self._ref["thumb_primary"], dtype=torch.float64)   # (4,3)
-        ref_dip_tip = torch.as_tensor(self._ref["dip_tip"], dtype=torch.float64)       # (5,3)
+        ref_wrist_tip = torch.as_tensor(
+            self._ref["wrist_tip"], dtype=torch.float64
+        )  # (5,3)
+        ref_pinch = torch.as_tensor(
+            self._ref["thumb_primary"], dtype=torch.float64
+        )  # (4,3)
+        ref_dip_tip = torch.as_tensor(
+            self._ref["dip_tip"], dtype=torch.float64
+        )  # (5,3)
 
         # ---- robot vectors ----
-        robot_wrist_tip = tip_pos - wrist_pos                       # (5,3)
-        robot_pinch = tip_pos[1:5] - tip_pos[0:1]                   # (4,3) thumb->primary
-        robot_dip_tip = tip_pos - dip_pos                           # (5,3)
+        robot_wrist_tip = tip_pos - wrist_pos  # (5,3)
+        robot_pinch = tip_pos[1:5] - tip_pos[0:1]  # (4,3) thumb->primary
+        robot_dip_tip = tip_pos - dip_pos  # (5,3)
 
         # ---- pinch switching (numpy, detached) ----
         # distances d_i on SCALED human pinch vectors (= robot space)
         pinch_h = self._ref["thumb_primary"]
-        d = np.linalg.norm(pinch_h, axis=1)                          # (4,)
-        s = _sigmoid(d, cfg.epsilon1, cfg.sigmoid_w)                # (4,) high when pinching
-        l = _rescale(d, cfg.epsilon1, cfg.epsilon2)                 # (4,)
-        dir_h = pinch_h / (d[:, None] + 1e-9)                       # unit dir
-        pinch_target = l[:, None] * dir_h                           # (4,3) rescaled target
+        d = np.linalg.norm(pinch_h, axis=1)  # (4,)
+        s = _sigmoid(d, cfg.epsilon1, cfg.sigmoid_w)  # (4,) high when pinching
+        l = _rescale(d, cfg.epsilon1, cfg.epsilon2)  # (4,)
+        dir_h = pinch_h / (d[:, None] + 1e-9)  # unit dir
+        pinch_target = l[:, None] * dir_h  # (4,3) rescaled target
         pinch_target_t = torch.as_tensor(pinch_target, dtype=torch.float64)
 
         # fingertip_pos switching weight s_tilde = sigmoid(d, eps1, -w); s_tilde + s = 1
         # (use per-finger pinch distance; thumb uses d_thumb = 1.0 -> s_tilde ~ 1)
         d_pos = np.ones(5, dtype=np.float64)
         d_pos[1:5] = d
-        s_tilde = _sigmoid(d_pos, cfg.epsilon1, -cfg.sigmoid_w)    # (5,)
+        s_tilde = _sigmoid(d_pos, cfg.epsilon1, -cfg.sigmoid_w)  # (5,)
 
         # ---- losses (huber on L2 norm) ----
         def huber_on_vec_diff(robot_vec, ref_vec, weight_per_row):
-            err = torch.norm(robot_vec - ref_vec, dim=-1)           # (N,)
+            err = torch.norm(robot_vec - ref_vec, dim=-1)  # (N,)
             w = torch.as_tensor(weight_per_row, dtype=torch.float64)
             return (self.huber_loss(w * err, torch.zeros_like(err))).sum()
 
@@ -263,13 +278,13 @@ class Tier2Optimizer:
         L_rot = cfg.lambda_fingertip_rot * huber_on_vec_diff(
             robot_dip_tip, ref_dip_tip, np.ones(5)
         )
-        L_pinch = cfg.lambda_pinch * huber_on_vec_diff(
-            robot_pinch, pinch_target_t, s
-        )
+        L_pinch = cfg.lambda_pinch * huber_on_vec_diff(robot_pinch, pinch_target_t, s)
 
         # joint regularization (analytic, in cfg order)
         q_err = qpos_t - torch.as_tensor(cfg.joint_pos_ref, dtype=torch.float64)
-        L_joint = (torch.as_tensor(cfg.joint_pos_weights, dtype=torch.float64) * q_err * q_err).sum()
+        L_joint = (
+            torch.as_tensor(cfg.joint_pos_weights, dtype=torch.float64) * q_err * q_err
+        ).sum()
         q_vel = qpos_t - torch.as_tensor(self._last_qpos, dtype=torch.float64)
         L_vel = (cfg.joint_vel_weight * q_vel * q_vel).sum()
 
@@ -283,12 +298,12 @@ class Tier2Optimizer:
             for f in self.computed_frames:
                 jac = self.robot.get_frame_space_jacobian(f)  # (6, dof_pin)
                 jac_list.append(jac[:3, :])
-            jac_pin = np.stack(jac_list, axis=0)               # (11, 3, dof_pin)
+            jac_pin = np.stack(jac_list, axis=0)  # (11, 3, dof_pin)
             # slice to cfg joint order
-            jac_cfg = jac_pin[:, :, self.idx_cfg2pin]          # (11, 3, n_cfg)
-            grad_pos = pos_t.grad.cpu().numpy()[:, None, :]    # (11, 1, 3)
-            link_grad = np.matmul(grad_pos, jac_cfg)           # (11, 1, n_cfg)
-            link_grad = link_grad.mean(1).sum(0)               # (n_cfg,)
+            jac_cfg = jac_pin[:, :, self.idx_cfg2pin]  # (11, 3, n_cfg)
+            grad_pos = pos_t.grad.cpu().numpy()[:, None, :]  # (11, 1, 3)
+            link_grad = np.matmul(grad_pos, jac_cfg)  # (11, 1, n_cfg)
+            link_grad = link_grad.mean(1).sum(0)  # (n_cfg,)
             # qpos-tensor grads (joint reg terms)
             q_grad = qpos_t.grad.cpu().numpy()
             grad[:] = link_grad + q_grad
@@ -296,7 +311,7 @@ class Tier2Optimizer:
         return float(total.cpu().detach().item())
 
 
-def build_config(raw: Dict) -> Tuple[Tier2Config, str, bool]:
+def build_config(raw: dict) -> tuple[Tier2Config, str, bool]:
     """Build a Tier2Config from a parsed YAML dict (the 'retargeting:' block).
 
     Returns (config, urdf_path, scaling_auto). scaling_auto=True means the caller
@@ -313,7 +328,9 @@ def build_config(raw: Dict) -> Tuple[Tier2Config, str, bool]:
 
     sf = raw.get("scaling_factor", "auto")
     if isinstance(sf, str) and sf == "auto":
-        scaling = 1.0  # placeholder; caller overrides via auto_calibrate_scaling_per_finger
+        scaling = (
+            1.0  # placeholder; caller overrides via auto_calibrate_scaling_per_finger
+        )
         scaling_auto = True
     elif isinstance(sf, (list, tuple)) and len(sf) == 5:
         # manual PER-FINGER scaling [thumb, index, middle, ring, pinky] -- lets the
@@ -348,7 +365,9 @@ def build_config(raw: Dict) -> Tuple[Tier2Config, str, bool]:
         opt_maxtime=float(raw.get("opt_maxtime", 0.02)),
         opt_maxeval=int(raw.get("opt_maxeval", 50)),
         low_pass_alpha=float(raw.get("low_pass_alpha", 0.3)),
-        forbid_flexion_hyperextension=bool(raw.get("forbid_flexion_hyperextension", True)),
+        forbid_flexion_hyperextension=bool(
+            raw.get("forbid_flexion_hyperextension", True)
+        ),
         flexion_lower_bound=float(raw.get("flexion_lower_bound", 0.0)),
     )
     return cfg, raw["urdf_path"], scaling_auto
