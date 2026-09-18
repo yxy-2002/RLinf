@@ -29,7 +29,7 @@ class DexpnpConfig(FrankaRobotConfig):
     )
     enable_random_reset: bool = True
     enable_gripper_penalty: bool = False
-    step_frequency: float = 5.0
+    step_frequency: float = 10.0
 
     def __post_init__(self):
         self.compliance_param = {
@@ -79,10 +79,10 @@ class DexpnpConfig(FrankaRobotConfig):
         self.reward_threshold = np.array(self.reward_threshold)
         self.action_scale = np.array([0.03, 0.5, 1])
         self.ee_pose_limit_min = self.target_ee_pose - np.array(
-            [0.02, 0.02, 0.02, 0.003, 0.003, 0.003]
+            [0.50, 0.50, 0.07, 0.003, 0.003, 0.003]
         )
         self.ee_pose_limit_max = self.target_ee_pose + np.array(
-            [0.02, 0.02, 0.1, 0.003, 0.003, 0.003]
+            [0.50, 0.50, 0.1, 0.003, 0.003, 0.003]
         )
         self.hand_target_state = np.array(self.hand_target_state)
         self.hand_reset_state = np.array(self.hand_reset_state)
@@ -98,7 +98,7 @@ class DexpnpEnv(FrankaEnv):
     def go_to_rest(self, joint_reset=False):
         """
         Move to the rest position defined in base class.
-        Add a small z offset before going to rest to avoid collision with object.
+        Raise the end effector by 3 cm, then 2 cm before the base reset.
         """
         if self._is_hand:
             self._end_effector_action(self.config.hand_reset_state)
@@ -108,7 +108,7 @@ class DexpnpEnv(FrankaEnv):
         self._move_action(self._franka_state.tcp_pose)
 
         self._franka_state = self._controller.get_state().wait()[0]
-        # Move up to clear the slot
+        # Raise the end effector before moving to the rest pose.
         reset_pose = copy.deepcopy(self._franka_state.tcp_pose)
         reset_pose[2] += 0.03
         time.sleep(5)

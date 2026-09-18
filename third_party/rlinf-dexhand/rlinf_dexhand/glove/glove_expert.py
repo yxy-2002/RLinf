@@ -1,8 +1,9 @@
 # Copyright 2026 The RLinf Authors.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Compatibility facade: legacy get_angles now uses the split PSI1 pipeline."""
+"""PSI1 glove acquisition with cached targets and a get_angles compatibility API."""
 
+import logging
 import threading
 import time
 
@@ -34,9 +35,24 @@ class GloveExpert:
     def _read_loop(self):
         try:
             self.driver.start()
+            last_warning = float("-inf")
             while not self.stop.is_set():
                 begin = time.monotonic()
-                target = self.retargeter.update(self.driver.read())
+                try:
+                    sample = self.driver.read()
+                except TimeoutError:
+                    # Retain the last valid input and retry after a read timeout.
+                    now = time.monotonic()
+                    if now - last_warning >= 5.0:
+                        logging.getLogger(__name__).warning(
+                            "Glove read timed out; retaining last valid sample and retrying"
+                        )
+                        last_warning = now
+                    # Discard partial responses before issuing the next request.
+                    self.driver.serial.reset_input_buffer()
+                    self.stop.wait(1 / self.frequency)
+                    continue
+                target = self.retargeter.update(sample)
                 with self.lock:
                     self.latest = target
                 self.stop.wait(max(0, 1 / self.frequency - (time.monotonic() - begin)))
@@ -52,8 +68,6 @@ class GloveExpert:
                 raise RuntimeError("Glove acquisition failed") from self.error
             if self.latest is None:
                 raise RuntimeError("No valid glove sample yet")
-            if time.time() - self.latest.timestamp > 0.5:
-                raise RuntimeError("Stale glove sample")
             return self.latest
 
     def get_angles(self):

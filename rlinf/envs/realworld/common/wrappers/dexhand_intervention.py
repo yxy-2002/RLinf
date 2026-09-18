@@ -37,8 +37,10 @@ class DexHandIntervention(gym.ActionWrapper):
         glove_frequency: int = 60,
         glove_config_file: Optional[str] = None,
         timeout: float = 0.5,
+        policy_passthrough: bool = False,
     ) -> None:
         super().__init__(env)
+        self._policy_passthrough = policy_passthrough
         assert self.action_space.shape == (12,), (
             f"DexHandIntervention expects a 12-D action space, "
             f"got {self.action_space.shape}"
@@ -110,7 +112,11 @@ class DexHandIntervention(gym.ActionWrapper):
             return expert_action, True
 
         fallback = np.array(action, dtype=np.float64)
-        fallback[6:] = self._hand_current
+        if self._policy_passthrough:
+            self._hand_current = np.clip(fallback[6:], 0.0, 1.0).copy()
+            fallback[6:] = self._hand_current
+        else:
+            fallback[6:] = self._hand_current
         return fallback, False
 
     def step(self, action):
@@ -119,6 +125,7 @@ class DexHandIntervention(gym.ActionWrapper):
         obs, rew, done, truncated, info = self.env.step(new_action)
         if replaced:
             info["intervene_action"] = new_action
+        info["teleop_hand_target"] = new_action[6:].copy()
         info["left"] = self.left
         info["right"] = self.right
         return obs, rew, done, truncated, info

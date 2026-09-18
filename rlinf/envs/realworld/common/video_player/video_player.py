@@ -30,6 +30,14 @@ class VideoPlayer:
         self._run_thread = threading.Thread(target=self._play, daemon=True)
         self._run_thread.start()
 
+    def stop(self):
+        """Stop the display thread; also safe when display was disabled."""
+        self.is_running = False
+        thread = getattr(self, "_run_thread", None)
+        if thread is not None and thread.is_alive():
+            self.queue.put(None)
+            thread.join(timeout=2.0)
+
     def put_frame(self, frame):
         if self.is_running:
             self.queue.put(frame)
@@ -53,3 +61,9 @@ class VideoPlayer:
 
             cv2.imshow("Cameras", frame)
             cv2.waitKey(1)
+
+        self.is_running = False
+        try:
+            cv2.destroyWindow("Cameras")
+        except cv2.error:
+            pass  # No window was created if stopped before the first frame.

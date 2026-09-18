@@ -29,6 +29,7 @@ from omegaconf import OmegaConf
 from rlinf.envs.realworld.venv import NoAutoResetSyncVectorEnv
 from rlinf.envs.utils import to_tensor
 from rlinf.scheduler import WorkerInfo
+from rlinf.utils.ruiyan_rlpd import close_on_error
 
 
 class RealWorldEnv(gym.Env):
@@ -58,6 +59,16 @@ class RealWorldEnv(gym.Env):
             self.override_cfg.get("manual_episode_control_only", False)
         )
 
+        self._ruiyan_cfg = cfg.get("ruiyan_rlpd", {})
+        self._ruiyan_reward = None
+        if self._ruiyan_cfg.get("enabled", False):
+            from rlinf.utils.ruiyan_rlpd import OnlineReward
+
+            if self.main_image_key != "global" or self.ignore_terminations:
+                raise ValueError(
+                    "Ruiyan RLPD requires global main and ignore_terminations=false"
+                )
+            self._ruiyan_reward = OnlineReward(self._ruiyan_cfg)
         self._init_env()
 
         self._is_start = True
@@ -83,13 +94,10 @@ class RealWorldEnv(gym.Env):
 
     @staticmethod
     def realworld_setup():
-        """Setup RealWorld environment upon env class import.
+        """Clean up existing ROS processes under a node-local file lock.
 
-        This is for any node-level setup required by RealWorld environments. For example, ROS
-        requires a single roscore instance per node, so we ensure that any existing roscore
-        processes are terminated before starting a new one.
-
-        This function is called once when the RealWorldEnv class is first imported.
+        Called by the realworld package initializer. This method terminates
+        roscore, rosmaster, and rosout processes; it does not start replacements.
         """
         # Concurrency control is needed for multiple processes on the same node
         node_lock_file = "/tmp/.realworld.lock"
@@ -117,6 +125,10 @@ class RealWorldEnv(gym.Env):
 
     @property
     def action_space(self):
+        if self._ruiyan_reward is not None:
+            return gym.spaces.Box(
+                -1.0, 1.0, shape=self.env.action_space.shape, dtype=np.float32
+            )
         return self.env.action_space
 
     @property
@@ -125,7 +137,7 @@ class RealWorldEnv(gym.Env):
 
     @property
     def total_num_group_envs(self):
-        return np.iinfo(np.uint8).max // 2  # TODO
+        return np.iinfo(np.uint8).max // 2
 
     @property
     def is_start(self):
@@ -194,8 +206,11 @@ class RealWorldEnv(gym.Env):
         infos["episode"] = to_tensor(episode_info)
         return infos
 
+    @close_on_error
     def reset(self, *, reset_state_ids=None, seed=None, options=None, env_idx=None):
-        # TODO: handle partial reset
+        if self._ruiyan_reward is not None:
+            self._ruiyan_reward.before_reset()
+        # The underlying environment resets all instances, even when env_idx is set.
         raw_obs, infos = self.env.reset(seed=seed, options=options)
 
         extracted_obs = self._wrap_obs(raw_obs)
@@ -231,11 +246,18 @@ class RealWorldEnv(gym.Env):
         obs["task_descriptions"] = self.task_descriptions
         return obs
 
+    @close_on_error
     def step(self, actions=None, auto_reset=True):
         if isinstance(actions, torch.Tensor):
             actions = actions.detach().cpu().numpy()
 
+        if self._ruiyan_reward is not None:
+            self._ruiyan_reward.check_stopped()
         self._elapsed_steps += 1
+        if self._ruiyan_reward is not None:
+            from rlinf.utils.ruiyan_rlpd import decode_action
+
+            actions = decode_action(actions, self._ruiyan_cfg.get("arm_scale", 2.0))
         raw_obs, _reward, terminations, truncations, infos = self.env.step(actions)
         # max_episode_steps: null → external wrapper owns episode end.
         if self.cfg.max_episode_steps is None:
@@ -246,6 +268,14 @@ class RealWorldEnv(gym.Env):
             truncations = timeout_truncations
 
         obs = self._wrap_obs(raw_obs)
+        if self._ruiyan_reward is not None:
+            probability, success, aborted = self._ruiyan_reward.evaluate(obs)
+            _reward = np.array([float(success)], dtype=np.float32)
+            terminations = np.array([success], dtype=bool)
+            truncations = np.asarray(truncations, dtype=bool) & ~terminations
+            if aborted:
+                truncations[:] = True
+            infos["reward_probability"] = np.array([probability], dtype=np.float32)
         step_reward = self._calc_step_reward(_reward)
         success_current_step = np.isclose(step_reward, 1.0)
         intervene_flag = np.zeros(self.num_envs, dtype=bool)
@@ -271,6 +301,14 @@ class RealWorldEnv(gym.Env):
                 env_intervene_action = infos["intervene_action"][env_id]
                 if env_intervene_action is not None:
                     intervene_action[env_id] = env_intervene_action.copy()
+        if self._ruiyan_reward is not None:
+            from rlinf.utils.ruiyan_rlpd import encode_action
+
+            for index in range(self.num_envs):
+                if intervene_flag[index]:
+                    intervene_action[index] = encode_action(
+                        intervene_action[index], self._ruiyan_cfg.get("arm_scale", 2.0)
+                    )
         infos["intervene_action"] = to_tensor(intervene_action)
         infos["intervene_flag"] = to_tensor(intervene_flag)
 
@@ -378,6 +416,23 @@ class RealWorldEnv(gym.Env):
 
     def _calc_step_reward(self, reward: np.ndarray):
         return reward.astype(np.float32)
+
+    def request_stop(self):
+        if self._ruiyan_reward is not None:
+            self._ruiyan_reward.stop_requested.set()
+
+    def close(self):
+        if getattr(self, "_ruiyan_closed", False):
+            return
+        self._ruiyan_closed = True
+        try:
+            if self._ruiyan_reward is not None:
+                for subenv in self.env.envs:
+                    controller = getattr(subenv.unwrapped, "_controller", None)
+                    if controller is not None:
+                        controller.shutdown_demo_control().wait()
+        finally:
+            self.env.close()
 
     def _get_random_reset_state_ids(self, num_reset_states):
         reset_state_ids = self._generator.integers(

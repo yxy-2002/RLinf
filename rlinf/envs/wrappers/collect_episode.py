@@ -100,8 +100,8 @@ class CollectEpisode(gym.Wrapper):
             ``0`` disables periodic flushing (lerobot only). Defaults to 100.
         resume: If True and ``export_format == "lerobot"``, reuse ``save_dir``
             across sessions — new episodes land in a fresh ``id_{N}`` shard
-            (N = sum of episodes across pre-existing shards) so the in-progress
-            write never touches previously-finalized data. Ignored for pickle.
+            (N = maximum existing shard ID + 1, or 0 if none exist) so the
+            write does not reuse an existing shard. Ignored for pickle.
             Defaults to False.
     """
 
@@ -339,6 +339,31 @@ class CollectEpisode(gym.Wrapper):
             return False
         return bool(np.asarray(env_info[key]).any())
 
+    def _recorded_action(self, action, env_info):
+        """Copy the effective action for pickle and LeRobot exports.
+
+        Teleoperation replaces the collector's placeholder via intervene_action.
+        Respect per-environment validity and intervention flags; chunk-ending
+        info may contain an action history whose last command applies here.
+        """
+        intervention = env_info.get("intervene_action")
+        if intervention is None:
+            return self._copy(action)
+        for key in ("_intervene_action", "intervene_flag"):
+            mask = env_info.get(key)
+            if mask is not None and not bool(self._to_numpy(mask).reshape(-1)[-1]):
+                return self._copy(action)
+        np_action = self._to_numpy(action)
+        intervention = self._to_numpy(intervention)
+        if intervention.shape != np_action.shape:
+            if np_action.size == 0 or intervention.size % np_action.size:
+                raise ValueError(
+                    "Intervention action shape does not match the recorded action: "
+                    f"{intervention.shape} vs {np_action.shape}"
+                )
+            intervention = intervention.reshape(-1, *np_action.shape)[-1]
+        return self._copy(intervention)
+
     def _record_step(self, action, obs, reward, terminated, truncated, info) -> None:
         """Record one transition into every env's buffer."""
         self._global_step += 1
@@ -363,9 +388,6 @@ class CollectEpisode(gym.Wrapper):
                 env_info = self._slice_copy(final_info_batch, env_idx)
                 self._pending_obs[env_idx] = self._slice_copy(obs, env_idx)
                 self._pending_info[env_idx] = self._slice_copy(info_no_reset, env_idx)
-                if "intervene_action" in env_info:
-                    env_info["intervene_action"] = env_info["intervene_action"][-1]
-                    env_info["intervene_flag"] = env_info["intervene_flag"][-1]
             else:
                 env_obs = self._slice_copy(obs, env_idx)
                 env_info = self._slice_copy(info, env_idx)
@@ -391,7 +413,9 @@ class CollectEpisode(gym.Wrapper):
 
             buf = self._buffers[env_idx]
             buf["observations"].append(env_obs)
-            buf["actions"].append(self._slice_copy(action, env_idx))
+            buf["actions"].append(
+                self._recorded_action(self._slice_data(action, env_idx), env_info)
+            )
             buf["rewards"].append(self._slice_copy(reward, env_idx))
             buf["terminated"].append(self._slice_copy(terminated, env_idx))
             buf["truncated"].append(self._slice_copy(truncated, env_idx))
@@ -480,23 +504,21 @@ class CollectEpisode(gym.Wrapper):
     def _buffer_to_lerobot_ep(
         self, buf: dict, env_idx: int, is_success: bool
     ) -> Optional[list[dict[str, Any]]]:
-        """Convert a raw episode buffer into a list of per-step frame dicts.
-        Produces the format expected by ``LeRobotDatasetWriter.add_episode``:
-        a ``list[dict]`` where every dict represents one step and carries the
-        fields ``image``, ``state``, ``actions``, ``task``, ``is_success``,
-        ``done``, ``intervene_flag``, and optionally ``wrist_image`` /
-        ``extra_view_image``.
-        The observations list contains one extra entry prepended at reset time,
-        so it is aligned to the actions list by taking the leading N entries.
-        Steps where any required field (image, state, action) is missing are
-        silently skipped.
+        """Convert recorded transitions to LeRobot per-step frame dictionaries.
+
+        Each frame contains state, actions, task, success, termination,
+        intervention, and segment fields. Image fields are added when available.
+        Observations are aligned with actions using the leading N entries.
+        Frames missing state or action are skipped; frames containing unresolved
+        final_info are skipped with a warning.
+
         Args:
-            buf: Raw episode buffer produced by ``_new_buffer``.
-            env_idx: Index of the parallel environment this buffer belongs to.
-            is_success: Whether the episode was successful.
+            buf: Recorded episode buffer.
+            env_idx: Index of the parallel environment.
+            is_success: Success label applied to the exported frames.
+
         Returns:
-            A list of per-step frame dicts, or ``None`` if no valid frames
-            could be extracted.
+            Frame dictionaries, or None if no valid frames remain.
         """
         actions = buf["actions"]
         terminated = buf["terminated"]
@@ -514,7 +536,7 @@ class CollectEpisode(gym.Wrapper):
             image, wrist_image, extra_view_image, state = self._extract_obs_image_state(
                 obs
             )
-            # Overwrite action with intervene action if present.
+            # Actions already include valid interventions from _record_step.
             np_action = self._to_numpy(action)
             raw_info = buf["infos"][i + 1]
             if isinstance(raw_info, dict) and "final_info" in raw_info:
@@ -529,12 +551,6 @@ class CollectEpisode(gym.Wrapper):
                 continue
             info_with_intervene = copy.deepcopy(raw_info)
 
-            if (
-                "intervene_flag" in info_with_intervene
-                and "intervene_action" in info_with_intervene
-            ):
-                if info_with_intervene["intervene_flag"].all():
-                    np_action = self._to_numpy(info_with_intervene["intervene_action"])
             if state is None or np_action is None:
                 continue
             intervene_flag = self._intervene_flag_from_info(info_with_intervene)
@@ -606,7 +622,7 @@ class CollectEpisode(gym.Wrapper):
         """Return ``{key: (H, W, C)}`` for all frame keys matching *prefix*.
 
         Matches both the bare ``prefix`` (e.g. ``wrist_image``) and indexed
-        variants (``wrist_image/0``, ``wrist_image/1``, …).
+        variants (``wrist_image-0``, ``wrist_image-1``, …).
         """
         return {
             k: tuple(frame[k].shape)
@@ -674,12 +690,12 @@ class CollectEpisode(gym.Wrapper):
             self._episode_success[env_idx] = self._episode_success[env_idx] or success
 
     def _get_episode_success(self, buf: dict, env_idx: int) -> bool:
-        """Determine final episode success by scanning recorded info dicts.
+        """Return the accumulated success flag or scan recorded info entries.
 
-        Checks (in priority order): ``final_info``, ``episode``, and the root
-        info dict, looking for ``success_once``, ``success_at_end``, and
-        ``success`` keys. Falls back to the incrementally-updated
-        ``_episode_success`` flag.
+        An already successful episode returns True immediately. Otherwise,
+        combine extracted success values across entries with logical OR.
+        Within an entry, final_info and episode-level values take precedence
+        over root-level success fields.
         """
         if self._episode_success[env_idx]:
             return True

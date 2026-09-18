@@ -521,7 +521,7 @@ class EnvWorker(Worker):
     def _build_chunk_final_obs(self, obs_list, infos_list):
         """Build per-env terminal observations for a whole chunk.
 
-        Matches the old wrapper semantics:
+        Terminal observation selection:
         - default to the last rollout observation for each env
         - if an env terminated earlier in the chunk, replace that env's observation
           with the true `final_observation` captured at that substep
@@ -1003,9 +1003,16 @@ class EnvWorker(Worker):
                             rollout_result.save_flags
                         )
 
-                    env_output, env_info = self.env_interact_step(
-                        rollout_result.actions, stage_id
-                    )
+                    if cooperative_yield and self.cfg.env.train.get(
+                        "ruiyan_rlpd", {}
+                    ).get("enabled", False):
+                        env_output, env_info = await self._ruiyan_interact_step(
+                            rollout_result.actions, stage_id
+                        )
+                    else:
+                        env_output, env_info = self.env_interact_step(
+                            rollout_result.actions, stage_id
+                        )
                     env_batch = env_output.to_dict()
                     self.send_to(
                         group_name=self.cfg.rollout.group_name,

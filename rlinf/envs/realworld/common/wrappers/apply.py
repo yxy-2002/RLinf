@@ -126,6 +126,7 @@ def apply_single_arm_wrappers(env: gym.Env, cfg: Mapping[str, Any]) -> gym.Env:
                 right_port=glove_cfg.get("right_port", None),
                 glove_frequency=glove_cfg.get("frequency", 60),
                 glove_config_file=glove_cfg.get("config_file", None),
+                policy_passthrough=cfg.get("ruiyan_rlpd", {}).get("enabled", False),
             )
         else:
             env = SpacemouseIntervention(env, gripper_enabled=gripper_enabled)
@@ -158,7 +159,7 @@ def apply_single_arm_wrappers(env: gym.Env, cfg: Mapping[str, Any]) -> gym.Env:
 def apply_dual_franka_joint_wrappers(env: gym.Env, cfg: Mapping[str, Any]) -> gym.Env:
     config = env.get_wrapper_attr("config")
     if cfg.get("no_gripper", True):
-        # No DualGripperCloseEnv yet, so a 12D action would blow up as reshape(2,7).
+        # Dual-arm control expects 14 action values; 12-D gripper-free input is unsupported.
         raise NotImplementedError(
             "no_gripper=True not supported for dual-arm envs (no DualGripperCloseEnv)."
         )

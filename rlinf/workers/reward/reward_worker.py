@@ -245,7 +245,7 @@ class EmbodiedRewardWorker(Worker):
         self.env_decoupled_mode = self.cfg.runner.get("enable_decoupled_mode", False)
 
         if self.env_decoupled_mode:
-            # save the run-time imformation in communicate channel for decoupled mode
+            # Store runtime routing information for decoupled communication.
             # The batch_router is a dictionary that maps the tag to the list of batch_index.
             self.batch_router = {
                 "train_reward_obs": [],
@@ -318,19 +318,11 @@ class EmbodiedRewardWorker(Worker):
     def compute_image_rewards(
         self, observations: dict[str, Any]
     ) -> torch.Tensor | np.ndarray:
-        """Compute reward scores from observation input.
+        """Compute model rewards from a batched observation dictionary.
 
-        Interface:
-            - Input: ``observations`` (batched observation payload passed to
-              ``self.model.compute_reward``).
-            - Output: ``torch.Tensor`` or ``np.ndarray`` reward results. Tensor
-              outputs are detached to CPU, and 1-D tensors are reshaped to ``(N, 1)``.
-
-        Called from:
-            - ``RewardWorker.compute_rewards`` (in-process)
-            - ``RewardWorker._compute_rewards`` (in-process)
-            - ``FrankaEnv._compute_reward_model`` via worker RPC
-            - ``RealworldTeleopEvaluator._teleop_loop`` via worker RPC
+        Tensor rewards are detached and moved to CPU. A rank-1 tensor is
+        expanded to shape (N, 1). The model output must support dim() when
+        non-None.
         """
         rewards = self.model.compute_reward(observations)
         if rewards is not None and rewards.dim() == 1:
@@ -454,8 +446,12 @@ class FSDPRewardWorker(FSDPModelManager, Worker):
             f"Loading preprocessed reward datasets from "
             f"{train_data_paths} and {val_data_paths}"
         )
-        train_dataset = RewardBinaryDataset(train_data_paths)
-        val_dataset = RewardBinaryDataset(val_data_paths)
+        train_dataset = RewardBinaryDataset(
+            train_data_paths, image_keys=self.cfg.actor.model.get("image_keys")
+        )
+        val_dataset = RewardBinaryDataset(
+            val_data_paths, image_keys=self.cfg.actor.model.get("image_keys")
+        )
 
         if len(train_dataset) == 0:
             self.logger.warning("Training dataset is empty")
@@ -522,7 +518,7 @@ class FSDPRewardWorker(FSDPModelManager, Worker):
                 self.data_iter = iter(self.data_loader)
                 images, labels = next(self.data_iter)
 
-            # Move to device: images shape is (B, C, H, W), labels shape is (B,)
+            # Move image batches (including any view dimension) and labels to device.
             images = images.to(self.device)
             labels = labels.to(self.device)
 

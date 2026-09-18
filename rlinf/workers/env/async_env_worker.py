@@ -13,6 +13,7 @@
 # limitations under the License.
 
 import asyncio
+from contextlib import suppress
 
 from omegaconf.omegaconf import DictConfig
 
@@ -53,6 +54,10 @@ class AsyncEnvWorker(EnvWorker):
             await self._interact_task
         except asyncio.CancelledError:
             pass
+        finally:
+            if self.cfg.env.train.get("ruiyan_rlpd", {}).get("enabled", False):
+                for env in self.env_list:
+                    env.close()
 
     async def _interact(
         self,
@@ -83,6 +88,23 @@ class AsyncEnvWorker(EnvWorker):
             }
             metric_channel.put(metrics, async_op=True)
 
+    async def _ruiyan_interact_step(self, actions, stage_id):
+        # Manual reset can wait indefinitely; keep the actor event loop responsive
+        # to stop(), and join the step before releasing its controller resources.
+        task = asyncio.create_task(
+            asyncio.to_thread(self.env_interact_step, actions, stage_id)
+        )
+        try:
+            return await asyncio.shield(task)
+        except asyncio.CancelledError:
+            self.env_list[stage_id].request_stop()
+            with suppress(Exception):
+                await task
+            raise
+
     async def stop(self):
         if self._interact_task is not None and not self._interact_task.done():
             self._interact_task.cancel()
+            if self.cfg.env.train.get("ruiyan_rlpd", {}).get("enabled", False):
+                with suppress(asyncio.CancelledError):
+                    await self._interact_task

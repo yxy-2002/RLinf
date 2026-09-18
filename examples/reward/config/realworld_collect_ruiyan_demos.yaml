@@ -1,0 +1,125 @@
+defaults:
+- env/realworld_dex_pnp@env.eval
+- override hydra/job_logging: stdout
+- _self_
+hydra:
+  run:
+    dir: .
+  output_subdir: null
+  searchpath:
+  - file://${oc.env:REWARD_PATH}/config/
+  - file://${oc.env:REWARD_PATH}/../embodiment/config/
+cluster:
+  num_nodes: 1
+  component_placement:
+    env:
+      node_group: franka
+      placement: 0
+  node_groups:
+  - label: franka
+    node_ranks: 0
+    hardware:
+      type: Franka
+      configs:
+      - robot_ip: 172.17.0.2
+        node_rank: 0
+runner:
+  task_type: embodied
+  logger:
+    log_path: null
+    project_name: rlinf
+    experiment_name: collect-dexhand-data
+    logger_backends:
+    - tensorboard
+  num_success_frames: 50
+  num_fail_frames: 600
+  val_split: 0.2
+  fail_success_ratio: 3.0
+  random_seed: 42
+  raw_save_interval: 50
+  reward_image_keys:
+  - global
+  - wrist_1
+  num_data_episodes: 5
+  reward_url: http://127.0.0.1:8770
+  rpc_timeout: 3
+  success_threshold: 0.9
+  success_hold_steps: 1
+  min_episode_steps: 10
+  require_confirmation: true
+env:
+  group_name: EnvGroup
+  eval:
+    main_image_key: global
+    ignore_terminations: true
+    auto_reset: false
+    no_gripper: false
+    use_spacemouse: true
+    max_episode_steps: 1000
+    retargeting:
+      type: channel_linear
+    glove_config:
+      type: psiglove_1
+      left_port: /dev/ttyACM0
+      frequency: 60
+    override_cfg:
+      enable_camera_player: false
+      enable_random_reset: false
+      camera_serials:
+      - '218722271249'
+      - '105322251046'
+      camera_names:
+        '218722271249': wrist_1
+        '105322251046': global
+      target_ee_pose:
+      - 0.69527303
+      - 0.05198199
+      - 0.35333533
+      - 2.41892377
+      - -0.55353047
+      - 0.93099308
+      end_effector_type: ruiyan_hand
+      end_effector_config:
+        port: /dev/ttyUSB0
+        baudrate: 460800
+        motor_ids:
+        - 1
+        - 2
+        - 3
+        - 4
+        - 5
+        - 6
+        default_velocity: 2000
+        default_current: 800
+        default_state:
+        - 0.0
+        - 0.0
+        - 0.0
+        - 0.0
+        - 0.0
+        - 0.0
+      hand_target_state:
+      - 0.0
+      - 0.0
+      - 0.0
+      - 0.0
+      - 0.0
+      - 0.0
+      hand_reset_state:
+      - 0.4
+      - 0.0
+      - 0.0
+      - 0.0
+      - 0.0
+      - 0.0
+      hand_action_scale: 1.0
+      joint_reset_qpos:
+      - 0
+      - 0
+      - 0
+      - -1.9
+      - 0
+      - 2
+      - 0
+      success_hold_steps: 1
+    keyboard_reward_wrapper: null

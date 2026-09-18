@@ -1,0 +1,321 @@
+defaults:
+- env/realworld_dex_pnp@env.train
+- env/realworld_dex_pnp@env.eval
+- model/cnn_policy@actor.model
+- training_backend/fsdp@actor.fsdp_config
+- weight_syncer/patch_syncer@weight_syncer
+- override hydra/job_logging: stdout
+- _self_
+hydra:
+  run:
+    dir: .
+  output_subdir: null
+  searchpath:
+  - file://${oc.env:EMBODIED_PATH}/config/
+cluster:
+  num_nodes: 2
+  component_placement:
+    actor:
+      node_group: '4090'
+      placement: 0
+    env:
+      node_group: franka
+      placement: 0
+    rollout:
+      node_group: '4090'
+      placement: 0
+  node_groups:
+  - label: '4090'
+    node_ranks: 0
+    env_configs:
+    - node_ranks: 0
+      python_interpreter_path: /opt/venv/openvla/bin/python
+      env_vars:
+      - PYTHONPATH: /workspace/RLinf
+      - RLINF_COMM_NET_DEVICES: enx6c1ff7bb8d22
+      - GLOO_SOCKET_IFNAME: enx6c1ff7bb8d22
+      - NCCL_SOCKET_IFNAME: enx6c1ff7bb8d22
+  - label: franka
+    node_ranks: 1
+    hardware:
+      type: Franka
+      configs:
+      - robot_ip: 172.17.0.2
+        node_rank: 1
+    env_configs:
+    - node_ranks: 1
+      python_interpreter_path: /opt/venv/franka-0.15.0/bin/python
+      env_vars:
+      - PYTHONPATH: /workspace/RLinf
+      - RLINF_COMM_NET_DEVICES: enx6c1ff7bcd3e4
+      - GLOO_SOCKET_IFNAME: enx6c1ff7bcd3e4
+      - NCCL_SOCKET_IFNAME: enx6c1ff7bcd3e4
+runner:
+  task_type: embodied
+  logger:
+    log_path: logs/ruiyan_rlpd
+    project_name: rlinf
+    experiment_name: ruiyan_rlpd
+    logger_backends:
+    - tensorboard
+  max_epochs: 100
+  max_steps: -1
+  only_eval: false
+  val_check_interval: -1
+  save_interval: 10
+  resume_dir: null
+  ckpt_path: null
+algorithm:
+  update_epoch: 8
+  group_size: 1
+  agg_q: min
+  actor_agg_q: mean
+  enable_drq: false
+  backup_entropy: false
+  critic_subsample_size: 2
+  adv_type: embodied_sac
+  loss_type: embodied_sac
+  loss_agg_func: token-mean
+  bootstrap_type: standard
+  gamma: 0.97
+  tau: 0.005
+  entropy_tuning:
+    alpha_type: softplus
+    initial_alpha: 0.01
+    target_entropy: -6
+    optim:
+      lr: 0.0003
+      lr_scheduler: torch_constant
+      clip_grad: 10.0
+  critic_actor_ratio: 2
+  replay_buffer:
+    enable_cache: true
+    cache_size: 200
+    min_buffer_size: 2
+    sample_window_size: 200
+    auto_save: true
+  demo_buffer:
+    enable_cache: true
+    cache_size: 200
+    min_buffer_size: 1
+    sample_window_size: 200
+    load_path: /workspace/RLinf/datasets/ruiyan_rlpd/demo_v1
+    auto_save: true
+  target_update_freq: 1
+env:
+  group_name: EnvGroup
+  eval:
+    main_image_key: global
+    ignore_terminations: false
+    auto_reset: true
+    no_gripper: false
+    use_spacemouse: true
+    max_episode_steps: 300
+    retargeting:
+      type: channel_linear
+    glove_config:
+      type: psiglove_1
+      left_port: /dev/ttyACM0
+      frequency: 60
+    override_cfg:
+      enable_camera_player: false
+      enable_random_reset: false
+      camera_serials:
+      - '218722271249'
+      - '105322251046'
+      camera_names:
+        '218722271249': wrist_1
+        '105322251046': global
+      target_ee_pose:
+      - 0.69527303
+      - 0.05198199
+      - 0.35333533
+      - 2.41892377
+      - -0.55353047
+      - 0.93099308
+      end_effector_type: ruiyan_hand
+      end_effector_config:
+        port: /dev/ttyUSB0
+        baudrate: 460800
+        motor_ids:
+        - 1
+        - 2
+        - 3
+        - 4
+        - 5
+        - 6
+        default_velocity: 2000
+        default_current: 800
+        default_state:
+        - 0.0
+        - 0.0
+        - 0.0
+        - 0.0
+        - 0.0
+        - 0.0
+      hand_target_state:
+      - 0.0
+      - 0.0
+      - 0.0
+      - 0.0
+      - 0.0
+      - 0.0
+      hand_reset_state:
+      - 0.4
+      - 0.0
+      - 0.0
+      - 0.0
+      - 0.0
+      - 0.0
+      hand_action_scale: 1.0
+      joint_reset_qpos:
+      - 0
+      - 0
+      - 0
+      - -1.9
+      - 0
+      - 2
+      - 0
+      success_hold_steps: 1
+    keyboard_reward_wrapper: null
+    total_num_envs: 1
+    max_steps_per_rollout_epoch: 100
+    ruiyan_rlpd:
+      enabled: true
+      arm_scale: 2.0
+      reward_url: http://127.0.0.1:8770
+      threshold: 0.75
+      hold_steps: 1
+      min_steps: 10
+      rpc_timeout: 3
+      manual_reset: true
+    rollout_epoch: 1
+  train:
+    main_image_key: global
+    ignore_terminations: false
+    auto_reset: true
+    no_gripper: false
+    use_spacemouse: true
+    max_episode_steps: 300
+    retargeting:
+      type: channel_linear
+    glove_config:
+      type: psiglove_1
+      left_port: /dev/ttyACM0
+      frequency: 60
+    override_cfg:
+      enable_camera_player: false
+      enable_random_reset: false
+      camera_serials:
+      - '218722271249'
+      - '105322251046'
+      camera_names:
+        '218722271249': wrist_1
+        '105322251046': global
+      target_ee_pose:
+      - 0.69527303
+      - 0.05198199
+      - 0.35333533
+      - 2.41892377
+      - -0.55353047
+      - 0.93099308
+      end_effector_type: ruiyan_hand
+      end_effector_config:
+        port: /dev/ttyUSB0
+        baudrate: 460800
+        motor_ids:
+        - 1
+        - 2
+        - 3
+        - 4
+        - 5
+        - 6
+        default_velocity: 2000
+        default_current: 800
+        default_state:
+        - 0.0
+        - 0.0
+        - 0.0
+        - 0.0
+        - 0.0
+        - 0.0
+      hand_target_state:
+      - 0.0
+      - 0.0
+      - 0.0
+      - 0.0
+      - 0.0
+      - 0.0
+      hand_reset_state:
+      - 0.4
+      - 0.0
+      - 0.0
+      - 0.0
+      - 0.0
+      - 0.0
+      hand_action_scale: 1.0
+      joint_reset_qpos:
+      - 0
+      - 0
+      - 0
+      - -1.9
+      - 0
+      - 2
+      - 0
+      success_hold_steps: 1
+    keyboard_reward_wrapper: null
+    total_num_envs: 1
+    max_steps_per_rollout_epoch: 100
+    ruiyan_rlpd:
+      enabled: true
+      arm_scale: 2.0
+      reward_url: http://127.0.0.1:8770
+      threshold: 0.75
+      hold_steps: 1
+      min_steps: 10
+      rpc_timeout: 3
+      manual_reset: true
+rollout:
+  group_name: RolloutGroup
+  backend: huggingface
+  enable_offload: false
+  pipeline_stage_num: 1
+  collect_transitions: true
+  collect_prev_infos: false
+  model: ${actor.model}
+  enable_torch_compile: false
+  enable_cuda_graph: false
+actor:
+  group_name: ActorGroup
+  training_backend: fsdp
+  micro_batch_size: 32
+  global_batch_size: 32
+  seed: 1234
+  enable_offload: false
+  model:
+    model_path: /workspace/RLinf/RLinf-ResNet10-pretrained
+    state_dim: 24
+    action_dim: 12
+    num_q_heads: 10
+    image_num: 2
+  optim:
+    clip_grad: 10.0
+    lr: 0.0003
+    lr_scheduler: torch_constant
+  critic_optim:
+    clip_grad: 10.0
+    lr: 0.0003
+    lr_scheduler: torch_constant
+  fsdp_config:
+    strategy: fsdp
+    sharding_strategy: no_shard
+    mixed_precision:
+      param_dtype: ${actor.model.precision}
+      reduce_dtype: ${actor.model.precision}
+      buffer_dtype: ${actor.model.precision}
+reward:
+  use_reward_model: false
+critic:
+  use_critic_model: false
+weight_syncer:
+  nccl_max_ctas: 32

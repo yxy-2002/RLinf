@@ -65,18 +65,19 @@ class RewardDatasetPayload:
 class RewardBinaryDataset(Dataset):
     """Dataset for binary classification reward model training.
 
-    Uses per-frame 'is_obj_placed' field from infos to determine success/fail labels.
-    This is more accurate than using episode-level labels from filenames.
+    Loads images and binary labels from RewardDatasetPayload.
     """
 
     def __init__(
         self,
         data_path: str,
+        image_keys=None,
     ):
         """Initialize dataset from a preprocessed .pt file.
 
         Args:
             data_path: Path to preprocessed dataset .pt file.
+            image_keys: Expected camera order for multi-view dataset validation.
 
         Required payload schema is defined by `RewardDatasetPayload`.
         """
@@ -84,6 +85,12 @@ class RewardBinaryDataset(Dataset):
         self.images = payload.images
         self.labels = payload.labels
         self.metadata = payload.metadata
+        if image_keys is not None and len(image_keys) > 1:
+            if self.metadata.get("image_keys") != list(image_keys):
+                raise ValueError("Dataset camera order does not match model image_keys")
+            for image in self.images:
+                if image.ndim != 4 or image.shape[0] != len(image_keys):
+                    raise ValueError("Expected paired V,H,W,C or V,C,H,W images")
 
     def __len__(self) -> int:
         return len(self.images)
@@ -92,6 +99,7 @@ class RewardBinaryDataset(Dataset):
         """Get (image, label) pair.
 
         Returns:
-            Tuple of (image tensor (C, H, W), label (0 or 1))
+            Tuple of (image tensor, binary label). Images retain the stored layout
+            and include a leading view dimension for paired-view samples.
         """
         return self.images[idx], torch.tensor(self.labels[idx], dtype=torch.float32)

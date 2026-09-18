@@ -14,7 +14,6 @@
 
 import queue
 import threading
-import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import Optional
@@ -55,6 +54,9 @@ class BaseCamera(ABC):
             target=self._capture_frames, daemon=True
         )
         self._frame_capturing_start = False
+        self._stop_event = threading.Event()
+        self._close_lock = threading.Lock()
+        self._closed = False
 
     @property
     def name(self) -> str:
@@ -62,15 +64,32 @@ class BaseCamera(ABC):
 
     def open(self):
         """Start the background frame-capturing thread."""
-        self._frame_capturing_start = True
-        self._frame_capturing_thread.start()
+        with self._close_lock:
+            if self._closed:
+                raise RuntimeError("Cannot open a closed camera; create a new instance")
+            self._frame_capturing_start = True
+            self._frame_capturing_thread.start()
 
     def close(self):
         """Stop the capture thread and release hardware resources."""
-        self._frame_capturing_start = False
-        self._close_device()
-        if self._frame_capturing_thread.is_alive():
-            self._frame_capturing_thread.join(timeout=2.0)
+        with self._close_lock:
+            if self._closed:
+                return
+            self._frame_capturing_start = False
+            self._stop_event.set()
+            thread = self._frame_capturing_thread
+            # Let a normal read finish before stopping its pipeline. If a read
+            # is blocked, closing the device below can interrupt it.
+            if thread.is_alive():
+                thread.join(timeout=2.0)
+            try:
+                self._close_device()
+            finally:
+                self._closed = True
+                if thread.is_alive():
+                    thread.join(timeout=2.0)
+                if thread.is_alive():
+                    _logger.warning("[%s] Capture thread did not stop", self.name)
 
     def get_frame(self, timeout: int = 5) -> np.ndarray:
         """Return the most recent frame (blocks up to *timeout* seconds).
@@ -86,17 +105,20 @@ class BaseCamera(ABC):
     # ── internal ──────────────────────────────────────────────────────
 
     def _capture_frames(self):
-        while self._frame_capturing_start:
-            time.sleep(1 / self._camera_info.fps)
+        while not self._stop_event.wait(1 / self._camera_info.fps):
             try:
                 has_frame, frame = self._read_frame()
             except Exception as e:
+                if self._stop_event.is_set():
+                    break
                 _logger.error(
                     "[%s] _read_frame raised %s: %s — exiting capture thread.",
                     self._camera_info.name,
                     type(e).__name__,
                     e,
                 )
+                break
+            if self._stop_event.is_set():
                 break
             if not has_frame:
                 _logger.error(

@@ -1,0 +1,2 @@
+# AsyncEnvWorker imports the algorithm registry's tool-call parsers.
+regex==2026.2.28

@@ -12,19 +12,19 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from __future__ import annotations
+
 import logging
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import torch
 from omegaconf import DictConfig
 from torch.utils.data import Dataset
-from transformers import AutoTokenizer
+
+if TYPE_CHECKING:
+    from transformers import AutoTokenizer
 
 from rlinf.data.datasets.item import DatasetItem
-from rlinf.data.datasets.reasoning import ReasoningDataset
-from rlinf.data.datasets.rstar2 import Rstar2Dataset
-from rlinf.data.datasets.vlm import VLMDatasetRegistry
-from rlinf.data.datasets.wideseek_r1 import WideSeekR1Dataset
 
 
 def create_rl_dataset(
@@ -41,6 +41,11 @@ def create_rl_dataset(
 
         val_dataset (Dataset): The validation dataset.
     """
+
+    from rlinf.data.datasets.reasoning import ReasoningDataset
+    from rlinf.data.datasets.rstar2 import Rstar2Dataset
+    from rlinf.data.datasets.vlm import VLMDatasetRegistry
+    from rlinf.data.datasets.wideseek_r1 import WideSeekR1Dataset
 
     dataset_type_map = {
         "reasoning": ReasoningDataset,
@@ -69,7 +74,7 @@ def create_rl_dataset(
 
         return train_dataset, val_dataset
     elif config.data.type == "vision_language":
-        # Prefer new factory-based VLM datasets; fallback to legacy if requested
+        # Create VLM datasets through the configured registry entry.
         dataset_name = getattr(config.data, "dataset_name", None)
         lazy_loading = bool(getattr(config.data, "lazy_loading", False))
 
@@ -204,8 +209,6 @@ def sft_collate_fn(data_list: list["DatasetItem"]) -> dict[str, Any]:
         prompts = padded_prompts
 
         # attention_mask is padded on the left
-        # for example attention_mask:
-        # [True, True, True, True, True, True, False, False]
         padded_attention = []
         for m in attention_masks:
             if m.numel() < target_len:
@@ -214,11 +217,7 @@ def sft_collate_fn(data_list: list["DatasetItem"]) -> dict[str, Any]:
             padded_attention.append(m)
         attention_masks = padded_attention
 
-    # label_mask is padded on the left
-    # for example label_mask:
-    # [True, True, True, True, False, Fasle, True, True]
-    # for the labels,will be set:
-    # [-100, -100, -100, -100, -100, -100, -100, -100]
+    # Right-pad each label mask to its prompt length, then left-pad to batch length.
     padded_label = []
     for m, prompt_len in zip(label_masks, lens):
         if m.numel() < prompt_len:
@@ -273,3 +272,26 @@ def sft_collate_fn(data_list: list["DatasetItem"]) -> dict[str, Any]:
     batch["attention_mask"] = torch.stack(attention_masks, dim=0)
     batch["label_mask"] = torch.stack(label_masks, dim=0)
     return batch
+
+
+def __getattr__(name):
+    """Keep public dataset exports lazy for image-only control environments."""
+    from importlib import import_module
+
+    modules = {
+        "ReasoningDataset": "reasoning",
+        "Rstar2Dataset": "rstar2",
+        "VLMDatasetRegistry": "vlm",
+        "WideSeekR1Dataset": "wideseek_r1",
+        "AutoTokenizer": None,
+    }
+    if name not in modules:
+        raise AttributeError(name)
+    module = (
+        "transformers"
+        if modules[name] is None
+        else f"rlinf.data.datasets.{modules[name]}"
+    )
+    value = getattr(import_module(module), name)
+    globals()[name] = value
+    return value

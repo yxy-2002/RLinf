@@ -12,13 +12,13 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Collect per-frame success/fail labels in a single episode and save as .pt.
+"""Collect keyboard-labeled image frames and save training/validation .pt files.
 
 Workflow (end-to-end, no intermediate pkl):
-  1. Run one episode using the RealWorld env with SpaceMouse/keyboard.
+  1. Reset the RealWorld env and step using SpaceMouse/keyboard control.
   2. Label each step via keyboard: 'c' = success frame, 'a' = fail frame.
   3. Stop when both configured thresholds are reached (or max_steps exhausted).
-  4. Apply fail:success ratio sampling and train/val split.
+  4. Randomly split frames, then subsample training negatives to the ratio.
   5. Save train.pt / val.pt directly (no .pkl intermediate).
 
 Usage:
@@ -45,11 +45,12 @@ logger = get_logger()
 
 
 class FrameCollector(Worker):
-    """Collects per-frame success/fail labels within a single episode.
+    """Collects per-frame success/fail labels during an environment rollout.
 
     Uses keyboard keys 'c' (success) and 'a' (fail) to label each step.
     Collection stops when both configured thresholds are reached.
-    On exit, frames are ratio-sampled, split into train/val, and saved as .pt.
+    On exit, frames are split into train/val; training negatives are subsampled.
+    Both splits are saved as .pt files.
     """
 
     def __init__(self, cfg):
@@ -72,22 +73,24 @@ class FrameCollector(Worker):
             worker_info=self.worker_info,
         )
 
-        self.listener = KeyboardListener()
+        self.listener = self._create_listener()
         self.step_count = 0
 
+    def _create_listener(self):
+        return KeyboardListener()
+
     def _nhwc_to_chw(self, img: torch.Tensor) -> torch.Tensor:
-        """Convert NHWC (H, W, C) image to CHW (C, H, W)."""
+        """Convert a rank-3 HWC tensor to CHW; leave other shapes unchanged."""
         if img.ndim == 3 and img.shape[-1] in (1, 3, 4):
             return img.permute(2, 0, 1)
         return img
 
     def _extract_main_image(self, obs: dict) -> torch.Tensor | None:
-        """Extract and normalize the main camera image from observation dict.
+        """Extract the main camera image as a CPU tensor.
 
-        Prioritizes 'main_images', falling back to 'images'.  Both inputs
-        may arrive as [1, H, W, C] (batch dim = 1); this is squeezed to
-        [H, W, C] so the resulting .pt stores NHWC images without a leading
-        batch dimension, consistent with RewardBinaryDataset expectations.
+        Prefer main_images; the images fallback converts rank-3 HWC tensors
+        to CHW. Remove a leading singleton batch dimension from rank-4 input.
+        Pixel values are unchanged; the returned layout is not standardized.
         """
         obs = dict(obs)
         obs.pop("task_descriptions", None)

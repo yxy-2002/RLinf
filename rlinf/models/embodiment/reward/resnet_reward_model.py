@@ -21,7 +21,6 @@ online RL training, similar to the HIL-SERL approach.
 
 from typing import Any, Optional
 
-import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -35,12 +34,11 @@ from rlinf.models.embodiment.reward.base_reward_model import BaseRewardModel
 class ResNetRewardModel(BaseRewardModel):
     """ResNet-based reward model using binary classification loss.
 
-    This model uses a pretrained ResNet backbone followed by a linear head
-    to output scalar rewards. It is trained using binary cross-entropy loss
-    on individual images with success/fail labels.
+    A shared ResNet encodes each view; paired-view features are concatenated
+    before classification. Training uses binary cross-entropy loss.
 
-    Training Input: (B, C, H, W) - batch of images with labels
-    Inference Input: observation dict containing ``main_images``
+    Training input: BCHW/BHWC, or BVCHW/BVHWC for multiple views.
+    Inference input: ``main_images`` and configured ``extra_view_images``.
 
     Attributes:
         backbone: ResNet feature extractor with modified final layer.
@@ -64,6 +62,8 @@ class ResNetRewardModel(BaseRewardModel):
         """
         super().__init__(cfg)
 
+        self.image_keys = list(cfg.get("image_keys", []))
+        self.num_views = len(self.image_keys) or 1
         self.cfg = cfg
         self.image_size = cfg.get("image_size", [3, 224, 224])
         self.normalize = cfg.get("normalize", True)
@@ -173,11 +173,22 @@ class ResNetRewardModel(BaseRewardModel):
             # Simple linear head
             self.backbone.fc = nn.Linear(num_features, 1)
 
-        # Initialize weights
+        if self.num_views > 1:
+            # Each view uses the shared backbone; concatenate ordered features.
+            self.backbone.fc = nn.Identity()
+            self.view_head = nn.Sequential(
+                nn.Linear(num_features * self.num_views, self.hidden_dim or 256),
+                nn.ReLU(),
+                nn.Dropout(self.dropout_rate),
+                nn.Linear(self.hidden_dim or 256, 1),
+            )
         self._init_head_weights()
 
     def _init_head_weights(self) -> None:
-        """Initialize the reward head weights."""
+        """Initialize linear layers in backbone.fc with Xavier weights.
+
+        The multi-view head retains its default PyTorch initialization.
+        """
         for module in self.backbone.fc.modules():
             if isinstance(module, nn.Linear):
                 nn.init.xavier_uniform_(module.weight)
@@ -210,6 +221,22 @@ class ResNetRewardModel(BaseRewardModel):
 
             self.load_state_dict(state_dict, strict=True)
 
+    def _image_logits(self, images):
+        if self.num_views > 1:
+            if images.ndim != 5 or images.shape[1] != self.num_views:
+                raise ValueError("Expected B,V,H,W,C or B,V,C,H,W paired images")
+            batch = images.shape[0]
+            images = images.flatten(0, 1)
+        elif images.ndim != 4:
+            raise ValueError("Single-view model expects rank-4 images")
+        images = self.preprocess_images(images)
+        parameter = next(self.parameters())
+        images = images.to(device=parameter.device, dtype=parameter.dtype)
+        features = self.backbone(images)
+        if self.num_views > 1:
+            features = self.view_head(features.reshape(batch, -1))
+        return features.squeeze(-1)
+
     def forward(
         self,
         input_data: torch.Tensor,
@@ -218,7 +245,7 @@ class ResNetRewardModel(BaseRewardModel):
         """Forward pass for training with binary classification loss.
 
         Args:
-            input_data: Image tensor of shape (B, C, H, W).
+            input_data: BCHW/BHWC images, or BVCHW/BVHWC paired images.
             labels: Binary labels (B,) where 1=success, 0=fail.
 
         Returns:
@@ -228,19 +255,7 @@ class ResNetRewardModel(BaseRewardModel):
                 - "logits": Raw model outputs (B,).
                 - "probabilities": Sigmoid probabilities (B,).
         """
-        # Input shape: (B, C, H, W)
-        images = input_data
-
-        # Preprocess images (normalization, etc.)
-        images = self.preprocess_images(images)
-        model_parameter = next(self.parameters())
-        images = images.to(
-            device=model_parameter.device,
-            dtype=model_parameter.dtype,
-        )
-
-        # Forward through backbone
-        logits = self.backbone(images).squeeze(-1)  # (B,)
+        logits = self._image_logits(input_data)
 
         # Compute probabilities
         probabilities = torch.sigmoid(logits)
@@ -268,31 +283,30 @@ class ResNetRewardModel(BaseRewardModel):
         """Compute rewards for inference.
 
         Args:
-            observations: Observation dictionary containing ``main_images``.
+            observations: Dictionary containing ``main_images`` and, for
+                multiple views, configured ``extra_view_images``.
 
         Returns:
             torch.Tensor: Reward tensor of shape [B].
         """
-        images = observations.get("main_images", None)
-        if images is None:
-            raise ValueError(
-                "Missing main_images in observations for ResNetRewardModel."
+        if self.num_views > 1:
+            from rlinf.data.reward_views import select_reward_views
+
+            images = select_reward_views(
+                observations,
+                self.image_keys,
+                self.cfg.get("main_image_key", self.image_keys[0]),
+                self.cfg.get("extra_image_keys", self.image_keys[1:]),
             )
-
-        if isinstance(images, np.ndarray):
-            images = torch.from_numpy(images)
-        model_parameter = next(self.parameters())
-        images = images.to(device=model_parameter.device)
-
-        images = self.preprocess_images(images)
-        images = images.to(dtype=model_parameter.dtype)
-
+        else:
+            images = observations.get("main_images")
+            if images is None:
+                raise ValueError("Missing main_images")
+            images = torch.as_tensor(images)
         with torch.no_grad():
-            logits = self.backbone(images).squeeze(-1)  # (B,)
-            # Return probabilities for binary classification
-            rewards = torch.sigmoid(logits)
+            rewards = torch.sigmoid(self._image_logits(images))
 
-        # Optional thresholding: keep consistent with prior worker behavior.
+        # Apply the configured threshold when binary rewards are requested.
         threshold = self.cfg.get("reward_threshold", None)
         if threshold is not None:
             thr = float(threshold)

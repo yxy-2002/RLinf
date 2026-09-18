@@ -21,3 +21,10 @@ rlinf/envs/maniskill/assets
 PKG-INFO
 *.egg-info/
 .claude/settings.json
+
+# Local datasets and pretrained model assets.
+/datasets/
+/RLinf-ResNet10-pretrained/
+
+# Required dependencies for the Ruiyan NUC environment.
+!/examples/embodiment/ruiyan/requirements-nuc.txt

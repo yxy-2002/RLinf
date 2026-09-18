@@ -281,6 +281,34 @@ class FrankaController(Worker):
             self._wait_robot()
         self.log_debug("Stop Impedance controller")
 
+    def shutdown_demo_control(self):
+        """Release this controller's hand and owned roslaunch process trees."""
+        try:
+            if self._end_effector is not None:
+                self._end_effector.shutdown()
+        finally:
+            for attribute in ("_impedance", "_joint"):
+                process = getattr(self, attribute, None)
+                if process is None:
+                    continue
+                try:
+                    processes = process.children(recursive=True) + [process]
+                except psutil.NoSuchProcess:
+                    processes = []
+                for child in reversed(processes):
+                    try:
+                        child.terminate()
+                    except psutil.NoSuchProcess:
+                        pass
+                _, alive = psutil.wait_procs(processes, timeout=3)
+                for child in alive:
+                    try:
+                        child.kill()
+                    except psutil.NoSuchProcess:
+                        pass
+                psutil.wait_procs(alive, timeout=2)
+                setattr(self, attribute, None)
+
     def clear_errors(self):
         self._ros.put_channel(self._arm_reset_channel, self._ErrorRecoveryActionGoal())
 
