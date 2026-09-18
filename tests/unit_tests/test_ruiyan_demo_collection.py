@@ -9,8 +9,8 @@ import pytest
 import torch
 from omegaconf import OmegaConf
 
-from examples.reward import collect_ruiyan_demos as module
-from examples.reward.ruiyan_demo_protocol import SuccessGate, executed_action
+from examples.embodiment.franka_ruiyan import collect_demos as module
+from rlinf.utils.ruiyan_reward_protocol import SuccessGate, executed_action
 
 
 def test_gate_and_actual_hold():

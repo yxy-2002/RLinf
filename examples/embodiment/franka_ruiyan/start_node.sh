@@ -22,5 +22,5 @@ case "$role" in
     export NCCL_SOCKET_IFNAME=$RLINF_COMM_NET_DEVICES
     exec /opt/venv/franka-0.15.0/bin/ray start --address=192.168.10.11:6380 --node-ip-address=192.168.10.10 --num-gpus=0 --disable-usage-stats "$@"
     ;;
-  *) echo 'Usage: bash examples/embodiment/ruiyan/start_node.sh host|nuc' >&2; exit 2 ;;
+  *) echo 'Usage: bash examples/embodiment/franka_ruiyan/start_node.sh host|nuc' >&2; exit 2 ;;
 esac

@@ -11,7 +11,7 @@ from pathlib import Path
 from hydra import compose, initialize_config_dir
 from omegaconf import OmegaConf
 
-from examples.reward.ruiyan_demo_protocol import RewardClient
+from rlinf.utils.ruiyan_reward_protocol import RewardClient
 
 
 def main():

@@ -1,7 +1,7 @@
 # Copyright 2026 The RLinf Authors.
 # SPDX-License-Identifier: Apache-2.0
 
-from examples.reward.evaluate_ruiyan_reward import classification_metrics
+from examples.reward.evaluate_reward_model import classification_metrics
 
 
 def test_confusion_and_threshold_boundary():

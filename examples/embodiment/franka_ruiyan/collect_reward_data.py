@@ -46,7 +46,7 @@ class RuiyanRewardCollector(FrameCollector):
         return images[0].detach().cpu()
 
     def _create_listener(self):
-        from examples.reward.remote_reward_labels import RemoteLabels
+        from examples.embodiment.franka_ruiyan.remote_reward_labels import RemoteLabels
 
         return RemoteLabels(port=self.cfg.runner.get("label_port", 8766))
 
@@ -172,7 +172,7 @@ class RuiyanRewardCollector(FrameCollector):
 
 @hydra.main(
     version_base="1.1",
-    config_path="config",
+    config_path="../../reward/config",
     config_name="realworld_collect_ruiyan_dataset",
 )
 def main(cfg):

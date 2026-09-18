@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Single-machine GPU reward training; keep NUC teleoperation networking separate.
 set -euo pipefail
-REPO_PATH="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+REPO_PATH="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 cd "$REPO_PATH"
 # Override explicitly for another GPU host. Never inherit the NUC interface.
 REWARD_TRAIN_IFACE="${REWARD_TRAIN_IFACE:-enp5s0}"

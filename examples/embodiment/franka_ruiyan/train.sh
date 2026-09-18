@@ -11,7 +11,7 @@ export RAY_ADDRESS=192.168.10.11:6380
 /opt/venv/openvla/bin/ray status --address="$RAY_ADDRESS"
 log_dir="logs/$(date +%Y%m%d-%H%M%S)-ruiyan-rlpd"
 mkdir -p "$log_dir"
-/opt/venv/openvla/bin/python examples/embodiment/ruiyan/preflight.py \
+/opt/venv/openvla/bin/python examples/embodiment/franka_ruiyan/preflight.py \
   "$log_dir" "$@" "runner.logger.log_path=$log_dir"
 /opt/venv/openvla/bin/python examples/embodiment/train_async.py \
   --config-name realworld_ruiyan_rlpd_local \

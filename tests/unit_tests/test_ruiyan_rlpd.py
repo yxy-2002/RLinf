@@ -65,7 +65,7 @@ def test_online_reward_and_manual_reset():
             "manual_reset": True,
         }
     )
-    with patch("examples.reward.ruiyan_demo_protocol.RewardClient") as factory:
+    with patch("rlinf.utils.ruiyan_reward_protocol.RewardClient") as factory:
         client = factory.return_value
         client.request.return_value = {"image_keys": ["global", "wrist_1"]}
         client.status.return_value = {"command": "start"}
@@ -198,7 +198,7 @@ def test_reward_terminal_observation_and_intervention(success, aborted):
 
 def test_wait_can_be_stopped():
     cfg = OmegaConf.create({"reward_url": "unused"})
-    with patch("examples.reward.ruiyan_demo_protocol.RewardClient") as factory:
+    with patch("rlinf.utils.ruiyan_reward_protocol.RewardClient") as factory:
         factory.return_value.request.return_value = {
             "image_keys": ["global", "wrist_1"]
         }

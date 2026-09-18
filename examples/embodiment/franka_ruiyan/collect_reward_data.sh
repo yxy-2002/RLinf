@@ -1,8 +1,9 @@
 #!/bin/bash
 
-export REWARD_PATH="$( cd "$(dirname "${BASH_SOURCE[0]}")" && pwd )"
-export REPO_PATH=$(dirname $(dirname "$REWARD_PATH"))
-export SRC_FILE="${REWARD_PATH}/collect_ruiyan_reward_data.py"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+export REPO_PATH="$(cd "$SCRIPT_DIR/../../.." && pwd)"
+export REWARD_PATH="$REPO_PATH/examples/reward"
+export SRC_FILE="${SCRIPT_DIR}/collect_reward_data.py"
 
 export PYTHONPATH=${REPO_PATH}:$PYTHONPATH
 export HYDRA_FULL_ERROR=1

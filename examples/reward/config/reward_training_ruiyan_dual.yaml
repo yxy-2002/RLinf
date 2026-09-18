@@ -32,7 +32,7 @@ runner:
     monitor: "val_loss"   # Metric to monitor
 
 data:
-  # Paired-view train.pt and val.pt exported by collect_ruiyan_reward_data.py.
+  # Paired-view train.pt and val.pt exported by franka_ruiyan/collect_reward_data.py.
   train_data_paths: "logs/processed_reward_data/train.pt"
   val_data_paths: "logs/processed_reward_data/val.pt"
   num_workers: 4

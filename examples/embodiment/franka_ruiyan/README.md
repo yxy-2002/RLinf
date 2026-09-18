@@ -6,6 +6,14 @@
 
 ## 1. 启动前准备
 
+- 主机与 NUC 同步为相同代码版本（包括本地修改）；结束旧任务后重启相关 Python/Ray 进程，避免加载旧模块。
+- 每个新终端激活对应环境后，执行：
+
+  ```bash
+  cd /workspace/RLinf
+  export PYTHONPATH=/workspace/RLinf:$PYTHONPATH
+  ```
+
 - 退出旧采集、控制和设备测试程序，避免占用相机、手套或机器人。
 - 确认 Desk 为 Execution＋FCI，复位路径无障碍。
 - 初始化和复位会使机器人运动；暂停标注不等于停止控制。
@@ -19,7 +27,7 @@ cd /workspace/RLinf
 source switch_env franka-0.15.0
 export PYTHONPATH=/workspace/RLinf:$PYTHONPATH
 export RLINF_NODE_RANK=0
-bash examples/reward/collect_ruiyan_reward_data.sh
+bash examples/embodiment/franka_ruiyan/collect_reward_data.sh
 ```
 
 GPU 主机另开终端，保持标注隧道：
@@ -31,7 +39,7 @@ ssh -N -o ExitOnForwardFailure=yes -L 8766:127.0.0.1:8766 psibot@192.168.10.10
 在主机图形桌面启动标注窗口，并保持窗口焦点：
 
 ```bash
-python examples/reward/remote_reward_labels.py
+python examples/embodiment/franka_ruiyan/remote_reward_labels.py
 ```
 
 - `a`：开始记录，默认标为失败。
@@ -57,7 +65,7 @@ scp -r psibot@192.168.10.10:/tmp/SESSION datasets/ruiyan_reward_dual/
 
 ```bash
 export PYTHONPATH=/workspace/RLinf:$PYTHONPATH
-bash examples/reward/run_ruiyan_dual_reward_training.sh \
+bash examples/embodiment/franka_ruiyan/train_reward.sh \
   data.train_data_paths=datasets/ruiyan_reward_dual/SESSION/train.pt \
   data.val_data_paths=datasets/ruiyan_reward_dual/SESSION/val.pt \
   data.num_workers=0 actor.micro_batch_size=4 actor.global_batch_size=8 \
@@ -70,21 +78,21 @@ bash examples/reward/run_ruiyan_dual_reward_training.sh \
 ```bash
 find logs/reward_dual_SESSION -path '*best_model*' -name full_weights.pt
 
-python examples/reward/evaluate_ruiyan_reward.py \
+python examples/reward/evaluate_reward_model.py \
   --config examples/reward/config/reward_training_ruiyan_dual.yaml \
   --checkpoint CHECKPOINT \
   --data datasets/ruiyan_reward_dual/SESSION/val.pt \
   --threshold 0.75 --output logs/reward_eval_SESSION_075
 ```
 
-查看报告中的误判图片，不只看准确率。输出目录需为新目录；正式评估优先使用独立采集场次。评估 demo 判定时可改用阈值 `0.9`，并指定另一个输出目录。
+查看报告及误判图片，确认模型能识别真实成功状态。每次评估使用新的输出目录。
 
 ## 4. 使用奖励模型采 demo
 
 GPU 主机启动奖励服务：
 
 ```bash
-python examples/reward/serve_ruiyan_demo_reward.py --checkpoint CHECKPOINT
+python examples/embodiment/franka_ruiyan/serve_reward.py --checkpoint CHECKPOINT
 ```
 
 另开终端建立反向隧道（这里是 `-R`）：
@@ -96,7 +104,7 @@ ssh -N -o ExitOnForwardFailure=yes -R 8770:127.0.0.1:8770 psibot@192.168.10.10
 NUC 容器启动采集：
 
 ```bash
-bash examples/reward/collect_ruiyan_demos.sh runner.num_data_episodes=1
+bash examples/embodiment/franka_ruiyan/collect_demos.sh runner.num_data_episodes=1
 ```
 
 在 GPU 奖励服务终端操作：
@@ -106,55 +114,65 @@ bash examples/reward/collect_ruiyan_demos.sh runner.num_data_episodes=1
 3. 模型判定进入 `candidate` 后，确认成功输入 `accept`；误判输入 `discard`。
 4. 下一回合再次输入 `start`，结束输入 `quit`。
 
-当前 demo 判定为第10步起，一帧概率 >0.9，默认需要人工确认。成功轨迹保存在 `logs/<时间>-ruiyan-demos/demos/`，拒绝的数据单独保存。最后结束不额外复位。
+成功轨迹保存在 `logs/<时间>-ruiyan-demos/demos/`。
 
 ## 5. 准备示范并启动 RLPD
 
-先退出 demo 采集，保留奖励服务和 8770 隧道。将成功 `demos/` 目录复制到 GPU 主机，然后转换动作格式：
+先退出 demo 采集，保留奖励服务和 8770 隧道。在 GPU 主机执行以下命令，将 `DEMO_SESSION` 替换为本次 `logs/` 下的 demo 目录名：
 
 ```bash
-python examples/embodiment/ruiyan/prepare_demos.py \
-  --source /path/to/raw/demos --output datasets/ruiyan_rlpd/demo_v2
-python examples/embodiment/ruiyan/smoke_test.py --demo-path datasets/ruiyan_rlpd/demo_v2
+ssh psibot@192.168.10.10 \
+  'docker cp rlinf:/workspace/RLinf/logs/DEMO_SESSION/demos /tmp/DEMO_SESSION-demos'
+mkdir -p datasets/ruiyan_rlpd/raw
+scp -r psibot@192.168.10.10:/tmp/DEMO_SESSION-demos datasets/ruiyan_rlpd/raw/
 ```
 
-保留原始 demo，已转换数据不要再次转换；奖励图片数据不能作为 demo。
+准备训练数据并执行离线检查（输出目录使用新目录）：
 
-确认旧 Ray 无其他任务使用后，建立两节点集群。
+```bash
+python examples/embodiment/franka_ruiyan/prepare_demos.py \
+  --source datasets/ruiyan_rlpd/raw/DEMO_SESSION-demos \
+  --output datasets/ruiyan_rlpd/demo_v2
+python examples/embodiment/franka_ruiyan/smoke_test.py --demo-path datasets/ruiyan_rlpd/demo_v2
+```
+
+看到 `PASS` 后继续。保留原始 demo，已转换数据不要再次转换。
+
+确认旧 Ray 无其他任务使用后，在两侧对应环境执行 `ray stop`，再建立两节点集群。
 
 GPU 主机：
 
 ```bash
-bash examples/embodiment/ruiyan/start_node.sh host
+bash examples/embodiment/franka_ruiyan/start_node.sh host
 ```
 
 NUC 容器：
 
 ```bash
-bash examples/embodiment/ruiyan/start_node.sh nuc
+bash examples/embodiment/franka_ruiyan/start_node.sh nuc
 ```
 
 GPU 主机先做小规模验证：
 
 ```bash
 ray status --address=192.168.10.11:6380
-bash examples/embodiment/ruiyan/train.sh \
+bash examples/embodiment/franka_ruiyan/train.sh \
   algorithm.demo_buffer.load_path=/workspace/RLinf/datasets/ruiyan_rlpd/demo_v2 \
   runner.max_epochs=5 runner.save_interval=1
 ```
 
 奖励服务显示 `waiting` 后输入 `start`。复位后策略会主动控制机械臂和手，SpaceMouse＋手套可人工接管。每回合结束后再次 `start`；`discard` 结束当前失败回合但保留在线经验，`quit` 退出。
 
-当前 RLPD 成功条件为第10步起，一帧概率 >0.75，不需要人工 `accept`。
+RLPD 由奖励模型自动判断成功，无需输入 `accept`。
 
 验证正常后去掉小规模限制继续运行：
 
 ```bash
-bash examples/embodiment/ruiyan/train.sh \
+bash examples/embodiment/franka_ruiyan/train.sh \
   algorithm.demo_buffer.load_path=/workspace/RLinf/datasets/ruiyan_rlpd/demo_v2
 ```
 
-这是新一次训练；如需续训已有 checkpoint，另外设置 `runner.resume_dir=<checkpoint目录>`。
+上述命令会启动新一次训练，不会自动续训短测权重。
 
 ## 6. 检查结果与退出
 
@@ -163,10 +181,10 @@ bash examples/embodiment/ruiyan/train.sh \
 - 在线数据是否持续增加，更新后的策略是否参与执行。
 - 真实任务成功率是否提高，人工接管是否减少。
 
-链路跑通不代表策略已学会任务。保留原始数据、输入 demo 和模型权重，回放索引可能仍引用输入文件。
+保留原始数据、训练用 demo 和模型权重。
 
 退出后检查 NUC 是否残留控制程序，确认控制停止后再关闭奖励服务、隧道和不再使用的 Ray：
 
 ```bash
-ps -eo pid,ppid,args | grep -E '[f]ranka_control_node|[r]oslaunch|[c]ollect_ruiyan|[t]est_franka_controller'
+ps -eo pid,ppid,args | grep -E '[f]ranka_control_node|[r]oslaunch|[c]ollect_reward_data|[c]ollect_demos|[c]ollect_ruiyan|[t]est_franka_controller'
 ```

@@ -12,16 +12,16 @@ import numpy as np
 import torch
 from omegaconf import OmegaConf
 
-from examples.reward.ruiyan_demo_protocol import (
-    RewardClient,
-    SuccessGate,
-    executed_action,
-)
 from rlinf.data.embodied_io_struct import ChunkStepResult, EmbodiedRolloutResult
 from rlinf.data.replay_buffer import TrajectoryReplayBuffer
 from rlinf.data.reward_views import select_reward_views
 from rlinf.envs.realworld.realworld_env import RealWorldEnv
 from rlinf.scheduler import Cluster, ComponentPlacement, Worker
+from rlinf.utils.ruiyan_reward_protocol import (
+    RewardClient,
+    SuccessGate,
+    executed_action,
+)
 
 
 def tensor_obs(obs):
@@ -215,7 +215,7 @@ class DemoCollector(Worker):
 
 @hydra.main(
     version_base="1.1",
-    config_path="config",
+    config_path="../../reward/config",
     config_name="realworld_collect_ruiyan_demos",
 )
 def main(cfg):

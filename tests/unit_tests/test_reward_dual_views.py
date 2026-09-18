@@ -5,7 +5,7 @@ import pytest
 import torch
 from omegaconf import OmegaConf
 
-from examples.reward.collect_ruiyan_reward_data import RuiyanRewardCollector
+from examples.embodiment.franka_ruiyan.collect_reward_data import RuiyanRewardCollector
 from rlinf.data.datasets.reward_model import RewardBinaryDataset, RewardDatasetPayload
 from rlinf.data.reward_views import select_reward_views
 from rlinf.models.embodiment.reward.resnet_reward_model import ResNetRewardModel

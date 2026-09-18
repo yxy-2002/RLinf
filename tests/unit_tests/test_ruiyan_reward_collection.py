@@ -8,7 +8,7 @@ import pytest
 import torch
 from omegaconf import OmegaConf
 
-from examples.reward.collect_ruiyan_reward_data import (
+from examples.embodiment.franka_ruiyan.collect_reward_data import (
     RuiyanRewardCollector,
     frame_label,
 )
@@ -97,7 +97,7 @@ def test_remote_events_and_disconnect():
     import json
     from urllib.request import Request, urlopen
 
-    from examples.reward.remote_reward_labels import RemoteLabels
+    from examples.embodiment.franka_ruiyan.remote_reward_labels import RemoteLabels
 
     listener = RemoteLabels(port=0)
 

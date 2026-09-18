@@ -27,4 +27,4 @@ PKG-INFO
 /RLinf-ResNet10-pretrained/
 
 # Required dependencies for the Ruiyan NUC environment.
-!/examples/embodiment/ruiyan/requirements-nuc.txt
+!/examples/embodiment/franka_ruiyan/requirements-nuc.txt

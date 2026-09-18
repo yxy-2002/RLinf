@@ -70,7 +70,7 @@ def decode_action(action, arm_scale=2.0):
 
 class OnlineReward:
     def __init__(self, cfg):
-        from examples.reward.ruiyan_demo_protocol import RewardClient, SuccessGate
+        from rlinf.utils.ruiyan_reward_protocol import RewardClient, SuccessGate
 
         self.stop_requested = threading.Event()
         self.cfg = cfg
