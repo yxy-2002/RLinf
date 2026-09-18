@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Train LAMP priors, behavior cloning, or diffusion policies in RLinf."""
+"""Train LAMP priors or diffusion policies in RLinf."""
 
 import json
 
@@ -21,7 +21,11 @@ import torch.multiprocessing as mp
 from omegaconf import OmegaConf, open_dict
 
 from rlinf.config import validate_cfg
-from rlinf.data.datasets.lamp import lamp_steps_per_epoch, prepare_lamp_cache
+from rlinf.data.datasets.lamp.dexjoco_lerobot import DexjocoLeRobotSource
+from rlinf.data.datasets.lamp.offline_dataset import (
+    lamp_steps_per_epoch,
+    prepare_lamp_cache,
+)
 from rlinf.runners.offline_runner import OfflineRunner
 from rlinf.scheduler import Cluster
 from rlinf.utils.placement import HybridComponentPlacement
@@ -33,16 +37,25 @@ mp.set_start_method("spawn", force=True)
 @hydra.main(
     version_base="1.1",
     config_path="config",
-    config_name="dexjoco_lamp_prior_vae",
+    config_name="dexjoco_lamp_prior_lamplstm_water_plant",
 )
 def main(cfg) -> None:
-    include_images = str(cfg.algorithm.stage) in ("bc", "dp")
+    if str(cfg.data.dataset_type) != "dexjoco_lamp":
+        raise ValueError(
+            f"No data source adapter configured for {cfg.data.dataset_type!r}"
+        )
+    include_images = str(cfg.algorithm.stage) == "dp"
     cache_path = prepare_lamp_cache(
-        task=str(cfg.data.task_name),
-        dataset_root=cfg.data.dataset_root,
+        source=DexjocoLeRobotSource(str(cfg.data.task_name), cfg.data.dataset_root),
         cache_root=cfg.data.cache_root,
         image_size=int(cfg.data.image_size),
         include_images=include_images,
+        history_contract=str(cfg.data.get("history_contract", "primitive_v1")),
+        history_length=(
+            int(cfg.actor.model.hand_prior.history_length)
+            if str(cfg.actor.model.hand_prior.type) == "lamplstm"
+            else 16
+        ),
     )
     with open_dict(cfg):
         cfg.data.cache_path = str(cache_path)

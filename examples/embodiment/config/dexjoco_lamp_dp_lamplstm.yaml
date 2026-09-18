@@ -1,0 +1,44 @@
+defaults:
+- dexjoco_lamp_dp
+- _self_
+runner:
+  max_steps: 40000
+  save_interval: 10000
+  logger:
+    experiment_name: dexjoco_lamp_dp_lamplstm
+    logger_backends:
+    - tensorboard
+data:
+  task_name: water_plant
+  history_contract: primitive_v1
+  history_length: 8
+  train_ratio: 0.9
+  split_seed: 42
+  num_workers: 0
+  persistent_workers: false
+actor:
+  seed: 42
+  torch_compile: false
+  validation_interval: 1000
+  optim:
+    lr: 6.0e-05
+  model:
+    execution_horizon: 8
+    num_action_chunks: 8
+    hand_prior:
+      type: lamplstm
+      hand_side: single
+      latent_dim: 2
+      action_dim: 16
+      history_dim: 16
+      history_length: 8
+      horizon: 16
+      action_hidden_dim: 256
+      condition_hidden_dim: 256
+      encoder_condition_mode: film
+      decoder_condition_mode: film
+      num_lstm_layers: 1
+      beta: 0.0005
+      beta_warmup_steps: 0
+      condition_drop_prob: 0.1
+      artifact_path: ./outputs/dexjoco_lamp_prior_lamplstm_water_plant/artifact

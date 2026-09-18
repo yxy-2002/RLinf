@@ -1,0 +1,56 @@
+# Train the LSTM prior for 20k updates and use its final artifact for DP.
+defaults:
+- dexjoco_lamp_il_base
+- _self_
+runner:
+  max_steps: 20000
+  save_interval: 10000
+  logger:
+    experiment_name: dexjoco_lamp_prior_lamplstm_water_plant
+    logger_backends:
+    - tensorboard
+data:
+  task_name: water_plant
+  dataset_root: ./datasets/DexJoCo-Datasets-LeRobot/dexjoco_lerobot_datasets
+  cache_root: ./outputs/lamp_cache
+  history_contract: primitive_v1
+  history_length: 8
+  horizon: 16
+  action_dim: 16
+  source: dexjoco_lerobot
+  train_ratio: 0.9
+  split_seed: 42
+  num_workers: 0
+  persistent_workers: false
+actor:
+  global_batch_size: 512
+  micro_batch_size: 512
+  eval_batch_size: 512
+  torch_compile: false
+  optim:
+    lr: 5.0e-05
+    min_lr: 1.0e-06
+    warmup_steps: 500
+    weight_decay: 0.0
+    clip_grad: 1.0
+  model:
+    hand_prior:
+      type: lamplstm
+      hand_side: single
+      latent_dim: 2
+      action_dim: 16
+      history_dim: 16
+      history_length: 8
+      horizon: 16
+      action_hidden_dim: 256
+      condition_hidden_dim: 256
+      encoder_condition_mode: film
+      decoder_condition_mode: film
+      num_lstm_layers: 1
+      beta: 0.0005
+      beta_warmup_steps: 0
+      condition_drop_prob: 0.1
+    execution_horizon: 8
+    num_action_chunks: 8
+  seed: 42
+  validation_interval: 1000

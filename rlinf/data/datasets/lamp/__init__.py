@@ -12,18 +12,18 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""DexJoCo datasets and caches for LAMP imitation learning."""
+"""Format-independent LAMP training data interfaces; dependencies fail on import."""
 
-from rlinf.data.datasets.lamp.bimanual_lerobot import (
-    BimanualDexjocoLeRobotDataset,
-    load_bimanual_task_dataset,
-)
-from rlinf.data.datasets.lamp.dexjoco_lerobot import (
-    DexjocoLeRobotDataset,
-    load_task_dataset,
+from rlinf.data.datasets.lamp.action_windows import (
+    ActionWindowDataset,
+    build_action_windows,
+    save_action_artifact,
 )
 from rlinf.data.datasets.lamp.offline_dataset import (
+    LampDataSource,
+    LampFrameData,
     LampMMapDataset,
+    LampSourceMetadata,
     lamp_steps_per_epoch,
     load_cache_metadata,
     load_cache_statistics,
@@ -37,17 +37,19 @@ from rlinf.data.datasets.lamp.residual_replay import (
 )
 
 __all__ = [
-    "BimanualDexjocoLeRobotDataset",
-    "DexjocoLeRobotDataset",
+    "LampDataSource",
+    "LampSourceMetadata",
+    "LampFrameData",
     "LampMMapDataset",
     "LAMP_RESIDUAL_FLAT_ACTION_DIM",
     "LAMP_RESIDUAL_REPLAY_CONTRACT",
     "LAMP_RESIDUAL_REPLAY_SCHEMA_VERSION",
     "lamp_steps_per_epoch",
-    "load_bimanual_task_dataset",
     "load_cache_metadata",
     "load_cache_statistics",
-    "load_task_dataset",
     "prepare_lamp_cache",
     "validate_lamp_residual_trajectory",
+    "ActionWindowDataset",
+    "build_action_windows",
+    "save_action_artifact",
 ]

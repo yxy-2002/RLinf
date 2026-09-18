@@ -16,94 +16,157 @@
 
 from __future__ import annotations
 
+import errno
 import fcntl
 import hashlib
 import json
 import os
 import shutil
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol
 
 import numpy as np
 import torch
 from torch.utils.data import Dataset
 
-from rlinf.data.datasets.lamp.bimanual_lerobot import (
-    bimanual_preprocess_path,
-    build_bimanual_preprocess_artifact,
-    load_bimanual_task_dataset,
-    resolve_bimanual_task_root,
-)
-from rlinf.data.datasets.lamp.dexjoco_lerobot import (
-    bc_preprocess_path,
-    build_bc_preprocess_artifact,
-    lerobot_dataset_sha256,
-    load_task_dataset,
-)
 from rlinf.models.embodiment.lamp.artifact_io import canonical_json
-from rlinf.models.embodiment.lamp.constants import is_bimanual_task
+from rlinf.models.embodiment.lamp.il_training_utils import split_episodes
 
-# Version 2 fixes the persisted image contract to NHWC uint8.  Keeping this in
-# the fingerprint prevents a cache built by the earlier NCHW/float path from
-# being accepted after an in-place code upgrade.
-CACHE_SCHEMA_VERSION = 2
+# Version 3 adds normalized 16-frame hand histories and their padding masks;
+# version 2 fixed the persisted image contract to NHWC uint8.
+CACHE_SCHEMA_VERSION = 3
 TRAIN_RATIO = 0.9
 SPLIT_SEED = 42
 STD_FLOOR = 1e-6
 
 
+@dataclass(frozen=True)
+class LampSourceMetadata:
+    """Source identity, independent of file layout or serialization format.
+
+    Hashes must cover source contents and the adapter's conversion semantics.
+    Image keys identify cameras in the source; decoded images use front/wrist.
+    """
+
+    task: str
+    root: Path
+    data_sha256: str
+    media_sha256: str
+    image_keys: tuple[str, str]
+
+
+@dataclass(frozen=True)
+class LampFrameData:
+    """Aligned chronological rows in physical LAMP coordinates, before windowing.
+
+    Arm states are seven joint positions; hand states are 16 measured positions.
+    Actions contain xyz + wxyz quaternion + 16 hand commands. Episode IDs must
+    uniquely identify trajectories; row order within each episode is temporal.
+    """
+
+    episode_index: np.ndarray
+    arm_state: np.ndarray
+    hand_state: np.ndarray
+    action: np.ndarray
+
+    def __post_init__(self) -> None:
+        if self.episode_index.ndim != 1 or not len(self.episode_index):
+            raise ValueError("episode_index must be a nonempty one-dimensional array")
+        for name, width in (("arm_state", 7), ("hand_state", 16), ("action", 23)):
+            value = getattr(self, name)
+            if value.shape != (len(self.episode_index), width):
+                raise ValueError(f"{name} must have shape [N, {width}]")
+            if not np.isfinite(value).all():
+                raise ValueError(f"{name} contains non-finite values")
+
+
+class LampDataSource(Protocol):
+    """Format adapter consumed by the offline training pipeline.
+
+    Metadata access must not materialize windows or decode images. Image row
+    indices refer to the exact same ordered rows returned by load_frames().
+    """
+
+    @property
+    def metadata(self) -> LampSourceMetadata: ...
+
+    def load_frames(self) -> LampFrameData: ...
+
+    def images_for(
+        self, rows: np.ndarray, image_size: int, *, label: str
+    ) -> dict[str, np.ndarray]: ...
+
+
 def prepare_lamp_cache(
     *,
-    task: str,
-    dataset_root: str | Path,
+    source: LampDataSource,
     cache_root: str | Path,
     image_size: int = 128,
     include_images: bool = False,
+    history_length: int = 16,
+    history_contract: str = "primitive_v1",
 ) -> Path:
-    """Build or validate a cache shared by all LAMP phase-two stages."""
+    """Build or validate training caches from a format-independent data source."""
 
+    if history_contract != "primitive_v1":
+        raise ValueError(f"Unknown history contract: {history_contract}")
+    if int(history_length) < 1:
+        raise ValueError(f"history_length must be >= 1, got {history_length}")
     cache_parent = Path(cache_root).expanduser().resolve()
     cache_parent.mkdir(parents=True, exist_ok=True)
-    root = _resolved_task_root(task, dataset_root)
-    _ensure_joint_preprocess(task, dataset_root, root)
-    dataset_sha256 = lerobot_dataset_sha256(root)
-    image_keys = _image_keys(task, dataset_root)
+    identity = source.metadata
+    task = identity.task
+    root = identity.root
+    image_keys = identity.image_keys
     fingerprint_payload = {
         "schema_version": CACHE_SCHEMA_VERSION,
         "task": task,
         "dataset_root": str(root),
-        "dataset_sha256": dataset_sha256,
-        "video_manifest_sha256": _video_manifest_sha256(root, image_keys),
+        "dataset_sha256": identity.data_sha256,
+        "video_manifest_sha256": identity.media_sha256,
         "image_keys": list(image_keys),
         "image_size": int(image_size),
         "train_ratio": TRAIN_RATIO,
         "split_seed": SPLIT_SEED,
+        "history_length": int(history_length),
     }
+    fingerprint_payload["history_contract"] = history_contract
     fingerprint = hashlib.sha256(
         canonical_json(fingerprint_payload).encode("utf-8")
     ).hexdigest()
     cache_dir = cache_parent / task / fingerprint
     lock_path = cache_parent / task / f".{fingerprint}.lock"
     lock_path.parent.mkdir(parents=True, exist_ok=True)
+    frames = None
     with lock_path.open("a+") as lock:
         fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
         if not (cache_dir / ".lowdim.complete").is_file():
-            _build_lowdim_cache(
+            frames = _build_lowdim_cache(
                 cache_dir,
-                task=task,
-                dataset_root=dataset_root,
+                source=source,
                 metadata=fingerprint_payload,
                 fingerprint=fingerprint,
+                history_length=int(history_length),
             )
         _validate_cache(cache_dir, fingerprint_payload, fingerprint)
-        if include_images and not (cache_dir / ".images.complete").is_file():
-            _build_image_cache(
-                cache_dir,
-                task=task,
-                dataset_root=dataset_root,
-                image_size=image_size,
-            )
+        if include_images:
+            # Serialize camera materialization across history lengths as well.
+            with (cache_parent / task / ".shared_images.lock").open(
+                "a+"
+            ) as images_lock:
+                fcntl.flock(images_lock.fileno(), fcntl.LOCK_EX)
+                if (cache_dir / ".images.complete").is_file():
+                    print(f"[cache reuse] images: {cache_dir}", flush=True)
+                elif not _reuse_image_cache(cache_dir):
+                    print(f"[cache build] decoding images: {cache_dir}", flush=True)
+                    _build_image_cache(
+                        cache_dir,
+                        source=source,
+                        image_size=image_size,
+                        frames=frames,
+                    )
     return cache_dir
 
 
@@ -236,172 +299,299 @@ def write_derived_array(
 def _build_lowdim_cache(
     cache_dir: Path,
     *,
-    task: str,
-    dataset_root: str | Path,
+    source: LampDataSource,
     metadata: dict[str, Any],
     fingerprint: str,
-) -> None:
+    history_length: int,
+) -> LampFrameData:
+    data = source.load_frames()
+    future, mask = build_future_windows(data.action, data.episode_index, 16)
+    history = build_history_windows(data.hand_state, data.episode_index, 8)
+    prior_history = (
+        history
+        if history_length == 8
+        else build_history_windows(data.hand_state, data.episode_index, history_length)
+    )
+    windows = {
+        "future": future,
+        "mask": mask,
+        "history": history,
+        "prior_history": prior_history,
+        "arm_pair": build_history_windows(data.arm_state, data.episode_index, 2),
+        "history_mask": _history_mask(
+            data.episode_index, np.arange(len(data.episode_index)), history_length
+        ),
+    }
     if cache_dir.exists():
         shutil.rmtree(cache_dir)
     cache_dir.mkdir(parents=True)
-    if is_bimanual_task(task):
-        dataset = load_bimanual_task_dataset(
-            task,
-            dataset_root,
-            window_size=8,
-            action_horizon=16,
-            policy_state_source="joint",
-        )
-    else:
-        dataset = load_task_dataset(
-            task,
-            dataset_root,
-            window_size=8,
-            action_horizon=16,
-            canonicalize_rotvec=False,
-            policy_state_source="joint",
-        )
-    train_rows, validation_rows = dataset.split(TRAIN_RATIO, SPLIT_SEED)
-    usable = dataset.action_horizon_mask[:, 0] > 0
+    train_rows, validation_rows = split_episodes(
+        data.episode_index, TRAIN_RATIO, SPLIT_SEED
+    )
+    usable = mask[:, 0] > 0
     train_rows = train_rows[usable[train_rows]]
     validation_rows = validation_rows[usable[validation_rows]]
     if len(train_rows) == 0 or len(validation_rows) == 0:
         raise ValueError("LAMP's fixed episode split produced an empty split")
-    statistics = _training_statistics(dataset, train_rows)
+    statistics = _training_statistics(data, train_rows)
     for split, rows in (("train", train_rows), ("validation", validation_rows)):
         split_dir = cache_dir / split
         split_dir.mkdir()
-        arrays = _normalized_arrays(dataset, rows, statistics)
+        arrays = _normalized_arrays(data, windows, rows, statistics, history_length)
         for name, value in arrays.items():
             np.save(split_dir / f"{name}.npy", np.asarray(value), allow_pickle=False)
     payload = {
         **metadata,
         "fingerprint": fingerprint,
-        "embodiment": "bimanual" if is_bimanual_task(task) else "single",
+        "embodiment": "single",
         "train_rows": int(len(train_rows)),
         "validation_rows": int(len(validation_rows)),
         "train_episodes": sorted(
-            int(value) for value in np.unique(dataset.episode_index[train_rows])
+            int(value) for value in np.unique(data.episode_index[train_rows])
         ),
         "validation_episodes": sorted(
-            int(value) for value in np.unique(dataset.episode_index[validation_rows])
+            int(value) for value in np.unique(data.episode_index[validation_rows])
         ),
         "statistics_keys": sorted(statistics),
+        "lamplstm_history_length": int(metadata.get("history_length", 16)),
+        "action_horizon": 16,
     }
     np.savez(cache_dir / "statistics.npz", **statistics)
     (cache_dir / "metadata.json").write_text(
         json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8"
     )
     (cache_dir / ".lowdim.complete").touch()
+    return data
+
+
+def link_cache_array(source: Path, target: Path) -> None:
+    """Share immutable arrays, including filesystems without hard-link support."""
+    try:
+        os.link(source.resolve(), target)
+    except OSError as error:
+        if error.errno not in (
+            errno.ENOSYS,
+            errno.EOPNOTSUPP,
+            errno.EXDEV,
+            errno.EPERM,
+        ):
+            raise
+        target.symlink_to(source.resolve())
+
+
+def same_image_rows(source: Path, target: Path) -> bool:
+    """Check the frame selection contract independently of history length."""
+    left, right = load_cache_metadata(source), load_cache_metadata(target)
+    keys = (
+        "schema_version",
+        "task",
+        "dataset_root",
+        "dataset_sha256",
+        "video_manifest_sha256",
+        "image_keys",
+        "image_size",
+        "train_ratio",
+        "split_seed",
+        "train_rows",
+        "validation_rows",
+        "train_episodes",
+        "validation_episodes",
+        "embodiment",
+    )
+    if "dataset_root" in left and "dataset_root" in right:
+        left["dataset_root"] = str(Path(left["dataset_root"]).resolve())
+        right["dataset_root"] = str(Path(right["dataset_root"]).resolve())
+    return all(k in left and k in right and left[k] == right[k] for k in keys)
+
+
+def _reuse_image_cache(target: Path) -> bool:
+    """Hard-link complete identical camera arrays from another history cache."""
+    metadata = load_cache_metadata(target)
+    if metadata.get("embodiment") != "single":
+        return False
+    for marker in sorted(target.parent.glob("*/.images.complete")):
+        source = marker.parent
+        if source == target or not same_image_rows(source, target):
+            continue
+        files = []
+        try:
+            for split in ("train", "validation"):
+                for key in ("front", "wrist"):
+                    name = key + ".npy"
+                    src, dst = source / split / name, target / split / name
+                    array = np.load(src, mmap_mode="r", allow_pickle=False)
+                    expected = (
+                        metadata[f"{split}_rows"],
+                        metadata["image_size"],
+                        metadata["image_size"],
+                        3,
+                    )
+                    if array.shape != expected or array.dtype != np.uint8:
+                        raise ValueError("Incomplete image cache")
+                    del array
+                    files.append((src, dst))
+        except (OSError, ValueError):
+            continue
+        for src, dst in files:
+            temporary = dst.with_suffix(".reuse.tmp")
+            temporary.unlink(missing_ok=True)
+            link_cache_array(src, temporary)
+            temporary.replace(dst)
+        (target / ".images.complete").touch()
+        print(f"[cache reuse] images: {source.name} -> {target.name}", flush=True)
+        return True
+    return False
 
 
 def _build_image_cache(
     cache_dir: Path,
     *,
-    task: str,
-    dataset_root: str | Path,
+    source: LampDataSource,
     image_size: int,
+    frames: LampFrameData | None = None,
 ) -> None:
-    if is_bimanual_task(task):
-        dataset = load_bimanual_task_dataset(
-            task, dataset_root, window_size=8, action_horizon=16
-        )
-    else:
-        dataset = load_task_dataset(
-            task,
-            dataset_root,
-            window_size=8,
-            action_horizon=16,
-            policy_state_source="joint",
-        )
+    data = source.load_frames() if frames is None else frames
     metadata = load_cache_metadata(cache_dir)
     episode_splits = {
         "train": np.asarray(metadata["train_episodes"], dtype=np.int64),
         "validation": np.asarray(metadata["validation_episodes"], dtype=np.int64),
     }
     for split, episode_ids in episode_splits.items():
-        rows = np.flatnonzero(np.isin(dataset.episode_index, episode_ids))
-        rows = rows[dataset.action_horizon_mask[rows, 0] > 0]
-        images = dataset.images_for(rows, image_size, label=f"cache_{split}")
+        rows = np.flatnonzero(np.isin(data.episode_index, episode_ids))
+        images = source.images_for(rows, image_size, label=f"cache_{split}")
+        if set(images) != {"front", "wrist"}:
+            raise ValueError("LAMP requires front and wrist images")
         for name, value in images.items():
             array = np.asarray(value)
             expected_tail = (image_size, image_size, 3)
-            if array.dtype != np.uint8 or array.shape[1:] != expected_tail:
+            if array.dtype != np.uint8 or array.shape != (len(rows), *expected_tail):
                 raise ValueError(
                     f"LAMP decoded image {name!r} must be NHWC uint8 with "
                     f"tail {expected_tail}, got {array.shape} {array.dtype}"
                 )
-            np.save(cache_dir / split / f"{name}.npy", array, allow_pickle=False)
+            destination = cache_dir / split / f"{name}.npy"
+            temporary = destination.with_suffix(".write.tmp")
+            with temporary.open("wb") as stream:
+                np.save(stream, array, allow_pickle=False)
+            temporary.replace(destination)
     (cache_dir / ".images.complete").touch()
 
 
-def _normalized_arrays(dataset: Any, rows: np.ndarray, stats: Mapping[str, np.ndarray]):
-    mask = np.asarray(dataset.action_horizon_mask[rows], dtype=np.float32)
-    if hasattr(dataset, "right_arm_state7"):
-        result: dict[str, np.ndarray] = {"mask": mask}
-        for side in ("right", "left"):
-            arm = np.asarray(getattr(dataset, f"{side}_arm_state7")[rows], np.float32)
-            history = np.asarray(
-                getattr(dataset, f"{side}_hand_state_window16")[rows], np.float32
-            )
-            target = np.asarray(
-                getattr(dataset, f"{side}_model_action_horizon23")[rows], np.float32
-            )
-            result[f"{side}_arm_state_norm"] = _normalize(
-                arm, stats, f"{side}_arm_state"
-            )
-            result[f"{side}_hand_history_norm"] = _normalize(
-                history, stats, f"{side}_hand_history"
-            )
-            result[f"{side}_target_action23"] = target
-            result[f"{side}_hand_target_norm"] = _normalize(
-                target[:, 0, 7:], stats, f"{side}_hand_action"
-            )
-            result[f"{side}_future_hand_norm"] = _normalize(
-                target[..., 7:], stats, f"{side}_hand_action"
-            )
-        return result
-    target = np.asarray(dataset.model_action_horizon23[rows], dtype=np.float32)
-    history = np.asarray(dataset.hand_state_window16[rows], dtype=np.float32)
-    arm = np.asarray(dataset.arm_state[rows], dtype=np.float32)
-    return {
+def build_history_windows(
+    values: np.ndarray, episode_index: np.ndarray, window_size: int
+) -> np.ndarray:
+    if window_size < 1:
+        raise ValueError("window_size must be >= 1")
+    values = np.asarray(values, dtype=np.float32)
+    windows = np.zeros((len(values), window_size, values.shape[-1]), dtype=np.float32)
+    for ep in np.unique(episode_index):
+        idx = np.flatnonzero(episode_index == ep)
+        for local_pos, row in enumerate(idx):
+            for window_pos, offset in enumerate(range(window_size - 1, -1, -1)):
+                src_pos = max(local_pos - offset, 0)
+                windows[row, window_pos] = values[idx[src_pos]]
+    return windows
+
+
+def build_future_windows(
+    values: np.ndarray,
+    episode_index: np.ndarray,
+    horizon: int,
+) -> tuple[np.ndarray, np.ndarray]:
+    if horizon < 1:
+        raise ValueError(f"action_horizon must be >= 1, got {horizon}")
+    values = np.asarray(values, dtype=np.float32)
+    targets = np.zeros((len(values), horizon, values.shape[-1]), dtype=np.float32)
+    mask = np.zeros((len(values), horizon), dtype=np.float32)
+    for ep in np.unique(episode_index):
+        idx = np.flatnonzero(episode_index == ep)
+        if len(idx) == 0:
+            continue
+        for local_pos, row in enumerate(idx):
+            for offset in range(horizon):
+                src_pos = local_pos + offset
+                if src_pos < len(idx):
+                    targets[row, offset] = values[idx[src_pos]]
+                    mask[row, offset] = 1.0
+                else:
+                    targets[row, offset] = values[idx[-1]]
+    return targets, mask
+
+
+def _history_mask(
+    episode_index: np.ndarray,
+    rows: np.ndarray,
+    length: int,
+    *,
+    include_current: bool = True,
+) -> np.ndarray:
+    """Return valid-frame masks for left-padded per-episode histories."""
+    episodes = np.asarray(episode_index)
+    result = np.zeros((len(rows), length), dtype=np.float32)
+    for output_row, row in enumerate(rows):
+        episode_rows = np.flatnonzero(episodes == episodes[row])
+        position = int(np.flatnonzero(episode_rows == row)[0])
+        result[output_row, max(0, length - position - int(include_current)) :] = 1.0
+    return result
+
+
+def _normalized_arrays(
+    data: LampFrameData,
+    windows: Mapping[str, np.ndarray],
+    rows: np.ndarray,
+    stats: Mapping[str, np.ndarray],
+    history_length: int,
+) -> dict[str, np.ndarray]:
+    mask = windows["mask"][rows]
+    target = windows["future"][rows]
+    history = windows["history"][rows]
+    arm = data.arm_state[rows]
+    arm_pair = windows["arm_pair"][rows]
+    hand_pair = history[:, -2:]
+    result = {
         "arm_state_norm": _normalize(arm, stats, "arm_state"),
+        "arm_state_pair_norm": _normalize(arm_pair, stats, "arm_state"),
         "hand_history_norm": _normalize(history, stats, "hand_history"),
+        "hand_state_pair_norm": _normalize(hand_pair, stats, "hand_history"),
         "target_action23": target,
         "arm_target_norm": _normalize(target[:, 0, :7], stats, "arm_action"),
         "hand_target_norm": _normalize(target[:, 0, 7:], stats, "hand_action"),
         "future_hand_norm": _normalize(target[..., 7:], stats, "hand_action"),
         "mask": mask,
     }
+    history_values = windows["prior_history"][rows]
+    result[f"hand_history{history_length}_norm"] = _normalize(
+        history_values, stats, "hand_history"
+    )
+    result[f"hand_history{history_length}_mask"] = windows["history_mask"][rows]
+    # LAMP-LSTM uses separate encoder/decoder history namespaces.  They may
+    # share the same physical history array, but explicit aliases keep the
+    # cache schema unambiguous and allow the two lengths to diverge later.
+    result["lamplstm_encoder_history_norm"] = result[
+        f"hand_history{history_length}_norm"
+    ]
+    result["lamplstm_encoder_history_mask"] = result[
+        f"hand_history{history_length}_mask"
+    ]
+    result["lamplstm_decoder_history_norm"] = result[
+        f"hand_history{history_length}_norm"
+    ]
+    result["lamplstm_decoder_history_mask"] = result[
+        f"hand_history{history_length}_mask"
+    ]
+    return result
 
 
-def _training_statistics(dataset: Any, train_rows: np.ndarray) -> dict[str, np.ndarray]:
-    if hasattr(dataset, "right_arm_state7"):
-        result = {}
-        for side in ("right", "left"):
-            target = getattr(dataset, f"{side}_model_action_horizon23")[train_rows]
-            result.update(
-                _named_stats(
-                    {
-                        f"{side}_arm_state": getattr(dataset, f"{side}_arm_state7")[
-                            train_rows
-                        ],
-                        f"{side}_hand_history": getattr(
-                            dataset, f"{side}_hand_state_window16"
-                        )[train_rows, -1],
-                        f"{side}_arm_action": target[:, 0, :7],
-                        f"{side}_hand_action": target[:, 0, 7:],
-                    }
-                )
-            )
-        return result
-    target = dataset.model_action_horizon23[train_rows]
+def _training_statistics(
+    data: LampFrameData, train_rows: np.ndarray
+) -> dict[str, np.ndarray]:
+    target = data.action[train_rows]
     return _named_stats(
         {
-            "arm_state": dataset.arm_state[train_rows],
-            "hand_history": dataset.hand_state_window16[train_rows, -1],
-            "arm_action": target[:, 0, :7],
-            "hand_action": target[:, 0, 7:],
+            "arm_state": data.arm_state[train_rows],
+            "hand_history": data.hand_state[train_rows],
+            "arm_action": target[:, :7],
+            "hand_action": target[:, 7:],
         }
     )
 
@@ -439,50 +629,11 @@ def _validate_cache(
         raise ValueError("LAMP cache statistics metadata mismatch")
 
 
-def _ensure_joint_preprocess(
-    task: str, dataset_root: str | Path, resolved_root: Path
-) -> None:
-    if is_bimanual_task(task):
-        path = bimanual_preprocess_path(resolved_root)
-        if not path.is_file():
-            build_bimanual_preprocess_artifact(task, dataset_root)
-    else:
-        path = bc_preprocess_path(resolved_root)
-        if not path.is_file():
-            build_bc_preprocess_artifact(task, dataset_root)
-
-
-def _resolved_task_root(task: str, dataset_root: str | Path) -> Path:
-    if is_bimanual_task(task):
-        return resolve_bimanual_task_root(task, dataset_root)
-    dataset = load_task_dataset(task, dataset_root, policy_state_source="state")
-    return dataset.root
-
-
-def _image_keys(task: str, dataset_root: str | Path) -> tuple[str, ...]:
-    if is_bimanual_task(task):
-        return load_bimanual_task_dataset(
-            task, dataset_root, policy_state_source="tcp"
-        ).image_keys
-    return load_task_dataset(task, dataset_root, policy_state_source="state").image_keys
-
-
-def _video_manifest_sha256(root: Path, keys: Sequence[str]) -> str:
-    digest = hashlib.sha256()
-    for key in keys:
-        directory = root / "videos" / key
-        files = sorted(directory.glob("chunk-*/*.mp4"))
-        if not files:
-            raise FileNotFoundError(f"No videos found for LAMP camera {key!r}")
-        for path in files:
-            stat = path.stat()
-            record = f"{path.relative_to(root)}:{stat.st_size}:{stat.st_mtime_ns}\n"
-            digest.update(record.encode("utf-8"))
-    return digest.hexdigest()
-
-
 __all__ = [
     "CACHE_SCHEMA_VERSION",
+    "LampDataSource",
+    "LampSourceMetadata",
+    "LampFrameData",
     "LampMMapDataset",
     "load_cache_metadata",
     "load_cache_statistics",

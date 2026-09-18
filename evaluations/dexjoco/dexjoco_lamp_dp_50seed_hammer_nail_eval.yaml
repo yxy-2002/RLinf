@@ -18,7 +18,7 @@ cluster:
 runner:
   logger:
     log_path: ./outputs/lamp_evaluations/hammer_nail
-    experiment_name: dexjoco_lamp_dp_il_decoder_only_hammer_nail_eval_50
+    experiment_name: dexjoco_lamp_dp_il_mlp_hammer_nail_eval_50
 
 env:
   eval:
@@ -39,6 +39,6 @@ env:
 rollout:
   enable_torch_compile: false
   model:
-    model_path: ./outputs/lamp_dp_rerun/dexjoco_lamp_dp_il_decoder_only_hammer_nail/artifact
+    model_path: ./outputs/lamp_dp_rerun/dexjoco_lamp_dp_il_mlp_hammer_nail/artifact
     use_temporal_ensemble: false
     execution_horizon_override: 8

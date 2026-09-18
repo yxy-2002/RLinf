@@ -1,3 +1,0 @@
-defaults: [dexjoco_lamp_prior_cvae_dim6_fold_glasses, _self_]
-runner: {logger: {experiment_name: dexjoco_lamp_prior_cvae_dim2_selected_fold_glasses}}
-actor: {model: {hand_prior: {latent_dim: 2, posterior_kl_weight: 1.0e-4, prior_kl_weight: 3.0e-4}}}

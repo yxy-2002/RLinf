@@ -1,3 +1,0 @@
-defaults: [dexjoco_lamp_dp_il_decoder_only_pick_bucket, _self_]
-runner: {logger: {experiment_name: dexjoco_lamp_dp_il_decoder_only_pick_bucket_a09}}
-actor: {optim: {lr: 1.0e-4, warmup_steps: 500, weight_decay: 1.0e-4, backbone_lr_ratio: 0.3}}

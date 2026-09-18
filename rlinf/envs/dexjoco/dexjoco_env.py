@@ -17,8 +17,10 @@
 from __future__ import annotations
 
 import copy
+import json
 import math
 from collections.abc import Callable, Mapping, Sequence
+from pathlib import Path
 from typing import Any, Optional, Union
 
 import cv2
@@ -363,6 +365,15 @@ class DexJocoEnv(gym.Env):
         if self.num_envs <= 0:
             raise ValueError(f"num_envs must be positive, got {self.num_envs}.")
 
+        self._lamp_history_length = int(_cfg_get(cfg, "lamp_history_length", 8))
+        if self._lamp_history_length < 2:
+            raise ValueError("lamp_history_length must be >= 2")
+        self._lamp_history_contract = str(
+            _cfg_get(cfg, "lamp_history_contract", "primitive_v1")
+        )
+        if self._lamp_history_contract != "primitive_v1":
+            raise ValueError("LAMP supports only lamp_history_contract=primitive_v1")
+
         self.task_name = str(_cfg_get(cfg, "task_name", ""))
         if self.task_name not in DEXJOCO_TASKS:
             raise ValueError(
@@ -471,12 +482,16 @@ class DexJocoEnv(gym.Env):
         self._is_start = True
         self._last_raw_obs: list[dict[str, Any]] | None = None
         self._last_qpos: np.ndarray | None = None
+        self._qpos_pair: np.ndarray | None = None
+        self._episode_result_path = _cfg_get(cfg, "episode_result_path", None)
+        self._episode_written = np.zeros(self.num_envs, dtype=bool)
+        self._hand_history_valid = np.zeros(self.num_envs, dtype=np.int64)
         history_shape = (
-            (self.num_envs, 2, 8, 16)
+            (self.num_envs, 2, self._lamp_history_length, 16)
             if self.dual_arm
             else (
                 self.num_envs,
-                8,
+                self._lamp_history_length,
                 16,
             )
         )
@@ -643,6 +658,10 @@ class DexJocoEnv(gym.Env):
             ),
             "task_descriptions": list(self.task_descriptions),
         }
+        if self._qpos_pair is not None:
+            result["panda_qpos_pair"] = torch.as_tensor(
+                self._qpos_pair.copy(), dtype=torch.float32
+            )
         if self.dual_arm:
             result["right_hand_history"] = torch.as_tensor(
                 self._hand_history[:, 0], dtype=torch.float32
@@ -652,8 +671,16 @@ class DexJocoEnv(gym.Env):
             )
         else:
             result["hand_history"] = torch.as_tensor(
-                self._hand_history, dtype=torch.float32
+                self._hand_history.copy(), dtype=torch.float32
             )
+            result["hand_state_pair"] = torch.as_tensor(
+                self._hand_history[:, -2:, :].copy(), dtype=torch.float32
+            )
+        positions = np.arange(self._lamp_history_length)[None]
+        result["hand_history_mask"] = torch.tensor(
+            positions >= self._lamp_history_length - self._hand_history_valid[:, None],
+            dtype=torch.float32,
+        )
         return result
 
     def _update_hand_history(
@@ -671,7 +698,15 @@ class DexJocoEnv(gym.Env):
                 hands = np.stack((state[14:30], state[30:46]), axis=0)
             else:
                 hands = state[7:23]
+            self._hand_history_valid[int(idx)] = (
+                1
+                if reset
+                else min(
+                    self._lamp_history_length, self._hand_history_valid[int(idx)] + 1
+                )
+            )
             if reset:
+                self._episode_written[int(idx)] = False
                 self._hand_history[int(idx)] = np.broadcast_to(
                     hands[..., None, :], self._hand_history[int(idx)].shape
                 )
@@ -692,6 +727,10 @@ class DexJocoEnv(gym.Env):
             self._last_qpos = np.zeros(
                 (self.num_envs, 14 if self.dual_arm else 7), dtype=np.float32
             )
+        if self._qpos_pair is None:
+            self._qpos_pair = np.zeros(
+                (self.num_envs, 2, 14 if self.dual_arm else 7), dtype=np.float32
+            )
         for idx, info in zip(env_idx, info_list):
             qpos = np.asarray(info.get("panda_qpos"), dtype=np.float32)
             if qpos.shape != (14 if self.dual_arm else 7,):
@@ -699,6 +738,8 @@ class DexJocoEnv(gym.Env):
                     f"DexJoCo panda_qpos has invalid shape {qpos.shape} for "
                     f"task {self.task_name!r}."
                 )
+            self._qpos_pair[int(idx), 0] = self._qpos_pair[int(idx), 1]
+            self._qpos_pair[int(idx), 1] = qpos
             self._last_qpos[int(idx)] = qpos
             self._last_native_infos[int(idx)] = dict(info)
 
@@ -873,6 +914,8 @@ class DexJocoEnv(gym.Env):
                 self._last_raw_obs[int(idx)] = obs
         self._update_info_cache(reset_idx, info_list)
         self._update_hand_history(reset_idx, partial_obs, reset=True)
+        assert self._qpos_pair is not None and self._last_qpos is not None
+        self._qpos_pair[reset_idx] = self._last_qpos[reset_idx, None, :]
 
         if initial_states is not None:
             restored_obs, restored_infos = self._restore_initial_states(
@@ -882,6 +925,7 @@ class DexJocoEnv(gym.Env):
                 self._last_raw_obs[int(idx)] = obs
             self._update_info_cache(requested_idx, restored_infos)
             self._update_hand_history(requested_idx, restored_obs, reset=True)
+            self._qpos_pair[requested_idx] = self._last_qpos[requested_idx, None, :]
 
         self._reset_metrics(reset_idx)
         reset_success = np.asarray(
@@ -1015,6 +1059,23 @@ class DexJocoEnv(gym.Env):
 
         obs_dict = self._wrap_obs(self._last_raw_obs)
         dones = np.logical_or(terminations, truncations)
+        if self._episode_result_path:
+            output = Path(str(self._episode_result_path))
+            output.parent.mkdir(parents=True, exist_ok=True)
+            with output.open("a") as stream:
+                for idx in np.flatnonzero(dones & ~self._episode_written):
+                    stream.write(
+                        json.dumps(
+                            {
+                                "env_seed": int(self.env_seeds[idx]),
+                                "success_once": bool(self._success_once[idx]),
+                                "return": float(self._returns[idx]),
+                                "episode_length": int(self._episode_lengths[idx]),
+                            }
+                        )
+                        + "\n"
+                    )
+                    self._episode_written[idx] = True
         if np.any(dones) and auto_reset and self.auto_reset:
             obs_dict, infos = self._handle_auto_reset(dones, obs_dict, infos)
 

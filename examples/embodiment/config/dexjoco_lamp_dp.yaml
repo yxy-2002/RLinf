@@ -1,34 +1,26 @@
 defaults:
-  - dexjoco_lamp_il_base
-  - _self_
-
+- dexjoco_lamp_il_base
+- _self_
 runner:
   max_steps: 30000
   logger:
     experiment_name: dexjoco_lamp_dp
-
-cluster:
-  component_placement:
-    actor: 0-0
-
 algorithm:
   stage: dp
-
 data:
   task_name: pick_bucket
   dataset_root: ./datasets/DexJoCo-Datasets-LeRobot/dexjoco_lerobot_datasets
   cache_root: ./outputs/lamp_cache
-
 actor:
   global_batch_size: 512
   micro_batch_size: 512
   eval_batch_size: 512
   optim:
-    lr: 3.0e-5
+    lr: 3.0e-05
     warmup_steps: 1000
   model:
     model_type: lamp_dp
     hand_prior:
       type: mlp
       latent_dim: 6
-      artifact_path: null  # null when hand_prior_type = mlp
+      artifact_path: null

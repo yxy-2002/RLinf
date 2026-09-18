@@ -1,0 +1,28 @@
+# Standalone epoch-based example; use train_lamp_il.py for the selected 40k schedule.
+data:
+  source: dexjoco_lerobot
+  task_name: water_plant
+  dataset_root: ./datasets/DexJoCo-Datasets-LeRobot/dexjoco_lerobot_datasets
+  action_dim: 16
+  history_length: 8
+  horizon: 16
+  train_ratio: 0.9
+  split_seed: 42
+model:
+  latent_dim: 2
+  action_hidden_dim: 256
+  condition_hidden_dim: 256
+  encoder_condition_mode: film
+  decoder_condition_mode: film
+  num_lstm_layers: 1
+  condition_drop_prob: 0.1
+loss:
+  beta: 0.0005
+  beta_warmup_steps: 0
+training:
+  batch_size: 64
+  epochs: 100
+  learning_rate: 5.0e-05
+  weight_decay: 0.0
+  num_workers: 0
+  seed: 42

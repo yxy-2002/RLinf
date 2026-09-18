@@ -1,0 +1,26 @@
+# Requires a single-arm version-2 lamplstm DP deployment artifact.
+defaults:
+  - env/dexjoco_water_plant@env.train
+  - env/dexjoco_water_plant@env.eval
+  - dexjoco_lamp_residual_sac
+  - _self_
+cluster:
+  component_placement:
+    actor: 2-2
+    env: 2-3
+    rollout: 2-3
+runner:
+  logger:
+    experiment_name: dexjoco_lamp_residual_sac_lamplstm_water_plant_scale_050_050
+actor:
+  model:
+    model_path: /vepfs-mlp2/c20250301/240906020/RLinf/outputs/lamp_lstm_il/group_b/runs/water_plant/lstm_film/dp/run/artifact
+    hand_prior:
+      type: lamplstm
+    wrist_residual_scale: 0.5
+    hand_residual_scale: 0.5
+env:
+  train:
+    lamp_history_length: 8
+  eval:
+    lamp_history_length: 8

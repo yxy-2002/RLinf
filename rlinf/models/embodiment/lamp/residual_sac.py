@@ -38,7 +38,7 @@ _ARM_ACTION_DIM = 7
 _EXECUTION_HORIZON = 8
 _CONDITION_DIM = 256
 _PRE_FUSION_DIM = 512 * 2 + 128 * 2
-_SUPPORTED_PRIORS = frozenset(("ae", "cvae", "decoder_only", "pca", "mlp"))
+_SUPPORTED_PRIORS = frozenset(("lamplstm", "pca", "vq_codebook", "mlp"))
 _V3_HIDDEN_DIMS = (256, 256, 256)
 
 
@@ -513,12 +513,15 @@ class LampResidualSACPolicy(nn.Module, BasePolicy):
         spec = base_policy.spec
         if spec.policy_family != "dp" or spec.embodiment != "single":
             raise ValueError("Residual SAC supports only single-arm LAMP DP artifacts")
-        if spec.hand_prior_type == "vq_codebook":
-            raise NotImplementedError(
-                "LAMP residual SAC does not yet support vq_codebook. "
-                "The artifact remains supported by the frozen LAMP base policy "
-                "and standalone IL evaluation; use ae, cvae, decoder_only, pca, "
-                "or mlp for residual training."
+        if spec.policy_version != 2:
+            raise ValueError("Residual SAC requires a version-2 base policy")
+        if (
+            spec.hand_prior_type == "lamplstm"
+            and base_policy.core.lamplstm.condition_mode_decoder != "none"
+            and base_policy.core.decoder_history_contract != "primitive_v1"
+        ):
+            raise ValueError(
+                "Conditioned LSTM RL requires primitive_v1 measured history and mask"
             )
         if spec.hand_prior_type not in _SUPPORTED_PRIORS:
             supported = ", ".join(sorted(_SUPPORTED_PRIORS))
@@ -548,16 +551,9 @@ class LampResidualSACPolicy(nn.Module, BasePolicy):
         execution_horizon: int,
     ) -> torch.Tensor:
         mask = torch.zeros(ACTION_HORIZON, int(core_dim), dtype=torch.bool)
-        if hand_prior_type in ("ae", "cvae", "decoder_only"):
-            mask[:execution_horizon, :_ARM_ACTION_DIM] = True
-            # Four kernel-3 convolutions give the current decoder a four-token
-            # forward dependency radius.
-            hand_causal_horizon = min(execution_horizon + 4, ACTION_HORIZON)
-            mask[:hand_causal_horizon, _ARM_ACTION_DIM:] = True
-        elif hand_prior_type in ("pca", "mlp"):
-            mask[:execution_horizon] = True
-        else:
+        if hand_prior_type not in _SUPPORTED_PRIORS:
             raise ValueError(f"Unsupported residual prior {hand_prior_type!r}")
+        mask[:execution_horizon] = True
         return mask
 
     def validate_target_entropy(self, configured: float | None) -> float:
@@ -756,7 +752,14 @@ class LampResidualSACPolicy(nn.Module, BasePolicy):
                     device=reference.device,
                     dtype=reference.dtype,
                 )
-                features = LampObservationFeatures(condition=condition_tensor)
+                history, history_mask = self.base_policy.decoder_context(obs)
+                features = LampObservationFeatures(
+                    condition=condition_tensor,
+                    auxiliary={
+                        "decoder_history": history,
+                        "decoder_history_mask": history_mask,
+                    },
+                )
 
             if base_core is None:
                 base_core_tensor = self.base_policy.sample_base_plan(
@@ -857,6 +860,10 @@ class LampResidualSACPolicy(nn.Module, BasePolicy):
             "critic_observation": critic_observation_tensor.detach(),
             "base_core": base_core_tensor.detach(),
         }
+        history, history_mask = self.base_policy.decoder_context(obs)
+        if history is not None:
+            context["decoder_history"] = history.detach()
+            context["decoder_history_mask"] = history_mask.detach()
         return context
 
     def _uniform_causal_residual(self, reference: torch.Tensor) -> torch.Tensor:
@@ -932,7 +939,37 @@ class LampResidualSACPolicy(nn.Module, BasePolicy):
             context["base_core"] + residual,
             context["base_core"],
         )
-        physical_full = self.base_policy.decode_core_action(corrected_core)
+        physical_full = self.base_policy.decode_core_action(
+            corrected_core,
+            decoder_history=context.get("decoder_history"),
+            decoder_history_mask=context.get("decoder_history_mask"),
+            vq_straight_through=torch.is_grad_enabled(),
+        )
+        if self.base_policy.spec.hand_prior_type == "vq_codebook":
+            core = self.base_policy.core
+            coordinate = (
+                corrected_core[..., 7] * core.core_action_std[7]
+                + core.core_action_mean[7]
+            )
+            x = (coordinate.clamp(-1, 1) + 1) * 7.5
+            indices = (
+                (x + 0.5 + 4.0 * torch.finfo(x.dtype).eps)
+                .floor()
+                .long()[:, : self.execution_horizon]
+            )
+            context["vq_index_saturation"] = (
+                (coordinate[:, : self.execution_horizon].abs() >= 1)
+                .float()
+                .mean()
+                .detach()
+            )
+            context["vq_index_switch_rate"] = (
+                (indices[:, 1:] != indices[:, :-1]).float().mean().detach()
+            )
+            for index in range(16):
+                context[f"vq_code_usage_{index:02d}"] = (
+                    (indices == index).float().mean().detach()
+                )
         expected = (
             corrected_core.shape[0],
             self.horizon,
@@ -1082,10 +1119,13 @@ class LampResidualSACPolicy(nn.Module, BasePolicy):
         self,
         env_obs: dict[str, Any],
         *,
-        mode: str = "train",
+        mode: str | None = None,
         online_macro_transitions: int | float | torch.Tensor | None = None,
         **_: Any,
     ) -> tuple[torch.Tensor, dict[str, Any]]:
+        from rlinf.models.embodiment.lamp.rollout import resolve_rollout_mode
+
+        mode = resolve_rollout_mode(mode, _.get("do_sample"), default="train")
         with torch.no_grad():
             context = self._rollout_context(
                 env_obs,

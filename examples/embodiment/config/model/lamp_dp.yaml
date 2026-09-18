@@ -1,21 +1,10 @@
 model_type: lamp_dp
+is_lora: false
 model_path: ""
 precision: "32"
 action_dim: 23
 num_action_chunks: 4
 temporal_ensemble_decay: 0.25
-# Set false to evaluate standard receding-horizon inference: predict H=16,
-# execute only the newest plan's first K=4 actions, and retain no plan history.
 use_temporal_ensemble: true
-# Evaluation-only overrides. Null preserves the self-contained artifact recipe.
 execution_horizon_override: null
 num_inference_steps_override: null
-# Optional deterministic DP noise. Null/empty keeps the legacy global-RNG
-# behavior; eval launchers that compare policies should set the scalar seed.
-eval_base_noise_seed: null
-eval_base_noise_seeds: []
-eval_base_noise_seed_offset: 0
-
-# The self-contained artifact owns prior type and single/bimanual latent
-# dimensions.  Set a hand_prior mapping explicitly only for extra assertions.
-hand_prior: null

@@ -16,6 +16,7 @@
 
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
 import time
@@ -40,10 +41,6 @@ from rlinf.models.embodiment.lamp.artifact_io import (
     save_artifact,
     save_training_state,
 )
-from rlinf.models.embodiment.lamp.bc_policy import BCPolicy
-from rlinf.models.embodiment.lamp.bimanual_diffusion_policy import (
-    LAMPBimanualDiffusionPolicy,
-)
 from rlinf.models.embodiment.lamp.hand_pca import fit_hand_pca
 from rlinf.models.embodiment.lamp.hand_prior_artifact import (
     TorchHandPCA,
@@ -67,21 +64,6 @@ from rlinf.models.embodiment.lamp.vq_action_normalization import (
 )
 from rlinf.scheduler import Worker
 from rlinf.utils.runner_utils import resolve_training_horizon
-
-
-def _cvae_kl_weights(
-    step: int | torch.Tensor,
-    *,
-    posterior_kl_weight: float = 1e-4,
-    prior_kl_weight: float = 1e-3,
-    kl_warmup_steps: int = 2_000,
-) -> tuple[float | torch.Tensor, float | torch.Tensor]:
-    """Return JAX-compatible CVAE KL weights for a zero-based optimizer step."""
-    warmup_step = step + 1
-    return (
-        beta_warmup(warmup_step, posterior_kl_weight, kl_warmup_steps),
-        beta_warmup(warmup_step, prior_kl_weight, kl_warmup_steps),
-    )
 
 
 def _clip_gradients(
@@ -175,7 +157,7 @@ class DeterministicInfiniteBatchSampler(Sampler[list[int]]):
 
 
 class LampILWorker(Worker):
-    """Train one LAMP phase-two stage on one RLinf-managed GPU."""
+    """Train one LAMP prior or DP stage on one RLinf-managed GPU."""
 
     def __init__(self, cfg: DictConfig):
         super().__init__()
@@ -198,6 +180,8 @@ class LampILWorker(Worker):
         self._cache_metadata: dict[str, Any] = {}
         self._statistics: dict[str, np.ndarray] = {}
         self._derived_namespace: str | None = None
+        self._ema_model: nn.Module | None = None
+        self._ema_settings: dict[str, Any] = {}
         self._output_dir = Path(".")
 
     def init_worker(self) -> None:
@@ -216,6 +200,8 @@ class LampILWorker(Worker):
         np.random.seed(seed)
         cache_dir = Path(self.cfg.data.cache_path).expanduser().resolve()
         self._cache_metadata = load_cache_metadata(cache_dir)
+        if self._cache_metadata["embodiment"] != "single":
+            raise ValueError("LAMP supports single-arm datasets only")
         self._statistics = load_cache_statistics(cache_dir)
         self._output_dir = Path(
             self.cfg.runner.logger.log_path
@@ -224,16 +210,17 @@ class LampILWorker(Worker):
 
         if self.stage == "prior":
             self._setup_prior()
-        elif self.stage == "bc":
-            self._setup_bc()
+            self._initialize_weights()
         elif self.stage == "dp":
             self._setup_dp()
+            self._initialize_weights()
+            self._setup_ema()
         else:
             raise ValueError(f"Unsupported LAMP training stage {self.stage!r}")
         self._setup_dataloaders(cache_dir)
         prior_type = str(self.cfg.actor.model.hand_prior.type)
         if self.stage == "dp" or (
-            self.stage == "prior" and prior_type in {"ae", "cvae", "vq"}
+            self.stage == "prior" and prior_type in {"lamplstm", "vq"}
         ):
             self._artifact_metadata["training_contract"] = _training_contract(
                 self.cfg,
@@ -261,12 +248,47 @@ class LampILWorker(Worker):
             f"trainable={trainable:,}, cache={cache_dir}"
         )
 
+    def _initialize_weights(self) -> None:
+        """Initialize a new run from deployment weights, never optimizer state."""
+        path = self.cfg.actor.model.get("model_path")
+        if not path:
+            return
+        from rlinf.models.embodiment.lamp.artifact_io import load_artifact
+
+        metadata, state, _ = load_artifact(path)
+        if metadata.get("dataset_fingerprint") != self._cache_metadata["fingerprint"]:
+            raise ValueError("Initialization artifact uses different data/statistics")
+        if metadata.get("architecture") != self._architecture:
+            raise ValueError(
+                "Initialization artifact architecture differs from this run"
+            )
+        if self.stage == "dp":
+            if metadata.get("policy_version") != 2 or metadata.get(
+                "model_type"
+            ) not in ("lamp_dp", "lamp_dp_v2"):
+                raise ValueError(
+                    "DP initialization requires version-2 deployment weights"
+                )
+            if (
+                metadata.get("spec", {}).get("hand_prior_type")
+                != self._policy_spec.hand_prior_type
+            ):
+                raise ValueError("Initialization artifact prior differs from this run")
+            state = {
+                key.removeprefix("core."): value
+                for key, value in state.items()
+                if key.startswith("core.")
+            }
+        elif metadata.get("prior_type") != str(self.cfg.actor.model.hand_prior.type):
+            raise ValueError("Initialization artifact prior differs from this run")
+        self.model.load_state_dict(state, strict=True)
+
     def _setup_prior(self) -> None:
         prior_cfg = self.cfg.actor.model.hand_prior
         prior_type = str(prior_cfg.type)
         hand_side = str(prior_cfg.get("hand_side", "single"))
         embodiment = self._cache_metadata["embodiment"]
-        valid_sides = ("single",) if embodiment == "single" else ("right", "left")
+        valid_sides = ("single",)
         if hand_side not in valid_sides:
             raise ValueError(
                 f"LAMP {embodiment} prior hand_side must be one of {valid_sides}"
@@ -302,78 +324,36 @@ class LampILWorker(Worker):
             "latent_dim": int(prior_cfg.get("latent_dim", 0)),
             "architecture": architecture,
         }
+        if prior_type == "lamplstm":
+            self._artifact_metadata.update(
+                {
+                    "history_length": int(prior_cfg.get("history_length", 16)),
+                    "horizon": int(architecture["horizon"]),
+                    "action_dim": int(architecture["action_dim"]),
+                    "normalization": "cache_statistics:hand_action",
+                    "condition_dropout_scope": "shared_per_sample",
+                    "history_contract": self._cache_metadata["history_contract"],
+                    "encoder_condition_mode": str(
+                        architecture.get("condition_mode_encoder", "none")
+                    ),
+                    "decoder_condition_mode": str(
+                        architecture.get("condition_mode_decoder", "none")
+                    ),
+                    "encoder_history_length": int(prior_cfg.get("history_length", 16)),
+                    "decoder_history_length": int(prior_cfg.get("history_length", 16)),
+                }
+            )
         if prior_type == "vq":
             self._artifact_metadata["hand_action_normalization"] = (
                 VQ_HAND_ACTION_NORMALIZATION
             )
-
-    def _setup_bc(self) -> None:
-        if self._cache_metadata["embodiment"] != "single":
-            raise ValueError("LAMP BC currently supports the single-arm policy only")
-        model_cfg = self.cfg.actor.model
-        prior_cfg = model_cfg.hand_prior
-        source = str(prior_cfg.type)
-        backbone_config, backbone_state, _ = load_hf_resnet18_params(
-            model_cfg.resnet_path
-        )
-        vae_config = None
-        prior_model = None
-        if source == "vae":
-            prior_model, prior_metadata, _ = load_prior_artifact(
-                prior_cfg.artifact_path,
-                expected_type="vae",
-                expected_task=self._cache_metadata["task"],
-                expected_dataset_fingerprint=self._cache_metadata["fingerprint"],
-                expected_hand_side="single",
-            )
-            if int(prior_cfg.latent_dim) != int(prior_metadata["latent_dim"]):
-                raise ValueError(
-                    "Configured LAMP BC latent_dim differs from the VAE artifact"
-                )
-            vae_config = dict(prior_metadata["architecture"])
-        elif source != "mlp":
-            raise ValueError("LAMP BC hand prior must be 'vae' or 'mlp'")
-        architecture = {
-            "backbone_config": backbone_config,
-            "hand_prior_source": source,
-            "vae_model_config": vae_config,
-            "hidden_dims": [512, 512, 256],
-            "state_hidden_dims": [128, 128],
-            "hand_state_window_size": 8,
-            "backbone_pooling": "avg",
-            "dense_init": "torch_uniform",
-        }
-        model = BCPolicy(**architecture)
-        model.front_backbone.resnet.load_state_dict(backbone_state, strict=True)
-        model.wrist_backbone.resnet.load_state_dict(backbone_state, strict=True)
-        if prior_model is not None:
-            model.vae.load_state_dict(prior_model.state_dict(), strict=True)
-        self.model = model.to(self.device)
-        self._architecture = architecture
-        latent_dim = 0 if source == "mlp" else int(model.vae.latent_dim)
-        self._policy_spec = LampPolicySpec(
-            task=self._cache_metadata["task"],
-            policy_family="bc",
-            embodiment="single",
-            hand_prior_type=source,
-            action_horizon=1,
-            execution_horizon=1,
-            core_action_dim=7 + (16 if source == "mlp" else latent_dim),
-            physical_action_dim=23,
-            image_size=int(self._cache_metadata["image_size"]),
-            image_keys=tuple(self._cache_metadata["image_keys"]),
-            latent_dims={"single": latent_dim},
-        )
-        self._artifact_metadata = self._policy_artifact_metadata("lamp_bc")
 
     def _setup_dp(self) -> None:
         model_cfg = self.cfg.actor.model
         source = str(model_cfg.hand_prior.type)
         policy_source = "vq_codebook" if source == "vq" else source
         if policy_source not in (
-            "ae",
-            "cvae",
-            "decoder_only",
+            "lamplstm",
             "pca",
             "vq_codebook",
             "mlp",
@@ -383,60 +363,29 @@ class LampILWorker(Worker):
             model_cfg.resnet_path
         )
         embodiment = self._cache_metadata["embodiment"]
-        if policy_source == "ae" and embodiment != "single":
-            raise ValueError(
-                "LAMP AE diffusion policies currently support single-arm tasks only"
-            )
         priors = self._load_dp_priors(source, embodiment)
         core_stats, namespace = self._prepare_dp_targets(source, priors)
         self._derived_namespace = namespace
-        if embodiment == "single":
-            architecture = _single_dp_architecture(
-                backbone_config,
-                policy_source,
-                priors.get("single"),
-                core_stats,
-                self._statistics,
-                model_cfg.hand_prior,
+        architecture = _single_dp_architecture(
+            backbone_config,
+            policy_source,
+            priors.get("single"),
+            core_stats,
+            self._statistics,
+            model_cfg.hand_prior,
+        )
+
+        architecture["dropout_prob"] = float(model_cfg.get("dropout_prob", 0.0))
+        model: nn.Module = LAMPDiffusionPolicy(**architecture)
+        model.front_backbone.resnet.load_state_dict(backbone_state, strict=True)
+        model.wrist_backbone.resnet.load_state_dict(backbone_state, strict=True)
+        if policy_source == "lamplstm":
+            model.lamplstm.load_state_dict(
+                priors["single"][0].state_dict(), strict=True
             )
-            model: nn.Module = LAMPDiffusionPolicy(**architecture)
-            model.front_backbone.resnet.load_state_dict(backbone_state, strict=True)
-            model.wrist_backbone.resnet.load_state_dict(backbone_state, strict=True)
-            if policy_source == "ae":
-                model.ae.load_state_dict(priors["single"][0].state_dict(), strict=True)
-            elif policy_source in ("cvae", "decoder_only"):
-                model.cvae.load_state_dict(
-                    priors["single"][0].state_dict(), strict=True
-                )
-            latent_dims = {"single": model._hand_latent_dim()}
-            core_dim = model._core_dim()
-            physical_dim = 23
-        else:
-            architecture = _bimanual_dp_architecture(
-                backbone_config,
-                policy_source,
-                priors,
-                core_stats,
-                self._statistics,
-                model_cfg.hand_prior,
-            )
-            model = LAMPBimanualDiffusionPolicy(**architecture)
-            for backbone in (
-                model.ego_backbone,
-                model.right_wrist_backbone,
-                model.left_wrist_backbone,
-            ):
-                backbone.resnet.load_state_dict(backbone_state, strict=True)
-            if policy_source in ("cvae", "decoder_only"):
-                model.right_cvae.load_state_dict(
-                    priors["right"][0].state_dict(), strict=True
-                )
-                model.left_cvae.load_state_dict(
-                    priors["left"][0].state_dict(), strict=True
-                )
-            latent_dims = {side: model._latent_dim(side) for side in ("right", "left")}
-            core_dim = model._core_dim()
-            physical_dim = 46
+        latent_dims = {"single": model._hand_latent_dim()}
+        core_dim = model._core_dim()
+        physical_dim = 23
         self.model = model.to(self.device)
         self._architecture = architecture
         self._policy_spec = LampPolicySpec(
@@ -451,18 +400,62 @@ class LampILWorker(Worker):
             image_size=int(self._cache_metadata["image_size"]),
             image_keys=tuple(self._cache_metadata["image_keys"]),
             latent_dims=latent_dims,
+            policy_version=2,
         )
         self._artifact_metadata = self._policy_artifact_metadata("lamp_dp")
+        self._artifact_metadata["policy_version"] = 2
+
+    def _setup_ema(self) -> None:
+        """Create a frozen EMA twin for deployment-weight experiments."""
+
+        ema_cfg = self.cfg.actor.model.get("ema", {})
+        enabled = bool(ema_cfg.get("enabled", False))
+        decay = float(ema_cfg.get("decay", 0.999))
+        start_step = int(ema_cfg.get("start_step", 1000))
+        if not enabled:
+            return
+        if self.stage != "dp":
+            raise ValueError("LAMP model EMA is supported only for dp")
+        if not 0.0 <= decay < 1.0:
+            raise ValueError("EMA decay must be in [0, 1)")
+        if start_step < 0 or start_step >= self._max_steps:
+            raise ValueError("EMA start_step must be within the training horizon")
+        self._ema_settings = {
+            "enabled": True,
+            "decay": decay,
+            "start_step": start_step,
+        }
+        self._ema_model = copy.deepcopy(self.model).to(self.device)
+        self._ema_model.eval()
+        for parameter in self._ema_model.parameters():
+            parameter.requires_grad_(False)
+        self._artifact_metadata["ema"] = dict(self._ema_settings)
+
+    def _update_ema(self) -> None:
+        if self._ema_model is None:
+            return
+        step = self._global_step
+        start_step = int(self._ema_settings["start_step"])
+        decay = float(self._ema_settings["decay"])
+        if step == start_step:
+            self._ema_model.load_state_dict(self.model.state_dict())
+        if step < start_step:
+            return
+        with torch.no_grad():
+            for ema_parameter, parameter in zip(
+                self._ema_model.parameters(), self.model.parameters()
+            ):
+                ema_parameter.mul_(decay).add_(parameter.detach(), alpha=1.0 - decay)
 
     def _load_dp_priors(self, source: str, embodiment: str):
         if source == "mlp":
             return {}
         prior_cfg = self.cfg.actor.model.hand_prior
-        sides = ("single",) if embodiment == "single" else ("right", "left")
+        sides = ("single",)
         result = {}
         for side in sides:
             side_cfg = prior_cfg if side == "single" else prior_cfg[side]
-            expected_type = "cvae" if source == "decoder_only" else source
+            expected_type = source
             payload = load_prior_artifact(
                 side_cfg.artifact_path,
                 expected_type=expected_type,
@@ -509,6 +502,7 @@ class LampILWorker(Worker):
         }
         namespace_payload = {
             "schema": 1,
+            "policy_version": 2,
             "source": source,
             "prior_binding": binding,
             "latent_dims": OmegaConf.to_container(
@@ -558,14 +552,7 @@ class LampILWorker(Worker):
     def _dp_core_raw(self, split: str, source: str, priors: dict[str, Any]):
         split_dir = Path(self.cfg.data.cache_path) / split
         mask = np.asarray(np.load(split_dir / "mask.npy", mmap_mode="r"))
-        sides = (
-            ("single",)
-            if self._cache_metadata["embodiment"] == "single"
-            else (
-                "right",
-                "left",
-            )
-        )
+        sides = ("single",)
         chunks = []
         for side in sides:
             prefix = "" if side == "single" else f"{side}_"
@@ -589,40 +576,44 @@ class LampILWorker(Worker):
                 physical_hand = target[..., 7:]
                 index = _nearest_vq_indices(physical_hand, codebook).astype(np.float32)
                 latent = (2.0 * index / 15.0 - 1.0)[..., None]
-            elif source == "ae":
-                future = np.asarray(
-                    np.load(split_dir / f"{prefix}future_hand_norm.npy", mmap_mode="r")
-                )
-                latent_parts = []
-                model.eval()
-                with torch.inference_mode():
-                    for start in range(0, len(future), 512):
-                        end = min(start + 512, len(future))
-                        latent = model.encode(
-                            torch.from_numpy(future[start:end]).to(self.device),
-                            torch.from_numpy(mask[start:end]).to(self.device),
-                        )
-                        latent_parts.append(latent.cpu().numpy().astype(np.float32))
-                latent = np.concatenate(latent_parts)
-            else:
+            elif source == "lamplstm":
                 future = np.asarray(
                     np.load(split_dir / f"{prefix}future_hand_norm.npy", mmap_mode="r")
                 )
                 history = np.asarray(
-                    np.load(split_dir / f"{prefix}hand_history_norm.npy", mmap_mode="r")
+                    np.load(
+                        split_dir / f"{prefix}lamplstm_encoder_history_norm.npy",
+                        mmap_mode="r",
+                    )
+                )
+                history_mask = np.asarray(
+                    np.load(
+                        split_dir / f"{prefix}lamplstm_encoder_history_mask.npy",
+                        mmap_mode="r",
+                    )
+                )
+                encoder_mode = str(
+                    metadata.get("encoder_condition_mode", model.condition_mode_encoder)
                 )
                 latent_parts = []
                 model.eval()
                 with torch.inference_mode():
                     for start in range(0, len(history), 512):
                         end = min(start + 512, len(history))
-                        mu, _ = model.encode_posterior(
-                            torch.from_numpy(history[start:end]).to(self.device),
+                        use_history = encoder_mode != "none"
+                        mu, _ = model.encoder.encode(
+                            torch.from_numpy(history[start:end]).to(self.device)
+                            if use_history
+                            else None,
                             torch.from_numpy(future[start:end]).to(self.device),
-                            torch.from_numpy(mask[start:end]).to(self.device),
+                            torch.from_numpy(history_mask[start:end]).to(self.device)
+                            if use_history
+                            else None,
                         )
                         latent_parts.append(mu.cpu().numpy().astype(np.float32))
                 latent = np.concatenate(latent_parts)
+            else:
+                raise ValueError(f"Unsupported DP prior {source!r}")
             chunks.extend((target[..., :7], latent.astype(np.float32)))
         return np.concatenate(chunks, axis=-1).astype(np.float32), mask
 
@@ -634,8 +625,6 @@ class LampILWorker(Worker):
             "front_backbone.",
             "wrist_backbone.",
             "ego_backbone.",
-            "right_wrist_backbone.",
-            "left_wrist_backbone.",
         )
         backbone, other = [], []
         for name, parameter in self.model.named_parameters():
@@ -720,60 +709,43 @@ class LampILWorker(Worker):
         if self.stage == "prior":
             prefix = "" if hand_side == "single" else f"{hand_side}_"
             prior_type = str(self.cfg.actor.model.hand_prior.type)
-            if prior_type == "vae":
-                return [f"{prefix}hand_history_norm", f"{prefix}hand_target_norm"]
-            if prior_type == "cvae":
+            if prior_type == "lamplstm":
+                history_length = int(
+                    self.cfg.actor.model.hand_prior.get("history_length", 16)
+                )
                 return [
-                    f"{prefix}hand_history_norm",
+                    f"{prefix}hand_history{history_length}_norm",
+                    f"{prefix}hand_history{history_length}_mask",
                     f"{prefix}future_hand_norm",
                     "mask",
                 ]
-            if prior_type == "ae":
-                return [f"{prefix}future_hand_norm", "mask"]
             if prior_type == "vq":
                 return [f"{prefix}target_action23"]
             return [f"{prefix}hand_target_norm"]
-        if self.stage == "bc":
-            return [
-                "front",
-                "wrist",
-                "arm_state_norm",
-                "hand_history_norm",
-                "target_action23",
-                "arm_target_norm",
-            ]
         core = f"derived:{self._derived_namespace}:core_norm"
-        if self._cache_metadata["embodiment"] == "single":
-            return [
-                "front",
-                "wrist",
-                "arm_state_norm",
-                "hand_history_norm",
-                "target_action23",
-                "mask",
-                core,
-            ]
-        return [
-            "ego",
-            "right_wrist",
-            "left_wrist",
-            "right_arm_state_norm",
-            "left_arm_state_norm",
-            "right_hand_history_norm",
-            "left_hand_history_norm",
-            "right_target_action23",
-            "left_target_action23",
+        keys = [
+            "front",
+            "wrist",
+            "arm_state_pair_norm",
+            "hand_state_pair_norm",
+            "target_action23",
             "mask",
             core,
         ]
+        if str(self.cfg.actor.model.hand_prior.type) == "lamplstm":
+            keys.extend(
+                (
+                    "lamplstm_decoder_history_norm",
+                    "lamplstm_decoder_history_mask",
+                )
+            )
+        return keys
 
     def _loss(
         self, batch: dict[str, torch.Tensor], step: torch.Tensor
     ) -> dict[str, torch.Tensor]:
         if self.stage == "prior":
             return self._prior_loss(batch, step)
-        if self.stage == "bc":
-            return self._bc_loss(batch)
         return self._dp_loss(batch)
 
     def _prior_loss(self, batch, step):
@@ -781,55 +753,30 @@ class LampILWorker(Worker):
         side = str(prior_cfg.get("hand_side", "single"))
         prefix = "" if side == "single" else f"{side}_"
         prior_type = str(prior_cfg.type)
-        if prior_type == "vae":
-            history = batch[f"{prefix}hand_history_norm"]
-            target = batch[f"{prefix}hand_target_norm"]
+        if prior_type == "lamplstm":
             beta = beta_warmup(
-                step, float(prior_cfg.beta), int(prior_cfg.beta_warmup_steps)
+                step,
+                float(prior_cfg.get("beta", 5e-4)),
+                int(prior_cfg.get("beta_warmup_steps", 0)),
             )
-            output = self.model(history, target, beta=beta)
+            output = self.model(
+                batch[
+                    f"{prefix}hand_history{int(prior_cfg.get('history_length', 16))}_norm"
+                ],
+                batch[f"{prefix}future_hand_norm"],
+                history_mask=batch[
+                    f"{prefix}hand_history{int(prior_cfg.get('history_length', 16))}_mask"
+                ],
+                future_mask=batch["mask"],
+                beta=beta,
+                sample=self.model.training,
+            )
             return {
                 "total_loss": output.total_loss,
                 "reconstruction_loss": output.reconstruction_loss,
                 "kl_loss": output.kl_loss,
                 "beta": torch.as_tensor(beta, device=self.device),
                 "latent_std": output.mu.std(),
-            }
-        if prior_type == "cvae":
-            posterior_kl_weight, prior_kl_weight = _cvae_kl_weights(
-                step,
-                posterior_kl_weight=float(prior_cfg.get("posterior_kl_weight", 1e-4)),
-                prior_kl_weight=float(prior_cfg.get("prior_kl_weight", 1e-3)),
-                kl_warmup_steps=int(prior_cfg.get("kl_warmup_steps", 2_000)),
-            )
-            output = self.model(
-                batch[f"{prefix}hand_history_norm"],
-                batch[f"{prefix}future_hand_norm"],
-                posterior_kl_weight=posterior_kl_weight,
-                prior_kl_weight=prior_kl_weight,
-                target_mask=batch["mask"],
-            )
-            return {
-                "total_loss": output.total_loss,
-                "reconstruction_loss": output.reconstruction_loss,
-                "posterior_kl_loss": output.posterior_kl_loss,
-                "prior_kl_loss": output.prior_kl_loss,
-                "weighted_kl_loss": output.weighted_kl_loss,
-                "posterior_kl_weight": torch.as_tensor(
-                    posterior_kl_weight, device=self.device
-                ),
-                "prior_kl_weight": torch.as_tensor(prior_kl_weight, device=self.device),
-                "latent_std": output.mu_q.std(),
-            }
-        if prior_type == "ae":
-            output = self.model(
-                batch[f"{prefix}future_hand_norm"],
-                target_mask=batch["mask"],
-            )
-            return {
-                "total_loss": output.total_loss,
-                "reconstruction_loss": output.reconstruction_loss,
-                "latent_std": output.latent.std(),
             }
         if prior_type == "vq":
             physical_hand = batch[f"{prefix}target_action23"][:, 0, 7:]
@@ -839,93 +786,26 @@ class LampILWorker(Worker):
         output = self.model(target, training=self.model.training, update_ema=False)
         return output
 
-    def _bc_loss(self, batch):
-        output = self.model(
-            batch["front"],
-            batch["wrist"],
-            batch["arm_state_norm"],
-            batch["hand_history_norm"],
-            train=self.model.training,
-            return_aux=True,
-        )
-        target = batch["target_action23"][:, 0]
-        arm_mean = _tensor_stat(self._statistics, "arm_action_mean", self.device)
-        arm_std = _tensor_stat(self._statistics, "arm_action_std", self.device)
-        hand_mean = _tensor_stat(self._statistics, "hand_action_mean", self.device)
-        hand_std = _tensor_stat(self._statistics, "hand_action_std", self.device)
-        pred_arm_raw = output["arm_action"] * arm_std + arm_mean
-        pred_hand_raw = output["hand_action"] * hand_std + hand_mean
-        no_corr_raw = output["hand_no_corr"] * hand_std + hand_mean
-        xyz_loss = (
-            (output["arm_action"][:, :3] - batch["arm_target_norm"][:, :3])
-            .square()
-            .mean()
-        )
-        pred_quat = pred_arm_raw[:, 3:7]
-        target_quat = target[:, 3:7]
-        pred_quat = pred_quat / torch.linalg.vector_norm(
-            pred_quat, dim=-1, keepdim=True
-        ).clamp_min(1e-12)
-        target_quat = target_quat / torch.linalg.vector_norm(
-            target_quat, dim=-1, keepdim=True
-        ).clamp_min(1e-12)
-        quat_loss = (1.0 - (pred_quat * target_quat).sum(dim=-1).square()).mean()
-        weights = self.cfg.algorithm.bc_loss
-        arm_loss = (
-            float(weights.arm_xyz) * xyz_loss + float(weights.quaternion) * quat_loss
-        )
-        hand_loss = (pred_hand_raw - target[:, 7:]).square().mean()
-        drift_loss = (pred_hand_raw - no_corr_raw).square().mean()
-        total = (
-            float(weights.arm) * arm_loss
-            + float(weights.hand) * hand_loss
-            + float(weights.drift) * drift_loss
-        )
-        no_corr = (no_corr_raw - target[:, 7:]).square().mean()
-        return {
-            "total_loss": total,
-            "arm_loss": arm_loss,
-            "arm_xyz_loss": xyz_loss,
-            "arm_quat_loss": quat_loss,
-            "hand_loss": hand_loss,
-            "drift_loss": drift_loss,
-            "arm_raw_mse": (pred_arm_raw - target[:, :7]).square().mean(),
-            "hand_no_corr_loss": no_corr,
-            "vision_gain": no_corr - hand_loss,
-            "hand_mae": (pred_hand_raw - target[:, 7:]).abs().mean(),
-        }
-
     def _dp_loss(self, batch):
         batch_size = batch["core_norm"].shape[0]
         timesteps = torch.randint(0, 100, (batch_size,), device=self.device)
         noise = torch.randn_like(batch["core_norm"])
-        if self._cache_metadata["embodiment"] == "single":
-            return self.model.compute_loss(
-                batch["front"],
-                batch["wrist"],
-                batch["arm_state_norm"],
-                batch["hand_history_norm"],
-                batch["core_norm"],
-                batch["target_action23"],
-                batch["mask"],
-                timesteps=timesteps,
-                noise=noise,
-                train=self.model.training,
-            )
+        decoder_history = decoder_history_mask = None
+        if str(self.cfg.actor.model.hand_prior.type) == "lamplstm":
+            decoder_history = batch["lamplstm_decoder_history_norm"]
+            decoder_history_mask = batch["lamplstm_decoder_history_mask"]
         return self.model.compute_loss(
-            batch["ego"],
-            batch["right_wrist"],
-            batch["left_wrist"],
-            batch["right_arm_state_norm"],
-            batch["left_arm_state_norm"],
-            batch["right_hand_history_norm"],
-            batch["left_hand_history_norm"],
+            batch["front"],
+            batch["wrist"],
+            batch["arm_state_pair_norm"],
+            batch["hand_state_pair_norm"],
             batch["core_norm"],
-            batch["right_target_action23"],
-            batch["left_target_action23"],
+            batch["target_action23"],
             batch["mask"],
             timesteps=timesteps,
             noise=noise,
+            decoder_history=decoder_history,
+            decoder_history_mask=decoder_history_mask,
             train=self.model.training,
         )
 
@@ -987,6 +867,7 @@ class LampILWorker(Worker):
                 self.model.quantizer.apply_ema_updates(ema_counts, ema_sums)
             update_seconds += time.perf_counter() - started
             self._global_step += 1
+            self._update_ema()
             totals["grad_norm"] = totals.get("grad_norm", 0.0) + float(grad_norm)
         metrics = {name: value / count for name, value in totals.items()}
         elapsed = max(data_seconds + update_seconds, 1e-9)
@@ -1021,7 +902,7 @@ class LampILWorker(Worker):
         result = {}
         for name, value in batch.items():
             tensor = value.to(self.device, non_blocking=True)
-            if name in ("front", "wrist", "ego", "right_wrist", "left_wrist"):
+            if name in ("front", "wrist"):
                 tensor = tensor.permute(0, 3, 1, 2).float().div_(255.0)
             else:
                 tensor = tensor.float()
@@ -1029,9 +910,58 @@ class LampILWorker(Worker):
         return result
 
     @torch.no_grad()
+    def _ddim_validation_metrics(
+        self, batch: dict[str, torch.Tensor]
+    ) -> dict[str, float]:
+        """Compute deployment-aligned action errors after full DDIM sampling."""
+        if self.stage != "dp":
+            return {}
+
+        if str(self.cfg.actor.model.hand_prior.type) == "lamplstm":
+            self.model.set_decoder_history(
+                batch["lamplstm_decoder_history_norm"],
+                batch["lamplstm_decoder_history_mask"],
+            )
+        generator = torch.Generator(device=self.device)
+        generator.manual_seed(20260916)
+        predicted_action = self.model(
+            batch["front"],
+            batch["wrist"],
+            batch["arm_state_pair_norm"],
+            batch["hand_state_pair_norm"],
+            generator=generator,
+            train=False,
+        )
+        action_mse = (predicted_action - batch["target_action23"]).square()
+        target_mask = batch["mask"].bool()
+        valid_tokens = target_mask.sum().clamp_min(1)
+        valid_elements = valid_tokens * action_mse.shape[-1]
+        execution_horizon = int(self.cfg.actor.model.get("execution_horizon", 8))
+        execution_mask = target_mask[:, :execution_horizon]
+        execution_valid_tokens = execution_mask.sum().clamp_min(1)
+        execution_valid_elements = execution_valid_tokens * action_mse.shape[-1]
+        arm_dim = 7
+        hand_dim = action_mse.shape[-1] - arm_dim
+        return {
+            "ddim_action_mse": float(action_mse[target_mask].sum() / valid_elements),
+            "ddim_first_execution_horizon_mse": float(
+                action_mse[:, :execution_horizon][execution_mask].sum()
+                / execution_valid_elements
+            ),
+            "ddim_arm_mse": float(
+                action_mse[..., :arm_dim][target_mask].sum() / (valid_tokens * arm_dim)
+            ),
+            "ddim_hand_mse": float(
+                action_mse[..., arm_dim:][target_mask].sum() / (valid_tokens * hand_dim)
+            ),
+        }
+
+    @torch.no_grad()
     def _validate(self) -> dict[str, float]:
         self.model.eval()
         totals: dict[str, float] = {}
+        ddim_totals: dict[str, float] = {}
+        ddim_token_totals: dict[str, int] = {}
         samples = 0
         max_batches = int(self.cfg.actor.get("validation_batches", -1))
         for batch_index, raw in enumerate(self._validation_loader):
@@ -1041,15 +971,106 @@ class LampILWorker(Worker):
             outputs = self._loss(
                 batch, torch.tensor(self._global_step, device=self.device)
             )
+            ddim_metrics = self._ddim_validation_metrics(batch)
+            if ddim_metrics:
+                execution_horizon = int(
+                    self.cfg.actor.model.get("execution_horizon", 8)
+                )
+                execution_tokens = int(
+                    batch["mask"][:, :execution_horizon].sum().item()
+                )
+                all_tokens = int(batch["mask"].sum().item())
+                for name, value in ddim_metrics.items():
+                    token_count = (
+                        execution_tokens
+                        if name == "ddim_first_execution_horizon_mse"
+                        else all_tokens
+                    )
+                    ddim_totals[name] = ddim_totals.get(name, 0.0) + value * token_count
+                    ddim_token_totals[name] = (
+                        ddim_token_totals.get(name, 0) + token_count
+                    )
             batch_size = next(iter(batch.values())).shape[0]
             samples += batch_size
             for name, value in outputs.items():
                 if isinstance(value, torch.Tensor) and value.numel() == 1:
                     totals[name] = totals.get(name, 0.0) + float(value) * batch_size
-        self.model.train(True)
-        return (
+        result = (
             {name: value / samples for name, value in totals.items()} if samples else {}
         )
+        if ddim_token_totals:
+            result.update(
+                {
+                    name: value / ddim_token_totals[name]
+                    for name, value in ddim_totals.items()
+                }
+            )
+        if (
+            self.stage == "prior"
+            and self._artifact_metadata.get("history_contract") == "primitive_v1"
+        ):
+            result.update(self._validate_lstm_conditions())
+        self.model.train(True)
+        return result
+
+    @torch.no_grad()
+    def _validate_lstm_conditions(self) -> dict[str, float]:
+        """Report paired on/off validation without consuming training RNG state."""
+        from scripts.eval_lamplstm_offline_quality import episode_ids
+
+        directory = Path(self.cfg.data.cache_path) / "validation"
+        length = int(self.cfg.actor.model.hand_prior.history_length)
+        h = np.load(directory / f"hand_history{length}_norm.npy", mmap_mode="r")
+        hm = np.load(directory / f"hand_history{length}_mask.npy", mmap_mode="r")
+        future = np.load(directory / "future_hand_norm.npy", mmap_mode="r")
+        fm = np.load(directory / "mask.npy", mmap_mode="r")
+        probability = float(self.cfg.actor.model.hand_prior.condition_drop_prob)
+        result = {}
+        beta = float(self.cfg.actor.model.hand_prior.beta)
+
+        def loss(rows, off, sample):
+            history, target, mask, valid = [
+                torch.tensor(a[rows], device=self.device) for a in (h, future, hm, fm)
+            ]
+            output = self.model(
+                history,
+                target,
+                history_mask=torch.zeros_like(mask) if off else mask,
+                future_mask=valid,
+                beta=beta,
+                sample=sample,
+            )
+            return float(output.total_loss)
+
+        for off in (False, True):
+            total = 0.0
+            for start in range(0, len(h), 512):
+                rows = np.arange(start, min(start + 512, len(h)))
+                total += loss(rows, off, False) * len(rows)
+            result["condition_off_loss" if off else "condition_on_loss"] = total / len(
+                h
+            )
+        result["condition_matched_loss"] = (1 - probability) * result[
+            "condition_on_loss"
+        ] + probability * result["condition_off_loss"]
+        if self._global_step % 5000 == 0:
+            eid = episode_ids(hm, fm)
+            groups = [np.flatnonzero(eid == e) for e in np.unique(eid)]
+            rng = np.random.default_rng(20260909)
+            rows = np.array([rng.choice(groups[i % len(groups)]) for i in range(256)])
+            devices = [self.device.index] if self.device.type == "cuda" else []
+            with torch.random.fork_rng(devices=devices):
+                for off in (False, True):
+                    torch.manual_seed(123)
+                    result[
+                        "condition_off_sample_loss"
+                        if off
+                        else "condition_on_sample_loss"
+                    ] = sum(loss(rows, off, True) for _ in range(4)) / 4
+            result["condition_matched_sample_loss"] = (1 - probability) * result[
+                "condition_on_sample_loss"
+            ] + probability * result["condition_off_sample_loss"]
+        return result
 
     def _pca_metrics(self) -> dict[str, float]:
         side = str(self.cfg.actor.model.hand_prior.get("hand_side", "single"))
@@ -1103,6 +1124,7 @@ class LampILWorker(Worker):
                 "accumulation_steps": self._accumulation_steps,
             },
             metadata=self._resume_metadata(),
+            ema_model=self._ema_model,
         )
         self._save_deployment_artifact(output / "artifact")
         self._save_deployment_artifact(self._output_dir / "artifact")
@@ -1121,6 +1143,7 @@ class LampILWorker(Worker):
             optimizer=self.optimizer,
             scheduler=self.schedule,
             expected_metadata=self._resume_metadata(),
+            ema_model=self._ema_model,
         )
         checkpoint_name = Path(load_base_path).expanduser().resolve().parent.name
         if not checkpoint_name.startswith("global_step_"):
@@ -1140,6 +1163,7 @@ class LampILWorker(Worker):
     def _save_deployment_artifact(self, output: Path) -> None:
         statistics = dict(self._statistics)
         metadata = dict(self._artifact_metadata)
+        metadata["global_step"] = int(self._global_step)
         if self.stage == "prior_pca":
             pass
         elif metadata.get("prior_type") == "vq":
@@ -1151,8 +1175,12 @@ class LampILWorker(Worker):
             wrapper_stats = _wrapper_statistics(
                 self._statistics, self._policy_spec.embodiment
             )
+            source_model = (
+                self._ema_model if self._ema_model is not None else self.model
+            )
+            metadata["export_weights"] = "ema" if self._ema_model is not None else "raw"
             export_model: nn.Module = LampPolicy(
-                self.model, self._policy_spec, wrapper_stats
+                source_model, self._policy_spec, wrapper_stats
             )
             statistics = wrapper_stats
         else:
@@ -1165,6 +1193,8 @@ class LampILWorker(Worker):
     def _policy_artifact_metadata(self, model_type: str) -> dict[str, Any]:
         return {
             "kind": "policy",
+            "policy_version": 2,
+            "vq_quantization": "nearest_half_up",
             "model_type": model_type,
             "task": self._cache_metadata["task"],
             "dataset_fingerprint": self._cache_metadata["fingerprint"],
@@ -1174,6 +1204,7 @@ class LampILWorker(Worker):
 
     def _resume_metadata(self) -> dict[str, Any]:
         metadata = {
+            "training_schema_version": 2,
             "stage": self.stage,
             "cache_fingerprint": self._cache_metadata["fingerprint"],
             "architecture_sha256": metadata_sha256(self._architecture),
@@ -1194,24 +1225,33 @@ class LampILWorker(Worker):
 
 def _prior_architecture(prior_type: str, cfg: DictConfig) -> dict[str, Any]:
     latent_dim = int(cfg.latent_dim)
-    if prior_type == "vae":
-        return {
-            "backbone": "cnn",
-            "hidden_dim": int(cfg.get("hidden_dim", 512)),
-            "beta": float(cfg.get("beta", 1e-4)),
-            "latent_dim": latent_dim,
+    if prior_type == "lamplstm":
+        expected = {
+            "action_dim": int(cfg.get("action_dim", 16)),
+            "history_dim": int(cfg.get("history_dim", 16)),
+            "history_length": int(cfg.get("history_length", 16)),
+            "horizon": int(cfg.get("horizon", 16)),
         }
-    if prior_type == "cvae":
+        if any(
+            expected[name] != 16 for name in ("action_dim", "history_dim", "horizon")
+        ):
+            raise ValueError(
+                "LAMP-LSTM prior requires action_dim=history_dim=horizon=16"
+            )
+        if expected["history_length"] < 1:
+            raise ValueError("LAMP-LSTM history_length must be >= 1")
         return {
-            "hidden_dim": int(cfg.get("hidden_dim", 1024)),
-            "posterior_kl_weight": float(cfg.get("posterior_kl_weight", 1e-4)),
-            "prior_kl_weight": float(cfg.get("prior_kl_weight", 1e-3)),
+            "action_dim": expected["action_dim"],
+            "history_dim": expected["history_dim"],
+            "horizon": expected["horizon"],
             "latent_dim": latent_dim,
-        }
-    if prior_type == "ae":
-        return {
-            "hidden_dim": int(cfg.get("hidden_dim", 1024)),
-            "latent_dim": latent_dim,
+            "action_hidden_dim": int(cfg.get("action_hidden_dim", 256)),
+            "condition_hidden_dim": int(cfg.get("condition_hidden_dim", 256)),
+            "condition_mode_encoder": str(cfg.get("encoder_condition_mode", "film")),
+            "condition_mode_decoder": str(cfg.get("decoder_condition_mode", "film")),
+            "num_lstm_layers": int(cfg.get("num_lstm_layers", 1)),
+            "beta": float(cfg.get("beta", 5e-4)),
+            "condition_drop_prob": float(cfg.get("condition_drop_prob", 0.2)),
         }
     if prior_type == "vq":
         return {
@@ -1260,10 +1300,14 @@ def _single_dp_architecture(
         "hand_action_mean": statistics["hand_action_mean"].tolist(),
         "hand_action_std": statistics["hand_action_std"].tolist(),
     }
-    if source == "ae":
-        kwargs["ae_model_config"] = dict(prior[1]["architecture"])
-    elif source in ("cvae", "decoder_only"):
-        kwargs["cvae_model_config"] = dict(prior[1]["architecture"])
+    if source == "lamplstm":
+        kwargs["lamplstm_model_config"] = dict(prior[1]["architecture"])
+        if prior[1].get("history_contract") != "primitive_v1":
+            raise ValueError(
+                "LAMP prior artifact requires history_contract=primitive_v1"
+            )
+        kwargs["decoder_history_contract"] = "primitive_v1"
+        kwargs["decoder_history_length"] = int(prior[1]["history_length"])
     elif source == "pca":
         latent_dim = int(prior_cfg.latent_dim)
         kwargs.update(
@@ -1276,68 +1320,23 @@ def _single_dp_architecture(
     return kwargs
 
 
-def _bimanual_dp_architecture(
-    backbone_config, source, priors, core_stats, statistics, prior_cfg
-):
-    kwargs: dict[str, Any] = {
-        "backbone_config": backbone_config,
-        "hand_prior_source": source,
-        "condition_hidden_dims": [1024, 512],
-        "condition_dim": 512,
-        "state_hidden_dims": [128, 128],
-        "hand_state_window_size": 8,
-        "backbone_pooling": "avg",
-        "action_horizon": 16,
-        "diffusion_step_embed_dim": 256,
-        "down_dims": [128, 256, 512],
-        "kernel_size": 5,
-        "n_groups": 8,
-        "num_train_timesteps": 100,
-        "num_inference_steps": 16,
-        "core_action_mean": core_stats["mean"].tolist(),
-        "core_action_std": core_stats["std"].tolist(),
-        "right_hand_action_mean": statistics["right_hand_action_mean"].tolist(),
-        "right_hand_action_std": statistics["right_hand_action_std"].tolist(),
-        "left_hand_action_mean": statistics["left_hand_action_mean"].tolist(),
-        "left_hand_action_std": statistics["left_hand_action_std"].tolist(),
-    }
-    if source in ("cvae", "decoder_only"):
-        kwargs["right_cvae_model_config"] = dict(priors["right"][1]["architecture"])
-        kwargs["left_cvae_model_config"] = dict(priors["left"][1]["architecture"])
-    elif source == "pca":
-        for side in ("right", "left"):
-            latent_dim = int(prior_cfg[side].latent_dim)
-            kwargs[f"{side}_pca_latent_dim"] = latent_dim
-            kwargs[f"{side}_pca_mean"] = priors[side][0].mean.cpu().tolist()
-            kwargs[f"{side}_pca_components"] = (
-                priors[side][0].components[:latent_dim].cpu().tolist()
-            )
-    elif source == "vq_codebook":
-        for side in ("right", "left"):
-            kwargs[f"{side}_vq_codebook"] = priors[side][2]["sorted_codebook"].tolist()
-    return kwargs
-
-
 def _wrapper_statistics(statistics: Mapping[str, np.ndarray], embodiment: str):
-    if embodiment == "single":
-        names = (
-            "arm_state_mean",
-            "arm_state_std",
-            "hand_history_mean",
-            "hand_history_std",
-            "arm_action_mean",
-            "arm_action_std",
-            "hand_action_mean",
-            "hand_action_std",
-        )
-    else:
-        names = tuple(
-            f"{side}_{field}_{suffix}"
-            for side in ("right", "left")
-            for field in ("arm_state", "hand_history", "hand_action")
-            for suffix in ("mean", "std")
-        )
-    return {name: np.asarray(statistics[name]) for name in names}
+    names = (
+        "arm_state_mean",
+        "arm_state_std",
+        "hand_history_mean",
+        "hand_history_std",
+        "arm_action_mean",
+        "arm_action_std",
+        "hand_action_mean",
+        "hand_action_std",
+    )
+    result = {name: np.asarray(statistics[name]) for name in names}
+    result["arm_state_pair_mean"] = result["arm_state_mean"]
+    result["arm_state_pair_std"] = result["arm_state_std"]
+    result["hand_state_pair_mean"] = result["hand_history_mean"]
+    result["hand_state_pair_std"] = result["hand_history_std"]
+    return result
 
 
 def _tensor_stat(values: Mapping[str, np.ndarray], name: str, device):

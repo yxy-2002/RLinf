@@ -1,3 +1,0 @@
-defaults: [dexjoco_lamp_dp_il_decoder_only_fold_glasses, _self_]
-runner: {logger: {experiment_name: dexjoco_lamp_dp_il_ae_fold_glasses}}
-actor: {model: {hand_prior: {type: ae, latent_dim: 2, artifact_path: ./outputs/lamp_ae_z2_selected_lr3e-5/fold_glasses_prior_ae_z2/artifact}}}

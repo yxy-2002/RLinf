@@ -1,3 +1,32 @@
-defaults: [dexjoco_lamp_dp_il_decoder_only_water_plant, _self_]
-runner: {logger: {experiment_name: dexjoco_lamp_dp_il_pca_water_plant}}
-actor: {model: {hand_prior: {type: pca, artifact_path: ./outputs/lamp_water_plant_base_ckpts/water_plant_prior_pca_z2/artifact}}}
+runner:
+  max_steps: 30000
+  logger:
+    log_path: ./outputs/lamp_dp_rerun
+    experiment_name: dexjoco_lamp_dp_il_pca_water_plant
+cluster:
+  component_placement:
+    actor: 0-0
+algorithm:
+  stage: dp
+data:
+  task_name: water_plant
+  dataset_root: ./datasets/DexJoCo-Datasets-LeRobot/dexjoco_lerobot_datasets
+  cache_root: ./outputs/lamp_cache
+actor:
+  global_batch_size: 512
+  micro_batch_size: 512
+  eval_batch_size: 512
+  optim:
+    lr: 0.0001
+    warmup_steps: 1000
+    weight_decay: 0.001
+    backbone_lr_ratio: 0.03
+  model:
+    model_type: lamp_dp
+    hand_prior:
+      type: pca
+      latent_dim: 2
+      artifact_path: ./outputs/dexjoco_lamp_prior_pca_dim2_water_plant/artifact
+defaults:
+- dexjoco_lamp_dp
+- _self_

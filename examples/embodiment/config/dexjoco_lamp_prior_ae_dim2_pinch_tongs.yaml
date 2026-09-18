@@ -1,4 +1,0 @@
-defaults: [dexjoco_lamp_prior_ae, _self_]
-runner: {max_steps: 30000, logger: {experiment_name: dexjoco_lamp_prior_ae_dim2_pinch_tongs}}
-data: {task_name: pinch_tongs}
-actor: {validation_interval: 30000}

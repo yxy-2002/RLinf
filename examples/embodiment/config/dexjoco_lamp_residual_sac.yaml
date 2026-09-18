@@ -22,7 +22,7 @@ runner:
   enable_decoupled_mode: false
   weight_sync_interval: 1
   logger:
-    log_path: ../results
+    log_path: ./outputs
     project_name: rlinf
     experiment_name: dexjoco_lamp_residual_sac_v4
     logger_backends: [tensorboard, wandb]
@@ -107,6 +107,14 @@ env:
       video_base_dir: ${runner.logger.log_path}/video/eval
 
 rollout:
+  # Use the generic rollout worker's do_sample flag to distinguish train/eval.
+  sampling_params:
+    do_sample: true
+    temperature_train: 1.0
+    temperature_eval: 0.0
+    top_k: 0
+    top_p: 1.0
+    max_new_tokens: 1
   group_name: RolloutGroup
   backend: huggingface
   pipeline_stage_num: 1
@@ -130,6 +138,8 @@ actor:
   sync_weight_no_wait: false
   model:
     model_path: ""
+    wrist_residual_scale: 0.05
+    hand_residual_scale: 0.05
   optim:
     lr: 1.0e-4
     lr_scheduler: torch_constant

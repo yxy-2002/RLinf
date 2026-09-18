@@ -105,7 +105,9 @@ def save_artifact(
     payload = _json_value(dict(metadata))
     payload["schema_version"] = SCHEMA_VERSION
     tensors = {
-        name: tensor.detach().cpu().contiguous()
+        # Break storage aliases (for example state/pair normalization buffers)
+        # because safetensors rejects distinct keys backed by shared memory.
+        name: tensor.detach().cpu().contiguous().clone()
         for name, tensor in model.state_dict().items()
     }
     model_path = output / "model.safetensors"
@@ -214,6 +216,7 @@ def save_training_state(
     global_step: int,
     sampler_state: Mapping[str, Any] | None,
     metadata: Mapping[str, Any],
+    ema_model: torch.nn.Module | None = None,
 ) -> Path:
     """Save exact-resume state separately from the deployment artifact."""
 
@@ -223,6 +226,7 @@ def save_training_state(
         "schema_version": SCHEMA_VERSION,
         "global_step": int(global_step),
         "model_state": model.state_dict(),
+        "ema_state": None if ema_model is None else ema_model.state_dict(),
         "optimizer_state": None if optimizer is None else optimizer.state_dict(),
         "scheduler_state": None if scheduler is None else scheduler.state_dict(),
         "sampler_state": None if sampler_state is None else dict(sampler_state),
@@ -244,6 +248,7 @@ def load_training_state(
     optimizer: torch.optim.Optimizer | None,
     scheduler: Any,
     expected_metadata: Mapping[str, Any],
+    ema_model: torch.nn.Module | None = None,
 ) -> tuple[int, dict[str, Any] | None]:
     """Restore a native checkpoint and return step plus sampler state."""
 
@@ -253,6 +258,13 @@ def load_training_state(
         raise ValueError("Unsupported LAMP training checkpoint schema")
     stored_metadata = payload.get("metadata")
     expected_metadata = _json_value(dict(expected_metadata))
+    if expected_metadata.get("training_schema_version") == 2 and (
+        not isinstance(stored_metadata, dict)
+        or stored_metadata.get("training_schema_version") != 2
+    ):
+        raise ValueError(
+            "Old LAMP training checkpoints cannot be resumed; initialize a new run from a deployment artifact instead"
+        )
     mismatches = _resume_metadata_mismatches(stored_metadata, expected_metadata)
     if mismatches:
         details = "; ".join(mismatches[:8])
@@ -260,6 +272,10 @@ def load_training_state(
             "LAMP resume metadata differs from the current config/data: " + details
         )
     model.load_state_dict(payload["model_state"], strict=True)
+    if ema_model is not None:
+        if payload.get("ema_state") is None:
+            raise ValueError("LAMP checkpoint has no EMA state")
+        ema_model.load_state_dict(payload["ema_state"], strict=True)
     if optimizer is not None:
         if payload.get("optimizer_state") is None:
             raise ValueError("LAMP checkpoint has no optimizer state")

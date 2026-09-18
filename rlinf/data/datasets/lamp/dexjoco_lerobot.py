@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""DexJoCo LeRobot dataset reader for the LAMP migration."""
+"""DexJoCo LeRobot data loading and joint/action preprocessing for LAMP."""
 
 from __future__ import annotations
 
@@ -29,10 +29,11 @@ import numpy as np
 import pyarrow.parquet as pq
 from tqdm import tqdm
 
-from rlinf.models.embodiment.lamp.single_arm_actions import (
-    canonicalize_policy_rotvec,
-    policy_action_to_quat_action,
-    state_quat_to_policy_state,
+from rlinf.data.datasets.lamp.offline_dataset import (
+    LampFrameData,
+    LampSourceMetadata,
+    build_future_windows,
+    build_history_windows,
 )
 from rlinf.models.embodiment.lamp.constants import (
     ARM_ACTION_DIM,
@@ -47,15 +48,23 @@ from rlinf.models.embodiment.lamp.constants import (
     STATE_QUAT_DIM,
     WRIST_IMAGE_KEY,
 )
-from rlinf.models.embodiment.lamp.il_training_utils import normalize_stats, split_episodes
+from rlinf.models.embodiment.lamp.il_training_utils import (
+    normalize_stats,
+)
+from rlinf.models.embodiment.lamp.single_arm_actions import (
+    canonicalize_policy_rotvec,
+    policy_action_to_quat_action,
+    state_quat_to_policy_state,
+)
 
 LEROBOT_DATASET_SHA256_SCOPE = (
     "meta/info.json+meta/tasks.parquet+data/chunk-*/file-*.parquet;excludes=videos/**"
 )
-BC_PREPROCESS_VERSION = 2
-BC_PREPROCESS_FILENAME = f"bc_preprocess_v{BC_PREPROCESS_VERSION}.npz"
-BC_PREPROCESS_SUMMARY_FILENAME = f"bc_preprocess_v{BC_PREPROCESS_VERSION}.json"
-_IK_CACHE_VERSION = 1
+# These are the on-disk schema and filenames used by existing DP caches,
+# not policy architecture versions. Keep them stable to reuse recorded data.
+JOINT_PREPROCESS_SCHEMA_VERSION = 2
+JOINT_PREPROCESS_FILENAME = "bc_preprocess_v2.npz"
+JOINT_PREPROCESS_SUMMARY_FILENAME = "bc_preprocess_v2.json"
 _ARM_JOINT_POLICY_SOURCE = "joint"
 _PANDA_HOME = np.asarray([0.0, -0.785, 0.0, -2.355, 0.0, 1.57, 0.785], dtype=np.float32)
 _IK_SOLVER_CONFIG = "dls500_damp1e-5_step0.2_tol2e-4_1e-3"
@@ -64,7 +73,9 @@ _IK_MAX_ACCEPT_ORI_ERR = 5e-2
 
 
 @dataclass(frozen=True)
-class BCPreprocessArtifact:
+class JointPreprocessArtifact:
+    """Precomputed arm joints, quaternion actions, and normalization statistics."""
+
     arm_joint_state: np.ndarray
     action_quat23: np.ndarray
     stats: dict[str, dict[str, np.ndarray]]
@@ -102,12 +113,7 @@ class DexjocoLeRobotDataset:
     row_index: np.ndarray
     model_action23: np.ndarray | None = None
     model_action_horizon23: np.ndarray | None = None
-    bc_stats: dict[str, dict[str, np.ndarray]] | None = None
-
-    def split(
-        self, train_ratio: float = 0.95, seed: int = 0
-    ) -> tuple[np.ndarray, np.ndarray]:
-        return split_episodes(self.episode_index, train_ratio, seed)
+    preprocess_stats: dict[str, dict[str, np.ndarray]] | None = None
 
     @property
     def hand_action16(self) -> np.ndarray:
@@ -169,8 +175,8 @@ class DexjocoLeRobotDataset:
             arrays["model_action23"] = self.model_action23[idx]
         if self.model_action_horizon23 is not None:
             arrays["model_action_horizon23"] = self.model_action_horizon23[idx]
-        if self.bc_stats is not None:
-            _attach_bc_stats_to_arrays(arrays, self.bc_stats)
+        if self.preprocess_stats is not None:
+            _attach_preprocess_stats_to_arrays(arrays, self.preprocess_stats)
         return arrays
 
     def images_for(
@@ -197,6 +203,82 @@ class DexjocoLeRobotDataset:
         }
 
 
+class DexjocoLeRobotSource:
+    """Adapt LeRobot storage into the format-independent LAMP frame contract."""
+
+    def __init__(self, task: str, dataset_root: str | Path = DEFAULT_DATASET_ROOT):
+        if task not in SINGLE_ARM_TASKS:
+            raise ValueError(f"Unsupported single-arm task {task!r}")
+        self.task = task
+        self.root = _resolve_task_root(task, dataset_root)
+        info = json.loads((self.root / "meta" / "info.json").read_text())
+        self.image_keys = _select_image_keys(task, info.get("features", {}))
+        self._frames: LampFrameData | None = None
+        self._row_index: np.ndarray | None = None
+
+    @property
+    def metadata(self) -> LampSourceMetadata:
+        return LampSourceMetadata(
+            task=self.task,
+            root=self.root,
+            data_sha256=lerobot_dataset_sha256(self.root),
+            media_sha256=_video_manifest_sha256(self.root, self.image_keys),
+            image_keys=self.image_keys,
+        )
+
+    def load_frames(self) -> LampFrameData:
+        if self._frames is None:
+            action, state, episodes, frames, rows = _read_lowdim_arrays(
+                self.root, self.task
+            )
+            if not joint_preprocess_path(self.root).is_file():
+                _write_joint_preprocess_artifact(
+                    self.root, action, state, episodes, frames, rows
+                )
+            preprocessed = load_joint_preprocess_artifact(
+                self.task, self.root, state, action, rows, episodes, frames
+            )
+            self._frames = LampFrameData(
+                episode_index=episodes,
+                arm_state=preprocessed.arm_joint_state,
+                hand_state=state[:, 7:23].astype(np.float32),
+                action=preprocessed.action_quat23,
+            )
+            self._row_index = rows
+        return self._frames
+
+    def images_for(
+        self, rows: np.ndarray, image_size: int, *, label: str
+    ) -> dict[str, np.ndarray]:
+        self.load_frames()
+        assert self._row_index is not None
+        recorded_rows = self._row_index[rows]
+        return {
+            name: decode_video_rows(
+                self.root,
+                key,
+                recorded_rows,
+                image_size,
+                desc=f"{self.task}/{label}/{name}",
+            )
+            for name, key in zip(("front", "wrist"), self.image_keys)
+        }
+
+
+def _video_manifest_sha256(root: Path, keys: tuple[str, str]) -> str:
+    """Hash the LeRobot video manifest without decoding media."""
+    digest = hashlib.sha256()
+    for key in keys:
+        files = sorted((root / "videos" / key).glob("chunk-*/*.mp4"))
+        if not files:
+            raise FileNotFoundError(f"No videos found for LAMP camera {key!r}")
+        for path in files:
+            stat = path.stat()
+            record = f"{path.relative_to(root)}:{stat.st_size}:{stat.st_mtime_ns}\n"
+            digest.update(record.encode("utf-8"))
+    return digest.hexdigest()
+
+
 def load_task_dataset(
     task: str,
     dataset_root: str | Path = DEFAULT_DATASET_ROOT,
@@ -216,47 +298,22 @@ def load_task_dataset(
         info = json.load(f)
     features = info.get("features", {})
     image_keys = _select_image_keys(task, features)
-    data_files = sorted((root / "data").glob("chunk-*/file-*.parquet"))
-    if not data_files:
-        raise FileNotFoundError(f"No parquet files found under {root / 'data'}")
-    table = pq.read_table(
-        data_files,
-        columns=[
-            "action",
-            "observation.state",
-            "episode_index",
-            "frame_index",
-            "index",
-        ],
+    action, state, episode_index, frame_index, row_index = _read_lowdim_arrays(
+        root, task
     )
-    action = _fixed_list_column(table["action"]).astype(np.float32)
-    state = _fixed_list_column(table["observation.state"]).astype(np.float32)
-    if action.shape[-1] != RECORDED_ROTVEC_ACTION_DIM:
-        raise ValueError(
-            f"{task}: expected action dim {RECORDED_ROTVEC_ACTION_DIM}, got {action.shape[-1]}"
-        )
-    if state.shape[-1] < STATE_QUAT_DIM:
-        raise ValueError(
-            f"{task}: expected at least state dim {STATE_QUAT_DIM}, got {state.shape[-1]}"
-        )
-    if state.shape[-1] > STATE_QUAT_DIM:
-        state = state[..., :STATE_QUAT_DIM]
-    episode_index = np.asarray(table["episode_index"].to_numpy(), dtype=np.int64)
-    frame_index = np.asarray(table["frame_index"].to_numpy(), dtype=np.int64)
-    row_index = np.asarray(table["index"].to_numpy(), dtype=np.int64)
-    bc_artifact: BCPreprocessArtifact | None = None
+    preprocess_artifact: JointPreprocessArtifact | None = None
     if policy_state_source == _ARM_JOINT_POLICY_SOURCE:
         if canonicalize_rotvec:
             raise ValueError(
-                "BC joint-state training uses preprocessed quaternion actions and requires canonicalize_rotvec=False."
+                "Joint-state training uses preprocessed quaternion actions and requires canonicalize_rotvec=False."
             )
-        bc_artifact = load_bc_preprocess_artifact(
+        preprocess_artifact = load_joint_preprocess_artifact(
             task, root, state, action, row_index, episode_index, frame_index
         )
 
     if policy_state_source == _ARM_JOINT_POLICY_SOURCE:
         hand_state = state[:, 7 : 7 + HAND_ACTION_DIM].astype(np.float32)
-        arm_qpos = bc_artifact.arm_joint_state
+        arm_qpos = preprocess_artifact.arm_joint_state
         policy_state = np.concatenate([arm_qpos, hand_state], axis=-1)
     else:
         if policy_state_source != "state":
@@ -274,9 +331,9 @@ def load_task_dataset(
         ]
         policy_state = state_policy22
     arm_state = policy_state[:, : policy_state.shape[-1] - HAND_ACTION_DIM]
-    arm_state_window = _make_history_windows(arm_state, episode_index, window_size)
-    hand_state_window = _make_history_windows(hand_state, episode_index, window_size)
-    policy_action_horizon22, action_horizon_mask = _make_future_horizon(
+    arm_state_window = build_history_windows(arm_state, episode_index, window_size)
+    hand_state_window = build_history_windows(hand_state, episode_index, window_size)
+    policy_action_horizon22, action_horizon_mask = build_future_windows(
         action,
         episode_index,
         action_horizon,
@@ -287,9 +344,9 @@ def load_task_dataset(
         horizon=action_horizon,
     )
     model_action_horizon23 = None
-    if bc_artifact is not None:
-        model_action_horizon23, _ = _make_future_horizon(
-            bc_artifact.action_quat23,
+    if preprocess_artifact is not None:
+        model_action_horizon23, _ = build_future_windows(
+            preprocess_artifact.action_quat23,
             episode_index,
             action_horizon,
         )
@@ -311,10 +368,12 @@ def load_task_dataset(
         frame_index=frame_index,
         row_index=row_index,
         model_action23=None
-        if bc_artifact is None
-        else bc_artifact.action_quat23.astype(np.float32),
+        if preprocess_artifact is None
+        else preprocess_artifact.action_quat23.astype(np.float32),
         model_action_horizon23=model_action_horizon23,
-        bc_stats=None if bc_artifact is None else bc_artifact.stats,
+        preprocess_stats=None
+        if preprocess_artifact is None
+        else preprocess_artifact.stats,
     )
 
 
@@ -379,15 +438,15 @@ def _path_matches_task(root: Path, task: str) -> bool:
     return name == task or name.startswith(f"{task}_")
 
 
-def bc_preprocess_path(root: Path) -> Path:
-    return root / "meta" / BC_PREPROCESS_FILENAME
+def joint_preprocess_path(root: Path) -> Path:
+    return root / "meta" / JOINT_PREPROCESS_FILENAME
 
 
-def bc_preprocess_summary_path(root: Path) -> Path:
-    return root / "meta" / BC_PREPROCESS_SUMMARY_FILENAME
+def joint_preprocess_summary_path(root: Path) -> Path:
+    return root / "meta" / JOINT_PREPROCESS_SUMMARY_FILENAME
 
 
-def bc_preprocess_provenance(
+def joint_preprocess_provenance(
     root: str | Path,
     *,
     dataset_sha256: str,
@@ -400,18 +459,20 @@ def bc_preprocess_provenance(
         int(dataset_sha256, 16)
     except ValueError as exc:
         raise ValueError("dataset_sha256 must be hexadecimal") from exc
-    artifact_path = bc_preprocess_path(Path(root).expanduser().resolve())
+    artifact_path = joint_preprocess_path(Path(root).expanduser().resolve())
     if not artifact_path.is_file():
-        raise FileNotFoundError(f"Missing BC preprocessing artifact: {artifact_path}")
+        raise FileNotFoundError(
+            f"Missing Joint preprocessing artifact: {artifact_path}"
+        )
     with np.load(artifact_path, allow_pickle=False) as artifact:
         version = int(np.asarray(artifact["version"]).reshape(()))
         solver_config = str(np.asarray(artifact["solver_config"]).reshape(()))
-    if version != BC_PREPROCESS_VERSION:
+    if version != JOINT_PREPROCESS_SCHEMA_VERSION:
         raise ValueError(
-            f"BC preprocessing version mismatch: expected {BC_PREPROCESS_VERSION}, got {version}"
+            f"Joint preprocessing version mismatch: expected {JOINT_PREPROCESS_SCHEMA_VERSION}, got {version}"
         )
     if solver_config != _IK_SOLVER_CONFIG:
-        raise ValueError("BC preprocessing solver configuration mismatch")
+        raise ValueError("Joint preprocessing solver configuration mismatch")
     digest = hashlib.sha256()
     with artifact_path.open("rb") as handle:
         while chunk := handle.read(1024 * 1024):
@@ -419,7 +480,7 @@ def bc_preprocess_provenance(
     return {
         "schema": "dexjoco_joint_ik_v2",
         "artifact_path": str(artifact_path),
-        "artifact_filename": BC_PREPROCESS_FILENAME,
+        "artifact_filename": JOINT_PREPROCESS_FILENAME,
         "artifact_sha256": digest.hexdigest(),
         "artifact_version": version,
         "solver_config": solver_config,
@@ -429,14 +490,14 @@ def bc_preprocess_provenance(
     }
 
 
-def build_bc_preprocess_artifact(
+def build_joint_preprocess_artifact(
     task: str,
     dataset_root: str | Path = DEFAULT_DATASET_ROOT,
     *,
     force: bool = False,
 ) -> tuple[Path, dict]:
     root = _resolve_task_root(task, dataset_root)
-    artifact_path = bc_preprocess_path(root)
+    artifact_path = joint_preprocess_path(root)
     if artifact_path.exists() and not force:
         raise FileExistsError(
             f"{artifact_path} already exists; pass --force to rebuild it."
@@ -445,11 +506,25 @@ def build_bc_preprocess_artifact(
         root, task
     )
 
+    return _write_joint_preprocess_artifact(
+        root, action, state, episode_index, frame_index, row_index
+    )
+
+
+def _write_joint_preprocess_artifact(
+    root: Path,
+    action: np.ndarray,
+    state: np.ndarray,
+    episode_index: np.ndarray,
+    frame_index: np.ndarray,
+    row_index: np.ndarray,
+) -> tuple[Path, dict]:
+    artifact_path = joint_preprocess_path(root)
     qpos, diagnostics = _solve_arm_joint_ik_sequence(state, episode_index)
     _validate_ik_diagnostics(diagnostics)
     action_quat23 = policy_action_to_quat_action(action, episode_index=episode_index)
     hand_state = state[:, 7 : 7 + HAND_ACTION_DIM].astype(np.float32)
-    stats = _bc_preprocess_stats(
+    stats = _joint_preprocess_stats(
         arm_state=qpos,
         hand_state=hand_state,
         action_quat23=action_quat23,
@@ -459,7 +534,7 @@ def build_bc_preprocess_artifact(
     artifact_path.parent.mkdir(parents=True, exist_ok=True)
     np.savez_compressed(
         artifact_path,
-        version=np.asarray(BC_PREPROCESS_VERSION, dtype=np.int32),
+        version=np.asarray(JOINT_PREPROCESS_SCHEMA_VERSION, dtype=np.int32),
         arm_joint_state=qpos.astype(np.float32),
         action_quat23=action_quat23.astype(np.float32),
         row_index=np.asarray(row_index, dtype=np.int64),
@@ -480,14 +555,16 @@ def build_bc_preprocess_artifact(
         hand_action_mean=stats["hand_action"]["mean"],
         hand_action_std=stats["hand_action"]["std"],
     )
-    summary = _bc_preprocess_summary(root, artifact_path, row_index, diagnostics, stats)
-    bc_preprocess_summary_path(root).write_text(
+    summary = _joint_preprocess_summary(
+        root, artifact_path, row_index, diagnostics, stats
+    )
+    joint_preprocess_summary_path(root).write_text(
         json.dumps(summary, indent=2, sort_keys=True), encoding="utf-8"
     )
     return artifact_path, summary
 
 
-def load_bc_preprocess_artifact(
+def load_joint_preprocess_artifact(
     task: str,
     root: Path,
     state23: np.ndarray,
@@ -495,13 +572,13 @@ def load_bc_preprocess_artifact(
     row_index: np.ndarray,
     episode_index: np.ndarray,
     frame_index: np.ndarray,
-) -> BCPreprocessArtifact:
-    path = bc_preprocess_path(root)
+) -> JointPreprocessArtifact:
+    path = joint_preprocess_path(root)
     if not path.exists():
         raise FileNotFoundError(
-            f"Missing BC preprocessing artifact: {path}. "
+            f"Missing Joint preprocessing artifact: {path}. "
             "Launch the RLinf LAMP trainer to build it automatically, for example "
-            f"`bash examples/embodiment/run_lamp_il.sh dexjoco_lamp_bc "
+            f"`bash examples/embodiment/run_lamp_il.sh dexjoco_lamp_dp "
             f"data.task_name={task} data.dataset_root={root}`."
         )
     try:
@@ -526,21 +603,21 @@ def load_bc_preprocess_artifact(
                 if "ori_err" in data.files
                 else None
             )
-            stats = _load_bc_stats_from_npz(data)
+            stats = _load_preprocess_stats_from_npz(data)
     except KeyError as exc:
         raise ValueError(
-            f"BC preprocessing artifact {path} is missing key {exc}. "
+            f"Joint preprocessing artifact {path} is missing key {exc}. "
             "Delete this fingerprinted cache directory and relaunch the RLinf LAMP "
             "trainer to rebuild it."
         ) from exc
     except Exception as exc:
         raise ValueError(
-            f"Could not read BC preprocessing artifact {path}: {exc}"
+            f"Could not read Joint preprocessing artifact {path}: {exc}"
         ) from exc
 
     xml_path = _panda_allegro_xml_path()
     expected = {
-        "version": version == BC_PREPROCESS_VERSION,
+        "version": version == JOINT_PREPROCESS_SCHEMA_VERSION,
         "arm_joint_state_shape": arm_joint_state.shape
         == (len(row_index), ARM_JOINT_DIM),
         "action_quat23_shape": action_quat23.shape
@@ -560,13 +637,13 @@ def load_bc_preprocess_artifact(
     failed = [name for name, ok in expected.items() if not ok]
     if failed:
         raise ValueError(
-            f"BC preprocessing artifact {path} does not match the current LeRobot dataset: {failed}. "
+            f"Joint preprocessing artifact {path} does not match the current LeRobot dataset: {failed}. "
             "Delete this fingerprinted cache directory and relaunch "
-            f"`bash examples/embodiment/run_lamp_il.sh dexjoco_lamp_bc "
+            f"`bash examples/embodiment/run_lamp_il.sh dexjoco_lamp_dp "
             f"data.task_name={task} data.dataset_root={root}`."
         )
-    _validate_bc_stats(stats)
-    return BCPreprocessArtifact(
+    _validate_preprocess_stats(stats)
+    return JointPreprocessArtifact(
         arm_joint_state=arm_joint_state,
         action_quat23=action_quat23,
         stats=stats,
@@ -609,7 +686,7 @@ def _read_lowdim_arrays(
     return action, state, episode_index, frame_index, row_index
 
 
-def _bc_preprocess_stats(
+def _joint_preprocess_stats(
     *,
     arm_state: np.ndarray,
     hand_state: np.ndarray,
@@ -632,7 +709,7 @@ def _bc_preprocess_stats(
     }
 
 
-def _load_bc_stats_from_npz(data) -> dict[str, dict[str, np.ndarray]]:
+def _load_preprocess_stats_from_npz(data) -> dict[str, dict[str, np.ndarray]]:
     return {
         "arm_state": {
             "mean": np.asarray(data["arm_state_mean"], dtype=np.float32),
@@ -653,7 +730,7 @@ def _load_bc_stats_from_npz(data) -> dict[str, dict[str, np.ndarray]]:
     }
 
 
-def _validate_bc_stats(stats: dict[str, dict[str, np.ndarray]]) -> None:
+def _validate_preprocess_stats(stats: dict[str, dict[str, np.ndarray]]) -> None:
     expected_shapes = {
         "arm_state": (ARM_JOINT_DIM,),
         "hand_state": (HAND_ACTION_DIM,),
@@ -662,24 +739,27 @@ def _validate_bc_stats(stats: dict[str, dict[str, np.ndarray]]) -> None:
     }
     for key, shape in expected_shapes.items():
         if key not in stats:
-            raise ValueError(f"BC preprocessing stats are missing {key!r}")
+            raise ValueError(f"Joint preprocessing stats are missing {key!r}")
         for name in ("mean", "std"):
             value = np.asarray(stats[key].get(name), dtype=np.float32)
             if value.shape != shape:
                 raise ValueError(
-                    f"BC preprocessing stat {key}_{name} must have shape {shape}, got {value.shape}"
+                    f"Joint preprocessing stat {key}_{name} must have shape {shape}, got {value.shape}"
                 )
             if not np.all(np.isfinite(value)):
                 raise ValueError(
-                    f"BC preprocessing stat {key}_{name} contains non-finite values"
+                    f"Joint preprocessing stat {key}_{name} contains non-finite values"
                 )
             if name == "std" and np.any(value <= 0.0):
-                raise ValueError(f"BC preprocessing stat {key}_{name} must be positive")
+                raise ValueError(
+                    f"Joint preprocessing stat {key}_{name} must be positive"
+                )
 
 
-def _attach_bc_stats_to_arrays(
+def _attach_preprocess_stats_to_arrays(
     arrays: dict[str, np.ndarray], stats: dict[str, dict[str, np.ndarray]]
 ) -> None:
+    # Preserve serialized array keys consumed by existing data artifacts.
     for group, values in stats.items():
         arrays[f"bc_{group}_mean"] = np.asarray(values["mean"], dtype=np.float32)
         arrays[f"bc_{group}_std"] = np.asarray(values["std"], dtype=np.float32)
@@ -690,7 +770,7 @@ def _action_cache_hash(action22: np.ndarray) -> str:
     return hashlib.sha1(action.view(np.uint8)).hexdigest()
 
 
-def _bc_preprocess_summary(
+def _joint_preprocess_summary(
     root: Path,
     artifact_path: Path,
     row_index: np.ndarray,
@@ -700,7 +780,7 @@ def _bc_preprocess_summary(
     pos = np.asarray(diagnostics["pos_err"], dtype=np.float64)
     ori = np.asarray(diagnostics["ori_err"], dtype=np.float64)
     return {
-        "version": BC_PREPROCESS_VERSION,
+        "version": JOINT_PREPROCESS_SCHEMA_VERSION,
         "dataset_root": str(root),
         "artifact": str(artifact_path),
         "frames": int(len(row_index)),
@@ -721,91 +801,6 @@ def _bc_preprocess_summary(
             for key, values in stats.items()
         },
     }
-
-
-def _arm_joint_state_from_ik_cache(
-    root: Path,
-    state23: np.ndarray,
-    episode_index: np.ndarray,
-    frame_index: np.ndarray,
-    row_index: np.ndarray,
-) -> np.ndarray:
-    cache_path = root / "meta" / f"arm_joint_state_ik_v{_IK_CACHE_VERSION}.npz"
-    xml_path = _panda_allegro_xml_path()
-    cached = _load_arm_joint_cache(
-        cache_path, state23, row_index, episode_index, frame_index, xml_path
-    )
-    if cached is not None:
-        print(f"[dexjoco_lerobot] loaded arm joint IK cache: {cache_path}")
-        return cached
-
-    print(f"[dexjoco_lerobot] building arm joint IK cache: {cache_path}")
-    qpos, diagnostics = _solve_arm_joint_ik_sequence(state23, episode_index)
-    _validate_ik_diagnostics(diagnostics)
-    cache_path.parent.mkdir(parents=True, exist_ok=True)
-    try:
-        np.savez_compressed(
-            cache_path,
-            version=np.asarray(_IK_CACHE_VERSION, dtype=np.int32),
-            qpos=qpos.astype(np.float32),
-            row_index=np.asarray(row_index, dtype=np.int64),
-            episode_index=np.asarray(episode_index, dtype=np.int64),
-            frame_index=np.asarray(frame_index, dtype=np.int64),
-            pose_hash=np.asarray(_pose_cache_hash(state23)),
-            model_hash=np.asarray(_file_sha1(xml_path)),
-            solver_config=np.asarray(_IK_SOLVER_CONFIG),
-            pos_err=np.asarray(diagnostics["pos_err"], dtype=np.float32),
-            ori_err=np.asarray(diagnostics["ori_err"], dtype=np.float32),
-        )
-        print(f"[dexjoco_lerobot] saved arm joint IK cache: {cache_path}")
-    except OSError as exc:
-        print(f"[dexjoco_lerobot] warning: could not save IK cache {cache_path}: {exc}")
-    _log_ik_diagnostics(diagnostics)
-    return qpos.astype(np.float32)
-
-
-def _load_arm_joint_cache(
-    cache_path: Path,
-    state23: np.ndarray,
-    row_index: np.ndarray,
-    episode_index: np.ndarray,
-    frame_index: np.ndarray,
-    xml_path: Path,
-) -> np.ndarray | None:
-    if not cache_path.exists():
-        return None
-    try:
-        with np.load(cache_path, allow_pickle=False) as data:
-            version = int(np.asarray(data["version"]).reshape(()))
-            qpos = np.asarray(data["qpos"], dtype=np.float32)
-            cached_rows = np.asarray(data["row_index"], dtype=np.int64)
-            cached_eps = np.asarray(data["episode_index"], dtype=np.int64)
-            cached_frames = np.asarray(data["frame_index"], dtype=np.int64)
-            cached_pose_hash = str(np.asarray(data["pose_hash"]).reshape(()))
-            cached_model_hash = str(np.asarray(data["model_hash"]).reshape(()))
-            cached_solver_config = str(np.asarray(data["solver_config"]).reshape(()))
-    except Exception as exc:
-        print(
-            f"[dexjoco_lerobot] warning: ignoring unreadable IK cache {cache_path}: {exc}"
-        )
-        return None
-    if version != _IK_CACHE_VERSION:
-        return None
-    if qpos.shape != (len(row_index), ARM_JOINT_DIM):
-        return None
-    if not np.array_equal(cached_rows, np.asarray(row_index, dtype=np.int64)):
-        return None
-    if not np.array_equal(cached_eps, np.asarray(episode_index, dtype=np.int64)):
-        return None
-    if not np.array_equal(cached_frames, np.asarray(frame_index, dtype=np.int64)):
-        return None
-    if cached_pose_hash != _pose_cache_hash(state23):
-        return None
-    if cached_model_hash != _file_sha1(xml_path):
-        return None
-    if cached_solver_config != _IK_SOLVER_CONFIG:
-        return None
-    return qpos
 
 
 def _pose_cache_hash(state23: np.ndarray) -> str:
@@ -959,16 +954,6 @@ def _panda_allegro_xml_path() -> Path:
     return path
 
 
-def _log_ik_diagnostics(diagnostics: dict[str, np.ndarray]) -> None:
-    pos = np.asarray(diagnostics["pos_err"], dtype=np.float64)
-    ori = np.asarray(diagnostics["ori_err"], dtype=np.float64)
-    print(
-        "[dexjoco_lerobot] IK residuals: "
-        f"pos_max={float(np.max(pos)):.6g}m, pos_p99={float(np.quantile(pos, 0.99)):.6g}m, "
-        f"ori_max={float(np.max(ori)):.6g}rad, ori_p99={float(np.quantile(ori, 0.99)):.6g}rad"
-    )
-
-
 def _validate_ik_diagnostics(diagnostics: dict[str, np.ndarray]) -> None:
     pos = np.asarray(diagnostics["pos_err"], dtype=np.float64)
     ori = np.asarray(diagnostics["ori_err"], dtype=np.float64)
@@ -1001,47 +986,6 @@ def _select_image_keys(task: str, features: dict) -> tuple[str, str]:
     return main, WRIST_IMAGE_KEY
 
 
-def _make_history_windows(
-    values: np.ndarray, episode_index: np.ndarray, window_size: int
-) -> np.ndarray:
-    if window_size < 1:
-        raise ValueError("window_size must be >= 1")
-    values = np.asarray(values, dtype=np.float32)
-    windows = np.zeros((len(values), window_size, values.shape[-1]), dtype=np.float32)
-    for ep in np.unique(episode_index):
-        idx = np.flatnonzero(episode_index == ep)
-        for local_pos, row in enumerate(idx):
-            for window_pos, offset in enumerate(range(window_size - 1, -1, -1)):
-                src_pos = max(local_pos - offset, 0)
-                windows[row, window_pos] = values[idx[src_pos]]
-    return windows
-
-
-def _make_future_horizon(
-    values: np.ndarray,
-    episode_index: np.ndarray,
-    horizon: int,
-) -> tuple[np.ndarray, np.ndarray]:
-    if horizon < 1:
-        raise ValueError(f"action_horizon must be >= 1, got {horizon}")
-    values = np.asarray(values, dtype=np.float32)
-    targets = np.zeros((len(values), horizon, values.shape[-1]), dtype=np.float32)
-    mask = np.zeros((len(values), horizon), dtype=np.float32)
-    for ep in np.unique(episode_index):
-        idx = np.flatnonzero(episode_index == ep)
-        if len(idx) == 0:
-            continue
-        for local_pos, row in enumerate(idx):
-            for offset in range(horizon):
-                src_pos = local_pos + offset
-                if src_pos < len(idx):
-                    targets[row, offset] = values[idx[src_pos]]
-                    mask[row, offset] = 1.0
-                else:
-                    targets[row, offset] = values[idx[-1]]
-    return targets, mask
-
-
 def build_recorded_action_targets(
     action22: np.ndarray,
     episode_index: np.ndarray,
@@ -1058,12 +1002,12 @@ def build_recorded_action_targets(
             f"got {action22.shape}"
         )
     action_quat23 = policy_action_to_quat_action(action22, episode_index=episode_index)
-    arm, arm_mask = _make_future_horizon(
+    arm, arm_mask = build_future_windows(
         action_quat23[:, :ARM_QUAT_ACTION_DIM],
         episode_index,
         horizon,
     )
-    hand, hand_mask = _make_future_horizon(
+    hand, hand_mask = build_future_windows(
         action_quat23[:, ARM_QUAT_ACTION_DIM:],
         episode_index,
         horizon,

@@ -144,6 +144,11 @@ class LampResidualSACFSDPPolicy(EmbodiedSACFSDPPolicy):
         full_action_dim = residual[0].numel()
         causal_action_dim = int(causal_mask.sum().item())
         return {
+            **{
+                key: value.item()
+                for key, value in context.items()
+                if key.startswith("vq_")
+            },
             "log_std_mean": active_log_std.mean().item(),
             "log_std_min": active_log_std.min().item(),
             "log_std_max": active_log_std.max().item(),

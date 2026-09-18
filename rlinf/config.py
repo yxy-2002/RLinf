@@ -108,7 +108,6 @@ SupportedModel.RECAP_VALUE_MODEL = SupportedModel.register(
 SupportedModel.STEAM_VALUE_MODEL = SupportedModel.register(
     "steam_value_model", force=True
 )
-SupportedModel.LAMP_BC = SupportedModel.register("lamp_bc", force=True)
 SupportedModel.LAMP_DP = SupportedModel.register("lamp_dp", force=True)
 SupportedModel.LAMP_RESIDUAL_SAC = SupportedModel.register(
     "lamp_residual_sac", force=True
@@ -144,7 +143,6 @@ EMBODIED_MODEL = set(
         SupportedModel.CFG_MODEL,
         SupportedModel.RECAP_VALUE_MODEL,
         SupportedModel.STEAM_VALUE_MODEL,
-        SupportedModel.LAMP_BC,
         SupportedModel.LAMP_DP,
         SupportedModel.LAMP_RESIDUAL_SAC,
     }

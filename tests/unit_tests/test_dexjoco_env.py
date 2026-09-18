@@ -324,3 +324,36 @@ def test_reserved_kwargs_and_reset_state_ids_are_rejected():
         _make_env(num_envs=1, env_kwargs={"seed": 123})
     with pytest.raises(ValueError, match="does not expose reset-state IDs"):
         _make_env(num_envs=1, use_fixed_reset_state_ids=True)
+
+
+def test_primitive_history_mask_and_snapshot_isolation(tmp_path):
+    """New history includes current state, grows each primitive step, resets locally."""
+    env = _make_env(
+        num_envs=2,
+        lamp_history_length=16,
+        auto_reset=False,
+        env_kwargs={"terminate_after": 20},
+        episode_result_path=str(tmp_path / "episodes.jsonl"),
+    )
+    try:
+        obs, _ = env.reset()
+        assert obs["hand_history"].shape == (2, 16, 16)
+        torch.testing.assert_close(obs["hand_history_mask"].sum(1), torch.ones(2))
+        snapshot = obs["hand_history"].clone()
+        actions = torch.zeros(2, 3, 23)
+        observations, *_ = env.chunk_step(actions)
+        torch.testing.assert_close(
+            observations[-1]["hand_history_mask"].sum(1), torch.full((2,), 4.0)
+        )
+        torch.testing.assert_close(obs["hand_history"], snapshot)
+        reset_obs, _ = env.reset(env_idx=np.array([0]))
+        torch.testing.assert_close(
+            reset_obs["hand_history_mask"].sum(1), torch.tensor([1.0, 4.0])
+        )
+    finally:
+        env.close()
+
+
+def test_legacy_history_contract_is_rejected():
+    with pytest.raises(ValueError, match="primitive_v1"):
+        _make_env(lamp_history_contract="legacy")

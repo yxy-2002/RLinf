@@ -4,8 +4,8 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(dirname "${SCRIPT_DIR}")"
-CONFIG_NAME="dexjoco_lamp_residual_v4_online_mlp_water_plant_a07_seed42"
-ARTIFACT_PATH="${REPO_ROOT}/outputs/lamp_water_plant_base_ckpts/dp_a07_mlp_seed42/artifact"
+CONFIG_NAME="dexjoco_lamp_residual_sac_mlp_water_plant"
+ARTIFACT_PATH="${LAMP_BASE_ARTIFACT:?Set LAMP_BASE_ARTIFACT to a valid version-2 MLP deployment artifact}"
 PYTHON_BIN="${RLINF_PYTHON:-${REPO_ROOT}/.venv/bin/python}"
 LOG_ROOT="${LAMP_RL_LOG_ROOT:-${REPO_ROOT}/results/lamp_residual_v4_runs}"
 RUN_ID="$(date -u +'%Y%m%d-%H%M%S')"
@@ -40,7 +40,9 @@ actual = {
     "model_type": metadata.get("model_type"),
     "task": metadata.get("task"),
 }
-if actual != expected:
+if actual["model_type"] == "lamp_dp_v2":
+    actual["model_type"] = "lamp_dp"
+if metadata.get("policy_version") != 2 or actual != expected:
     raise SystemExit(f"Unexpected LAMP artifact identity: expected {expected}, got {actual}")
 if spec.get("hand_prior_type") != "mlp" or spec.get("action_horizon") != 16:
     raise SystemExit(f"Expected raw-MLP H=16 artifact, got spec={spec}")
@@ -58,6 +60,8 @@ COMMAND=(
   "${REPO_ROOT}/examples/embodiment/train_async.py"
   --config-path "${REPO_ROOT}/examples/embodiment/config"
   --config-name "${CONFIG_NAME}"
+  "actor.model.model_path=${ARTIFACT_PATH}"
+  "rollout.model.model_path=${ARTIFACT_PATH}"
   "runner.logger.log_path=${LOG_DIR}"
   "$@"
 )

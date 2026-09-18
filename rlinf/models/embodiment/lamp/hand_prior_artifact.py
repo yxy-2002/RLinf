@@ -24,13 +24,13 @@ import torch
 from torch import nn
 
 from rlinf.models.embodiment.lamp.artifact_io import load_artifact
-from rlinf.models.embodiment.lamp.hand_ae import DexJoCoHandAE
-from rlinf.models.embodiment.lamp.hand_cvae import DexJoCoHandCVAE
 from rlinf.models.embodiment.lamp.hand_pca import HandPCA
-from rlinf.models.embodiment.lamp.hand_vae import DexJoCoHandVAE
 from rlinf.models.embodiment.lamp.hand_vq_vae import (
     HandVQVAE,
     decode_all_code_combinations,
+)
+from rlinf.models.embodiment.lamp.lamplstm_prior import (
+    LampLSTMPrior,
 )
 from rlinf.models.embodiment.lamp.vq_action_normalization import (
     denormalize_vq_hand_action,
@@ -80,12 +80,8 @@ class TorchHandPCA(nn.Module):
 def build_prior_model(prior_type: str, architecture: dict[str, Any]) -> nn.Module:
     """Instantiate one supported trainable prior architecture."""
 
-    if prior_type == "vae":
-        return DexJoCoHandVAE(**architecture)
-    if prior_type == "cvae":
-        return DexJoCoHandCVAE(**architecture)
-    if prior_type == "ae":
-        return DexJoCoHandAE(**architecture)
+    if prior_type == "lamplstm":
+        return LampLSTMPrior(**architecture)
     if prior_type == "vq":
         return HandVQVAE(**architecture)
     if prior_type == "pca":

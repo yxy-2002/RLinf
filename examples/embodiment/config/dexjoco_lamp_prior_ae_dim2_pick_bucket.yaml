@@ -1,4 +1,0 @@
-defaults: [dexjoco_lamp_prior_ae, _self_]
-runner: {max_steps: 30000, logger: {experiment_name: dexjoco_lamp_prior_ae_dim2_pick_bucket}}
-data: {task_name: pick_bucket}
-actor: {validation_interval: 30000}

@@ -1,3 +1,30 @@
-defaults: [dexjoco_lamp_dp_il_decoder_only_hammer_nail, _self_]
-runner: {logger: {experiment_name: dexjoco_lamp_dp_il_vq_hammer_nail}}
-actor: {model: {hand_prior: {type: vq, latent_dim: 1, artifact_path: ./outputs/dexjoco_lamp_prior_vq_hammer_nail/artifact}}}
+runner:
+  max_steps: 30000
+  logger:
+    log_path: ./outputs/lamp_dp_rerun
+    experiment_name: dexjoco_lamp_dp_il_vq_hammer_nail
+cluster:
+  component_placement:
+    actor: 0-0
+algorithm:
+  stage: dp
+data:
+  task_name: hammer_nail
+  dataset_root: ./datasets/DexJoCo-Datasets-LeRobot/dexjoco_lerobot_datasets
+  cache_root: ./outputs/lamp_cache
+actor:
+  global_batch_size: 512
+  micro_batch_size: 512
+  eval_batch_size: 512
+  optim:
+    lr: 3.0e-05
+    warmup_steps: 1000
+  model:
+    model_type: lamp_dp
+    hand_prior:
+      type: vq
+      latent_dim: 1
+      artifact_path: ./outputs/dexjoco_lamp_prior_vq_hammer_nail/artifact
+defaults:
+- dexjoco_lamp_dp
+- _self_

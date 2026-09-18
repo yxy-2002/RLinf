@@ -1,8 +1,1 @@
-defaults:
-  - env/dexjoco_water_plant@env.train
-  - env/dexjoco_water_plant@env.eval
-  - dexjoco_lamp_residual_sac
-  - _self_
-
-runner: {logger: {experiment_name: dexjoco_lamp_residual_sac_water_plant}}
-actor: {model: {model_path: ./outputs/lamp_prior_modes_z2_selected_lr3e-5_water_plant_pick_bucket/water_plant_dp_cvae_cvae_z2_selected_lr3e-5/artifact}}
+defaults: [dexjoco_lamp_residual_sac_lamplstm_water_plant, _self_]

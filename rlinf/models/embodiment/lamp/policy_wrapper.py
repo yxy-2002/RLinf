@@ -25,10 +25,6 @@ from torch import nn
 from torch.nn import functional as F
 
 from rlinf.models.embodiment.base_policy import BasePolicy, ForwardType
-from rlinf.models.embodiment.lamp.bc_policy import BCPolicy
-from rlinf.models.embodiment.lamp.bimanual_diffusion_policy import (
-    LAMPBimanualDiffusionPolicy,
-)
 from rlinf.models.embodiment.lamp.single_arm_diffusion_policy import (
     ACTION_HORIZON,
     LAMPDiffusionPolicy,
@@ -228,6 +224,7 @@ class LampPolicySpec:
     image_size: int
     image_keys: tuple[str, ...]
     latent_dims: dict[str, int] = field(default_factory=dict)
+    policy_version: int = 2
 
 
 @dataclass
@@ -269,7 +266,6 @@ class LampTemporalEnsembleController:
         plan: torch.Tensor,
         *,
         reset_mask: torch.Tensor | None = None,
-        bimanual: bool = False,
     ) -> torch.Tensor:
         """Insert ``plan``, return its ensemble, and advance by one chunk.
 
@@ -278,14 +274,13 @@ class LampTemporalEnsembleController:
         standalone LAMP inference retains identical numerical behavior.
         """
 
-        return self.apply(plan, reset_mask=reset_mask, bimanual=bimanual)
+        return self.apply(plan, reset_mask=reset_mask)
 
     def preview(
         self,
         plan: torch.Tensor,
         *,
         reset_mask: torch.Tensor | None = None,
-        bimanual: bool = False,
         confirmed_reset: bool = False,
     ) -> torch.Tensor:
         """Return the next ensemble without inserting or advancing ``plan``.
@@ -302,7 +297,6 @@ class LampTemporalEnsembleController:
             actions = self.apply(
                 plan,
                 reset_mask=reset_mask,
-                bimanual=bimanual,
             )
         finally:
             self._steps = saved_steps
@@ -330,7 +324,6 @@ class LampTemporalEnsembleController:
         plan: torch.Tensor,
         *,
         reset_mask: torch.Tensor | None = None,
-        bimanual: bool = False,
     ) -> torch.Tensor:
         if plan.ndim != 3 or plan.shape[1] < self.execution_horizon:
             raise ValueError("LAMP plan must have shape [B,H,A] with H >= K")
@@ -344,7 +337,7 @@ class LampTemporalEnsembleController:
             else reset_mask.to(device=plan.device, dtype=torch.bool).reshape(batch)
         )
         chunks = []
-        quat_offsets = (3, 26) if bimanual else (3,)
+        quat_offsets = (3,)
         for env_id in range(batch):
             if bool(reset[env_id]):
                 self._steps[env_id] = 0
@@ -391,11 +384,11 @@ class LampTemporalEnsembleController:
 
 
 class LampPolicy(nn.Module, BasePolicy):
-    """RLinf inference adapter around a LAMP BC or diffusion core."""
+    """RLinf inference adapter around a single-arm LAMP diffusion core."""
 
     def __init__(
         self,
-        core: BCPolicy | LAMPDiffusionPolicy | LAMPBimanualDiffusionPolicy,
+        core: LAMPDiffusionPolicy,
         spec: LampPolicySpec,
         statistics: dict[str, torch.Tensor | list[float]],
         *,
@@ -408,6 +401,12 @@ class LampPolicy(nn.Module, BasePolicy):
         eval_base_noise_seed_offset: int = 0,
     ) -> None:
         nn.Module.__init__(self)
+        if (
+            spec.policy_family != "dp"
+            or spec.embodiment != "single"
+            or spec.policy_version != 2
+        ):
+            raise ValueError("LAMP requires a single-arm version-2 DP artifact")
         self.core = core
         self.spec = spec
         self.execution_horizon = (
@@ -486,7 +485,7 @@ class LampPolicy(nn.Module, BasePolicy):
         ).clamp_min(1e-6)
 
     def _normalize_physical_quaternions(self, physical: torch.Tensor) -> torch.Tensor:
-        offsets = (3, 26) if self.spec.embodiment == "bimanual" else (3,)
+        offsets = (3,)
         parts = []
         cursor = 0
         for offset in offsets:
@@ -497,51 +496,20 @@ class LampPolicy(nn.Module, BasePolicy):
         return torch.cat(parts, dim=-1)
 
     def _processed_inputs(self, env_obs: dict[str, Any]) -> tuple[torch.Tensor, ...]:
-        main = self._image(env_obs["main_images"])
-        qpos = torch.as_tensor(env_obs["panda_qpos"])
-        wrist = torch.as_tensor(env_obs["wrist_images"])
-        if self.spec.embodiment == "single":
-            return (
-                main,
-                self._image(wrist),
-                self._normalize(qpos, "arm_state"),
-                self._normalize(
-                    torch.as_tensor(env_obs["hand_history"]), "hand_history"
-                ),
-            )
-        if wrist.ndim != 5 or wrist.shape[1] != 2:
-            raise ValueError("Bimanual LAMP expects wrist_images [B,2,H,W,C]")
         return (
-            main,
-            self._image(wrist[:, 1]),
-            self._image(wrist[:, 0]),
-            self._normalize(qpos[:, :7], "right_arm_state"),
-            self._normalize(qpos[:, 7:14], "left_arm_state"),
+            self._image(env_obs["main_images"]),
+            self._image(env_obs["wrist_images"]),
             self._normalize(
-                torch.as_tensor(env_obs["right_hand_history"]),
-                "right_hand_history",
+                torch.as_tensor(env_obs["panda_qpos_pair"]), "arm_state_pair"
             ),
             self._normalize(
-                torch.as_tensor(env_obs["left_hand_history"]),
-                "left_hand_history",
+                torch.as_tensor(env_obs["hand_state_pair"]), "hand_state_pair"
             ),
         )
 
     def _predict_plan_from_processed(
         self, *inputs: torch.Tensor
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        if self.spec.policy_family == "bc":
-            output = self.core(*inputs, train=False, return_aux=True)
-            arm = output["arm_action"] * self._stat("arm_action_std") + self._stat(
-                "arm_action_mean"
-            )
-            hand = output["hand_action"] * self._stat("hand_action_std") + self._stat(
-                "hand_action_mean"
-            )
-            physical = self._normalize_physical_quaternions(
-                torch.cat((arm, hand), dim=-1)[:, None, :]
-            )
-            return output["core_action"][:, None, :], physical
         output = self.core(*inputs, train=False, return_aux=True)
         return output["core_action_norm"], self._normalize_physical_quaternions(
             output["pred_seq"]
@@ -550,52 +518,50 @@ class LampPolicy(nn.Module, BasePolicy):
     def encode_observation(
         self, observation: dict[str, Any]
     ) -> LampObservationFeatures:
-        """Expose base-policy features for the phase-three residual actor."""
-
+        """Encode fixed actor features and carry explicit decoder context."""
+        history, history_mask = self.decoder_context(observation)
         inputs = self._processed_inputs(observation)
-        if self.spec.policy_family == "bc":
-            output = self.core(*inputs, train=False, return_aux=True)
-            condition = output["fused_pre_trunk"]
-            return LampObservationFeatures(
-                condition=condition,
-                front_feat=output["front_feat"],
-                wrist_feat=output["wrist_feat"],
-                state_feat=output["state_feat"],
-                hand_prior_feat=output["hand_prior_feat"],
-                mu_prior=output["mu_prior"],
-                log_var_prior=output["log_var_prior"],
-                auxiliary={"inputs": inputs},
-            )
         condition, aux = self.core._encode_observation(*inputs, train=False)
-        if self.spec.embodiment == "single":
-            return LampObservationFeatures(
-                condition=condition,
-                front_feat=aux["front_feat"],
-                wrist_feat=aux["wrist_feat"],
-                state_feat=aux["state_feat"],
-                hand_prior_feat=aux["hand_prior_feat"],
-                mu_prior=aux["mu_prior"],
-                log_var_prior=aux["log_var_prior"],
-                auxiliary={"inputs": inputs},
-            )
         return LampObservationFeatures(
             condition=condition,
-            front_feat=aux["ego_feat"],
-            wrist_feat=aux["right_wrist_feat"],
-            extra_view_feat=aux["left_wrist_feat"],
-            state_feat=torch.cat(
-                (aux["right_state_feat"], aux["left_state_feat"]), dim=-1
-            ),
-            hand_prior_feat=torch.cat(
-                (aux["right_hand_prior_feat"], aux["left_hand_prior_feat"]),
-                dim=-1,
-            ),
-            mu_prior=torch.cat((aux["right_mu_prior"], aux["left_mu_prior"]), dim=-1),
-            log_var_prior=torch.cat(
-                (aux["right_log_var_prior"], aux["left_log_var_prior"]), dim=-1
-            ),
-            auxiliary={"inputs": inputs, **aux},
+            front_feat=aux["front_feat"],
+            wrist_feat=aux["wrist_feat"],
+            state_feat=aux["state_feat"],
+            hand_prior_feat=aux["hand_prior_feat"],
+            mu_prior=aux["mu_prior"],
+            log_var_prior=aux["log_var_prior"],
+            auxiliary={
+                "inputs": inputs,
+                "decoder_history": history,
+                "decoder_history_mask": history_mask,
+            },
         )
+
+    def decoder_context(
+        self, observation: dict[str, Any]
+    ) -> tuple[torch.Tensor | None, torch.Tensor | None]:
+        """Return measured history in the prior's normalization coordinates."""
+        if self.spec.hand_prior_type != "lamplstm":
+            return None, None
+        if (
+            observation.get("hand_history") is None
+            or observation.get("hand_history_mask") is None
+        ):
+            raise ValueError(
+                "primitive_v1 requires hand_history and hand_history_mask in observations"
+            )
+        history = self._normalize(
+            torch.as_tensor(observation["hand_history"]), "hand_state_pair"
+        )
+        mask = torch.as_tensor(observation["hand_history_mask"], device=history.device)
+        if (
+            history.shape[1:] != (self.core.decoder_history_length, 16)
+            or mask.shape != history.shape[:2]
+        ):
+            raise ValueError(
+                "Measured decoder history/mask disagrees with the artifact"
+            )
+        return history, mask
 
     def sample_base_plan(
         self,
@@ -605,11 +571,6 @@ class LampPolicy(nn.Module, BasePolicy):
     ) -> LampPlan:
         """Sample the exact normalized base plan and decode it once."""
 
-        if self.spec.policy_family != "dp":
-            core, physical = self._predict_plan_from_processed(
-                *features.auxiliary["inputs"]
-            )
-            return LampPlan(core_action_norm=core, physical_plan=physical)
         batch = features.condition.shape[0]
         if initial_noise is None:
             sample = torch.randn(
@@ -620,17 +581,33 @@ class LampPolicy(nn.Module, BasePolicy):
             )
         else:
             sample = initial_noise
-        core_action_norm = self.core._ddim_sample(sample, features.condition)
-        physical, _ = self.core._decode_core(core_action_norm)
+        sampler = self._compiled_predict or self.core._ddim_sample
+        core_action_norm = sampler(sample, features.condition)
+        physical, _ = self.core._decode_core(
+            core_action_norm,
+            features.auxiliary.get("decoder_history"),
+            features.auxiliary.get("decoder_history_mask"),
+        )
         return LampPlan(
             core_action_norm=core_action_norm,
             physical_plan=self._normalize_physical_quaternions(physical),
         )
 
-    def decode_core_action(self, core_action_norm: torch.Tensor) -> torch.Tensor:
-        """Differentiably decode a normalized core action chunk."""
-
-        physical, _ = self.core._decode_core(core_action_norm)
+    def decode_core_action(
+        self,
+        core_action_norm: torch.Tensor,
+        *,
+        decoder_history: torch.Tensor | None = None,
+        decoder_history_mask: torch.Tensor | None = None,
+        vq_straight_through: bool = False,
+    ) -> torch.Tensor:
+        """Decode one batch without reusing another batch's history."""
+        physical, _ = self.core._decode_core(
+            core_action_norm,
+            decoder_history,
+            decoder_history_mask,
+            vq_straight_through=vq_straight_through,
+        )
         return self._normalize_physical_quaternions(physical)
 
     def freeze_base_policy(self) -> None:
@@ -697,29 +674,30 @@ class LampPolicy(nn.Module, BasePolicy):
         **_: Any,
     ) -> tuple[torch.Tensor, dict[str, Any]]:
         reset_mask = env_obs.get("reset_mask")
-        mode = str(_.get("mode", "eval"))
+        from rlinf.models.embodiment.lamp.rollout import resolve_rollout_mode
+
+        mode = resolve_rollout_mode(_.get("mode"), _.get("do_sample"), default="eval")
         self._sync_eval_noise_configuration()
         use_seeded_eval = (
             self.spec.policy_family == "dp"
             and mode != "train"
             and self._eval_noise_streams.enabled
         )
-        if use_seeded_eval:
-            features = self.encode_observation(env_obs)
-            initial_noise = self._eval_initial_noise(
-                features.condition, reset_mask=reset_mask
-            )
-            plan = self.sample_base_plan(features, initial_noise=initial_noise)
-            core, physical = plan.core_action_norm, plan.physical_plan
-        else:
-            inputs = self._processed_inputs(env_obs)
-            predict = self._compiled_predict or self._predict_plan_from_processed
-            core, physical = predict(*inputs)
+        if self.spec.policy_version == 2 and self.spec.hand_prior_type == "lamplstm":
+            history, mask = self.decoder_context(env_obs)
+            self.core.set_decoder_history(history, mask)
+        features = self.encode_observation(env_obs)
+        initial_noise = (
+            self._eval_initial_noise(features.condition, reset_mask=reset_mask)
+            if use_seeded_eval
+            else None
+        )
+        plan = self.sample_base_plan(features, initial_noise=initial_noise)
+        core, physical = plan.core_action_norm, plan.physical_plan
         if self.spec.policy_family == "dp" and self.use_temporal_ensemble:
             actions = self.controller.apply(
                 physical,
                 reset_mask=reset_mask,
-                bimanual=self.spec.embodiment == "bimanual",
             )
         elif self.spec.policy_family == "dp":
             # Standard receding-horizon DP evaluation: predict H steps, execute
@@ -727,12 +705,6 @@ class LampPolicy(nn.Module, BasePolicy):
             actions = physical[:, : self.execution_horizon]
         else:
             actions = physical
-        if self.spec.embodiment == "bimanual":
-            right, left = actions[..., :23], actions[..., 23:46]
-            actions = torch.cat(
-                (right[..., :7], left[..., :7], right[..., 7:], left[..., 7:]),
-                dim=-1,
-            )
         zeros = torch.zeros(
             (*actions.shape[:2], 1), dtype=actions.dtype, device=actions.device
         )
@@ -750,7 +722,7 @@ class LampPolicy(nn.Module, BasePolicy):
         if self.torch_compile_enabled:
             return
         self._compiled_predict = torch.compile(
-            self._predict_plan_from_processed, mode=mode, fullgraph=False
+            self.core._ddim_sample, mode=mode, fullgraph=False
         )
         self.torch_compile_enabled = True
 

@@ -1,4 +1,0 @@
-defaults: [dexjoco_lamp_dp_il_decoder_only_hammer_nail, _self_]
-runner: {logger: {experiment_name: dexjoco_lamp_dp_il_decoder_only_pinch_tongs}}
-data: {task_name: pinch_tongs}
-actor: {model: {hand_prior: {latent_dim: 2, artifact_path: ./outputs/lamp_cvae_rerun/dexjoco_lamp_prior_cvae_dim2_selected_pinch_tongs/artifact}}}

@@ -91,3 +91,6 @@ WRIST_IMAGE_KEY = "observation.images.wrist"
 BIMANUAL_MAIN_IMAGE_KEY = "observation.images.ego"
 BIMANUAL_RIGHT_WRIST_IMAGE_KEY = "observation.images.wrist_right"
 BIMANUAL_LEFT_WRIST_IMAGE_KEY = "observation.images.wrist_left"
+
+# Compatibility value used by existing single-arm DP artifact architecture.
+HISTORY_FRAMES = 8

@@ -12,8 +12,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import json
 import time
 import typing
+from pathlib import Path
 
 from rlinf.scheduler import Channel
 from rlinf.scheduler import WorkerGroupFuncResult as Handle
@@ -81,6 +83,15 @@ class EmbodiedEvalRunner:
         start_time = time.time()
         eval_metrics = self.evaluate()
         eval_metrics = {f"eval/{k}": v for k, v in eval_metrics.items()}
+        result_path = self.cfg.runner.get("result_path", None)
+        if result_path:
+            serializable = {
+                key: value.item() if hasattr(value, "item") else value
+                for key, value in eval_metrics.items()
+            }
+            output = Path(str(result_path)).expanduser().resolve()
+            output.parent.mkdir(parents=True, exist_ok=True)
+            output.write_text(json.dumps(serializable, indent=2) + "\n", encoding="utf-8")
         self.logger.info(eval_metrics)
         self.metric_logger.log(step=0, data=eval_metrics)
         print_metrics_table(

@@ -1,17 +1,29 @@
-defaults:
-  - dexjoco_lamp_dp_il_mlp_pick_bucket
-  - _self_
-
 runner:
+  max_steps: 30000
   logger:
     experiment_name: dexjoco_lamp_dp_il_pca_click_mouse
-
+cluster:
+  component_placement:
+    actor: 1-1
+algorithm:
+  stage: dp
 data:
   task_name: click_mouse
-
+  dataset_root: ./datasets/DexJoCo-Datasets-LeRobot/dexjoco_lerobot_datasets
+  cache_root: ./outputs/lamp_cache
 actor:
+  global_batch_size: 512
+  micro_batch_size: 512
+  eval_batch_size: 512
+  optim:
+    lr: 3.0e-05
+    warmup_steps: 1000
   model:
+    model_type: lamp_dp
     hand_prior:
       type: pca
       latent_dim: 2
       artifact_path: ./outputs/dexjoco_lamp_prior_pca_dim2_click_mouse/artifact
+defaults:
+- dexjoco_lamp_dp
+- _self_
