@@ -91,7 +91,9 @@ class EmbodiedEvalRunner:
             }
             output = Path(str(result_path)).expanduser().resolve()
             output.parent.mkdir(parents=True, exist_ok=True)
-            output.write_text(json.dumps(serializable, indent=2) + "\n", encoding="utf-8")
+            output.write_text(
+                json.dumps(serializable, indent=2) + "\n", encoding="utf-8"
+            )
         self.logger.info(eval_metrics)
         self.metric_logger.log(step=0, data=eval_metrics)
         print_metrics_table(

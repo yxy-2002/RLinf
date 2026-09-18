@@ -1,4 +1,18 @@
 #!/usr/bin/env python3
+# Copyright 2026 The RLinf Authors.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     https://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 """Persist a verified 50-seed DexJoCo LAMP evaluation result."""
 
 from __future__ import annotations
@@ -8,7 +22,6 @@ import csv
 from pathlib import Path
 
 from tensorboard.backend.event_processing.event_accumulator import EventAccumulator
-
 
 SEED_START = 20260803
 SEED_END = 20260852
@@ -41,9 +54,7 @@ def main() -> None:
             f"Expected {EPISODES} evaluated trajectories, got {trajectory_count}"
         )
 
-    mode = args.cfg.removeprefix("dexjoco_lamp_dp_il_").removesuffix(
-        f"_{args.task}"
-    )
+    mode = args.cfg.removeprefix("dexjoco_lamp_dp_il_").removesuffix(f"_{args.task}")
     row = {
         "config": args.cfg,
         "task": args.task,

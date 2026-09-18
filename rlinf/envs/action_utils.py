@@ -328,9 +328,7 @@ def prepare_actions_for_dexjoco(
     tool until a DexJoCo model adapter is added.
     """
     if action_dim not in (23, 46):
-        raise ValueError(
-            f"DexJoCo action_dim must be 23 or 46, got {action_dim}."
-        )
+        raise ValueError(f"DexJoCo action_dim must be 23 or 46, got {action_dim}.")
     chunk_actions = np.ascontiguousarray(raw_chunk_actions, dtype=np.float32)
     if chunk_actions.shape[-1] != action_dim:
         raise ValueError(

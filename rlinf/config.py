@@ -836,9 +836,7 @@ def validate_lamp_async_cfg(cfg: DictConfig) -> None:
     safe to use from configuration preflight and CPU-only unit tests.
     """
     contract_version = int(cfg.actor.model.get("contract_version", 0))
-    assert contract_version == 4, (
-        "Async LAMP residual supports only contract_version 4"
-    )
+    assert contract_version == 4, "Async LAMP residual supports only contract_version 4"
     contract_name = f"v{contract_version}"
     assert cfg.runner.get("execution_mode", "sync") == "async", (
         f"LAMP residual contract {contract_name} requires runner.execution_mode=async"
