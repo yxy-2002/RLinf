@@ -32,6 +32,15 @@ import numpy as np
 import torch
 
 
+def episode_ids(history_mask: np.ndarray, future_mask: np.ndarray) -> np.ndarray:
+    """Recover episode boundaries from valid-future tails; validate history resets."""
+    ends = np.flatnonzero(future_mask.sum(1) == 1)
+    starts = np.r_[0, ends[:-1] + 1]
+    assert ends[-1] == len(future_mask) - 1
+    assert np.all(history_mask[starts].sum(1) <= 1)
+    return np.repeat(np.arange(len(ends)), ends - starts + 1)
+
+
 class CosineSchedule:
     """Absolute learning-rate schedule matching the old warmup/cosine recipe."""
 

@@ -53,6 +53,7 @@ from rlinf.models.embodiment.lamp.il_training_utils import (
     CosineSchedule,
     beta_warmup,
     configure_torch_runtime,
+    episode_ids,
 )
 from rlinf.models.embodiment.lamp.policy_wrapper import LampPolicy, LampPolicySpec
 from rlinf.models.embodiment.lamp.resnet18 import load_hf_resnet18_params
@@ -1016,8 +1017,6 @@ class LampILWorker(Worker):
     @torch.no_grad()
     def _validate_lstm_conditions(self) -> dict[str, float]:
         """Report paired on/off validation without consuming training RNG state."""
-        from scripts.eval_lamplstm_offline_quality import episode_ids
-
         directory = Path(self.cfg.data.cache_path) / "validation"
         length = int(self.cfg.actor.model.hand_prior.history_length)
         h = np.load(directory / f"hand_history{length}_norm.npy", mmap_mode="r")

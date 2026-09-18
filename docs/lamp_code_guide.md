@@ -175,33 +175,25 @@ bash examples/embodiment/run_lamp_il.sh dexjoco_lamp_dp_lamplstm \
 
 旧训练 checkpoint 不支持续训，明确报错。可用兼容部署 artifact 初始化新训练：`actor.model.model_path=/absolute/path/to/artifact`，并保持数据 fingerprint、prior 与 architecture 一致；optimizer/sampler 从头开始。不要把它和 `runner.resume_dir` 混为同一功能。
 
-## 8. 实验与分析程序
+## 8. 实验入口与临时文件清理
 
-这些程序复用上述入口，不另定义 DP 架构：
+训练与评测使用第 7 节的正式入口。`scripts/` 保留 water_plant residual RL 的
+MLP 启动脚本和四个 LAMP-LSTM scale 启动脚本。
 
-| `scripts/` 或其他入口 | 用途 |
-|---|---|
-| `lamp_lstm_il.py`、`run_lamp_lstm_il_a.sh`／`b.sh` | 六任务基准的配置生成、训练、评测及完成回执。 |
-| `lamp_lstm_il_remaining.py`、`run_lamp_lstm_il_remaining_*.sh` | 剩余任务和跨机器任务划分。 |
-| `lamp_lstm_prior_sweep.py`、`run_lamp_lstm_prior_sweep.sh` | prior 超参 sweep。 |
-| `lamp_dp_regularization_sweep.py`、对应 `run_*.sh` | DP dropout/EMA 对照。 |
-| `run_lamp_water_plant_residual_rl_mlp_a07_seed42.sh` | 保留脚本名称，启动现行 MLP residual；必须显式设置 `LAMP_BASE_ARTIFACT`，不再引用旧 v1 artifact。 |
-| `lamplstm_analysis_utils.py` | 分析脚本共用 artifact、哈希、文件原子写入和任务执行工具。 |
-| `analyze_lamplstm_offline_quality.py`、`eval_lamplstm_offline_quality.py`、`report_lamplstm_quality.py` | 离线重建／latent 质量与报告。 |
-| `analyze_lamplstm_kl_components.py` | KL 分量诊断。 |
-| `analyze_lamplstm_posterior_transfer.py`、`eval_lamplstm_transfer_diagnostics.py`、`report_lamplstm_posterior_transfer.py` | posterior 迁移质量与报告。 |
-| `analyze_lamplstm_pairs.py`、`replay_lamplstm_pairs.py`、`run_lamplstm_paired_replay.py` | 成对轨迹分析与重放。 |
-| `eval_lamplstm_nonlinear_probe.py`、`diagnose_lamplstm_followup.py` | latent 非线性探针及后续诊断。 |
-| `eval_lamplstm_sac_exploration.py` | SAC 探索动作诊断。 |
-| `smoke_lamplstm_film_input.py` | input-FiLM 小规模结构冒烟。 |
+一次性的六任务调度器、剩余任务分配、超参扫描、离线质量分析、posterior 迁移、
+KL 诊断、轨迹重放和报告生成脚本及其专用测试已移除。
+训练验证需要的 `episode_ids` 已迁入 `il_training_utils.py`，对应边界测试保留在
+`test_lamplstm_prior.py`，训练 worker 不再依赖临时分析脚本。
 
-`toolkits/collect_lamp_eval_result.py` 保留为评测结果汇总工具。旧 a07/a09 调度器、GPU 专用配置与失效 watcher 已归档，当前批量实验使用 `scripts/lamp_lstm_il.py`。清理清单与恢复说明见 [清理记录](lamp_cleanup.md)。
+保留数据预处理、IL pipeline、LSTM/FiLM、DP 正则化与 DDIM、模型兼容性、
+residual SAC/replay、FSDP、rollout 和配置测试。`test_lamp_refactor.py` 覆盖
+当前模型的梯度、兼容性及断点恢复，属于长期回归测试。
 
-历史专属 CVAE、旧混合 prior sweep、decoder_only supervisor 及其失效转发脚本已移除。实验输出、日志和 checkpoint 保持原位；历史报告以校验过的归档保留；历史报告中的入口不构成当前支持承诺。
+`toolkits/collect_lamp_eval_result.py` 保留为评测结果汇总工具。
 
 ## 9. 验证与限制
 
-重构完成时全量相关测试 327 项通过；随后新增的 LSTM 训练中断恢复测试也通过（`test_lamp_refactor.py` 共 104 项），当时合计 328 个不同测试。后续过期配置清理减少了参数化用例数量，当前结果见 [清理记录](lamp_cleanup.md)。修改的 Python 文件通过 Ruff 检查，修改的 shell 通过 `bash -n`，`git diff --check` 无错误。
+重构完成时全量相关测试 327 项通过；随后新增的 LSTM 训练中断恢复测试也通过（`test_lamp_refactor.py` 共 104 项），当时合计 328 个不同测试。后续过期配置清理减少了参数化用例数量，历史数量不代表清理后的当前测试数量。修改的 Python 文件通过 Ruff 检查，修改的 shell 通过 `bash -n`，`git diff --check` 无错误。
 
 自动验证入口：
 

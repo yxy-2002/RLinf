@@ -12,6 +12,7 @@ from rlinf.data.datasets.lamp.action_windows import (
     build_action_windows,
 )
 from rlinf.models.embodiment.lamp.hand_prior_artifact import build_prior_model
+from rlinf.models.embodiment.lamp.il_training_utils import episode_ids
 from rlinf.models.embodiment.lamp.lamplstm_prior import LampLSTMPrior
 
 
@@ -260,3 +261,9 @@ def test_decoder_history_gradient_contract_preserves_latent_gradient(frozen_hist
     else:
         assert history.grad is not None and history.grad.abs().sum() > 0
         assert history_grad is not None and history_grad.abs().sum() > 0
+
+
+def test_episode_boundaries_and_short_episode() -> None:
+    future = np.array([[1, 1, 0], [1, 0, 0], [1, 1, 1], [1, 1, 0], [1, 0, 0]])
+    history = np.array([[0, 0, 1], [0, 1, 1], [0, 0, 1], [0, 1, 1], [1, 1, 1]])
+    np.testing.assert_array_equal(episode_ids(history, future), [0, 0, 1, 1, 1])
