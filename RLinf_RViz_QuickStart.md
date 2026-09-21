@@ -3,6 +3,8 @@
 适用：Ubuntu 22.04 + ROS 2 Humble，左手 `psiglove_2 → wuji_tier2 → wuji1hand`。
 手套串口：**`/dev/ttyACM1`**。
 
+本文仅用于实时可视化，不提供独立数据采集或文件回放接口。正式采集使用现有 RealWorld 流程，Wuji 完整接入尚未完成。
+
 所有进程均在当前宿主机运行。计算与显示分别使用独立 Python 环境；不启动真机驱动，不保存数采文件。以下命令依赖本机已有 ROS 2 Humble 软件源。
 
 ## 1. 安装系统依赖，确认串口权限
@@ -103,10 +105,11 @@ import yaml
 config = Path.home() / ".config/rlinf-dexhand/psiglove_2_wuji_left.yaml"
 cfg = yaml.safe_load(config.read_text())
 output = (config.parent / cfg["retargeting"]["scale_file"]).resolve()
-subprocess.run([
-    sys.executable, "-m", "rlinf_dexhand.calibrate",
-    "--config", str(config), "--output", str(output),
-], check=True)
+with open("/dev/tty") as terminal:
+    subprocess.run([
+        sys.executable, "-m", "rlinf_dexhand.calibrate",
+        "--config", str(config), "--output", str(output),
+    ], check=True, stdin=terminal)
 PY
 ```
 

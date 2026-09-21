@@ -8,7 +8,7 @@ import time
 
 from rlinf_dexhand.pipeline import TeleopPipeline, load_config
 
-from toolkits.dexhand.transport import RvizBackend
+from toolkits.dexhand.transport import RvizClient
 
 
 def main():
@@ -17,50 +17,36 @@ def main():
     parser.add_argument("--endpoint", default="tcp://127.0.0.1:5557")
     parser.add_argument("--frequency", type=float, default=30)
     parser.add_argument("--seconds", type=float)
-    parser.add_argument("--replay", help="回放 ADC 文件，不打开串口")
-    parser.add_argument("--repeat", action="store_true")
     args = parser.parse_args()
     if args.frequency <= 0 or (args.seconds is not None and args.seconds <= 0):
         parser.error("频率和时长必须为正数")
     cfg = load_config(args.config)
     if cfg["hand"]["type"] != "wuji1hand":
         parser.error("此 RViz 测试仅用于 wuji1hand")
-    driver = None
-    if args.replay:
-        from rlinf.envs.dexhand.replay import ReplayGlove
-
-        driver = ReplayGlove(
-            args.replay, cfg["glove"]["type"], cfg["glove"]["side"], args.repeat
-        )
-    pipeline = TeleopPipeline(cfg, driver=driver)
-    backend = RvizBackend(pipeline.spec, args.endpoint)
+    pipeline = TeleopPipeline(cfg)
+    client = RvizClient(pipeline.spec, args.endpoint)
     start = time.monotonic()
     count = 0
     try:
-        backend.start()
+        client.start()
         pipeline.start()
         while args.seconds is None or time.monotonic() - start < args.seconds:
             tick = time.monotonic()
             target = pipeline.read()
-            backend.command(target)
+            client.send(target)
             count += 1
             time.sleep(max(0, 1 / args.frequency - (time.monotonic() - tick)))
-    except (KeyboardInterrupt, EOFError):
+    except KeyboardInterrupt:
         pass
     finally:
         try:
             pipeline.close()
         finally:
-            backend.close()
+            client.close()
         elapsed = time.monotonic() - start
         print(
             f"测试结束：{count} 帧，{elapsed:.2f} 秒，{count / max(elapsed, 1e-9):.2f} Hz"
         )
-
-
-def collection_backend(config, spec):
-    """仅供 RLinf 数采入口显式选择的测试后端。"""
-    return RvizBackend(spec, **config.get("rviz_test", {}))
 
 
 if __name__ == "__main__":

@@ -7,23 +7,31 @@ import time
 import uuid
 from dataclasses import asdict
 
-from rlinf_dexhand.types import HandState
+from rlinf_dexhand.types import HandSpec, HandTarget
 
 
-class RvizBackend:
-    def __init__(self, spec, endpoint="tcp://127.0.0.1:5557", timeout_ms=500):
+class RvizClient:
+    """Send visualization targets; acknowledgements are not hardware feedback."""
+
+    def __init__(
+        self,
+        spec: HandSpec,
+        endpoint: str = "tcp://127.0.0.1:5557",
+        timeout_ms: int = 500,
+    ) -> None:
         self.spec, self.endpoint, self.timeout = spec, endpoint, int(timeout_ms)
         if self.timeout <= 0:
             raise ValueError("timeout must be positive")
         self.socket = None
-        self.state = HandState((), time.time(), "commanded", False, -1)
+        self.sequence = -1
         self.session = uuid.uuid4().hex
 
-    def start(self):
+    def start(self) -> None:
+        """Open the display connection."""
         import zmq
 
         if self.socket is not None:
-            raise RuntimeError("Backend already started")
+            raise RuntimeError("RViz client already started")
         self.context = zmq.Context()
         self.socket = self.context.socket(zmq.REQ)
         self.socket.setsockopt(zmq.LINGER, 0)
@@ -32,11 +40,14 @@ class RvizBackend:
         self.socket.setsockopt(zmq.SNDTIMEO, self.timeout)
         self.socket.connect(self.endpoint)
 
-    def command(self, target):
+    def send(self, target: HandTarget) -> None:
+        """Send one target and wait for the display adapter to accept it."""
+        if self.socket is None:
+            raise RuntimeError("RViz client is not started")
         if target.spec != self.spec:
             raise ValueError("Hand specification mismatch")
         self.spec.validate(target.values)
-        if target.sequence <= self.state.sequence:
+        if target.sequence <= self.sequence:
             raise ValueError("Non-increasing sequence")
         if not 0 <= time.time() - target.timestamp <= 0.5:
             raise ValueError("Stale target")
@@ -49,25 +60,13 @@ class RvizBackend:
             reply = self.socket.recv_json()
             if not reply.get("ok") or reply.get("sequence") != target.sequence:
                 raise RuntimeError(f"RViz rejected target: {reply}")
-            self.state = HandState(
-                tuple(target.values), time.time(), "commanded", True, target.sequence
-            )
+            self.sequence = target.sequence
         except Exception:
-            self.state = HandState(
-                self.state.values, time.time(), "commanded", False, self.state.sequence
-            )
             self.close()
             raise
 
-    def get_state(self):
-        from dataclasses import replace
-
-        return replace(
-            self.state,
-            valid=self.state.valid and time.time() - self.state.timestamp <= 0.5,
-        )
-
-    def close(self):
+    def close(self) -> None:
+        """Release the socket and context; safe to call repeatedly."""
         if self.socket is not None:
             self.socket.close(0)
             self.context.term()
@@ -102,7 +101,7 @@ class TargetReceiver:
                 raise ValueError("Invalid session")
             if self.session != session:
                 if time.monotonic() - self.last_received < 0.5:
-                    raise ValueError("Another collector owns this adapter")
+                    raise ValueError("Another visualization client owns this adapter")
                 sequence = -1
             else:
                 sequence = self.sequence

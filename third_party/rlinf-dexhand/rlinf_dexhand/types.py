@@ -58,12 +58,3 @@ class HandTarget:
 
     def to_dict(self):
         return asdict(self)
-
-
-@dataclass(frozen=True)
-class HandState:
-    values: tuple[float, ...]
-    timestamp: float
-    source: str
-    valid: bool
-    sequence: int

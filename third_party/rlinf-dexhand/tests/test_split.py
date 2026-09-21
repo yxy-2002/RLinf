@@ -69,18 +69,17 @@ def test_matrix_rejected_before_hardware():
         "glove": {"type": "psiglove_1", "side": "left"},
         "retargeting": {"type": "wuji_tier2"},
         "hand": {"type": "wuji1hand", "side": "left"},
-        "backend": {"type": "rviz_zmq"},
     }
     with pytest.raises(ValueError):
         validate_config(cfg)
 
 
-def test_ruiyan_backend_does_not_invent_feedback():
-    from rlinf_dexhand.backends import RuiyanBackend
+def test_ruiyan_driver_does_not_invent_feedback():
+    from rlinf_dexhand.ruiyan import RuiyanHandDriver
 
-    b = RuiyanBackend(ChannelLinear("left").spec, port="/not/opened")
-    assert b.get_state().source == "measured"
-    assert not b.get_state().valid
+    driver = RuiyanHandDriver(port="/not/opened")
+    assert not driver.get_detailed_state()["feedback_valid"]
+    assert driver.get_detailed_state()["feedback_timestamp"] == 0
 
 
 def test_serial_lifecycle_timeout_and_exclusive_open():
@@ -140,7 +139,7 @@ def test_core_has_no_collection_or_display_dependencies():
     root = Path(rlinf_dexhand.__file__).parent
     assert not (root / "recording.py").exists()
     assert not (root / "rviz_adapter.py").exists()
-    for relative in ("pipeline.py", "backends.py"):
+    for relative in ("pipeline.py", "types.py"):
         tree = ast.parse((root / relative).read_text())
         for node in ast.walk(tree):
             if isinstance(node, ast.Import):

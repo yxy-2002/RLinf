@@ -1,12 +1,12 @@
-手套重定向与独立验证
-====================
+手套重定向与实时可视化
+======================
 
-第三方库只负责手套读取、姿态转换和 retargeting，不包含数采记录或 RViz 通信。
-安装与算法调用说明见仓库 ``third_party/rlinf-dexhand/README.md``。
+第三方库负责手套读取、姿态转换、重定向及底层设备驱动。
+安装与算法调用说明见 ``third_party/rlinf-dexhand/README.md``。
 
-独立 RViz 测试脚本与中文运行说明见 ``toolkits/dexhand/README.md``。
-验证完成后可移除该工具目录，不影响第三方库。
+实时 RViz 调试见 ``toolkits/dexhand/README.md``。该工具仅显示重定向结果，
+不采集 episode、不提供文件回放，也不将显示应答作为硬件反馈。
 
-数采由 RLinf 的 ``examples/embodiment/collect_hand_data.py`` 独立执行，
-记录与回放实现在 ``rlinf/envs/dexhand/``；执行后端由调用方显式指定。
-原 Ruiyan + Franka 数采入口和 12 维动作语义保留。
+正式遥操作与采集使用 ``examples/embodiment/collect_real_data.py`` 和现有
+RealWorld 环境，参见 :doc:`franka_dexhand`。原 Ruiyan + Franka 的
+12 维动作与接管语义保留；Wuji 的完整 RealWorld 集成尚未完成。

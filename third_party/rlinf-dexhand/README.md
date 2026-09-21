@@ -64,7 +64,7 @@ python -m rlinf_dexhand.calibrate --config path/to/config.yaml \
 
 [RViz 测试说明](../../toolkits/dexhand/README.md)提供独立脚本，仅用于验证重定向。测试通过后可移除该工具目录，第三方库不依赖它。
 
-RLinf 的数采入口为 `examples/embodiment/collect_hand_data.py`；环境、episode 写入和回放位于 `rlinf/envs/dexhand/`。执行后端由 RLinf 调用方显式提供。RViz 是可选测试后端，不是库内置的执行路径，也不会冒充真机反馈。
+正式遥操作与采集沿用 `examples/embodiment/collect_real_data.py` 和现有 RealWorld 环境。RViz 仅用于实时可视化，不提供采集、文件回放或硬件反馈接口。Wuji 的完整 RealWorld 集成尚未完成。
 
 ```bash
 bash requirements/install.sh dexhand test

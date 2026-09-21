@@ -1,12 +1,15 @@
-手套重定向与独立验证
-====================
+Glove Retargeting and Live Visualization
+========================================
 
-第三方库只负责手套读取、姿态转换和 retargeting，不包含数采记录或 RViz 通信。
-安装与算法调用说明见仓库 ``third_party/rlinf-dexhand/README.md``。
+The third-party library provides glove acquisition, pose conversion, retargeting,
+and low-level device drivers. See ``third_party/rlinf-dexhand/README.md`` for
+installation and algorithm usage.
 
-独立 RViz 测试脚本与中文运行说明见 ``toolkits/dexhand/README.md``。
-验证完成后可移除该工具目录，不影响第三方库。
+See ``toolkits/dexhand/README.md`` for live RViz debugging. This tool only displays
+retargeting targets. It does not collect episodes or replay files, and display
+acknowledgements do not represent hardware feedback.
 
-数采由 RLinf 的 ``examples/embodiment/collect_hand_data.py`` 独立执行，
-记录与回放实现在 ``rlinf/envs/dexhand/``；执行后端由调用方显式指定。
-原 Ruiyan + Franka 数采入口和 12 维动作语义保留。
+Use ``examples/embodiment/collect_real_data.py`` and the existing RealWorld
+environment for teleoperation and collection; see :doc:`franka_dexhand`.
+The existing Ruiyan + Franka 12-dimensional actions and intervention semantics
+are preserved. Full Wuji integration into RealWorld is not yet implemented.
