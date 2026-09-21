@@ -1,0 +1,85 @@
+defaults:
+  - env/realworld_dex_pnp@env.eval
+  - override hydra/job_logging: stdout
+  - _self_
+
+hydra:
+  run:
+    dir: .
+  output_subdir: null
+  searchpath:
+    - file://${oc.env:EMBODIED_PATH}/config/
+
+cluster:
+  # Run collection on the control node (RLINF_NODE_RANK=0).
+  num_nodes: 1
+  component_placement:
+    env:
+      node_group: franka
+      placement: 0
+  node_groups:
+    - label: franka
+      node_ranks: 0
+      hardware:
+        type: Franka
+        configs:
+          - robot_ip: 172.17.0.2
+            node_rank: 0
+
+runner:
+  task_type: embodied
+  logger:
+    log_path: null
+    project_name: rlinf
+    experiment_name: "collect-ruiyan-dexhand-data"
+    logger_backends: ["tensorboard"] # wandb, swanlab
+  num_data_episodes: 20
+  record_task_description: False
+
+env:
+  group_name: "EnvGroup"
+  eval:
+    ignore_terminations: False
+    auto_reset: False
+    no_gripper: False
+    use_spacemouse: True
+    max_episode_steps: 10000
+    retargeting:
+      type: channel_linear
+    glove_config:
+      type: psiglove_1
+      left_port: /dev/ttyACM1
+      frequency: 30
+    override_cfg:
+      enable_camera_player: false
+      enable_random_reset: false
+      # Reconnect both original cameras on the control node before collection.
+      camera_serials: ["323622272844", "105322251046"]
+      camera_names:
+        "323622272844": wrist_1
+        "105322251046": global
+      # Optional per-camera crop regions keyed by RealSense serial number.
+      # camera_crop_regions:
+      #   "SERIAL1": [0.4, 0.3, 0.85, 0.7]
+      # Reuse the target pose from realworld_collect_ruiyan_local.yaml.
+      target_ee_pose: [0.60457839, 0.07754503, 0.41075155, 2.92728781, -0.15971884, 0.50731014]
+      end_effector_type: "ruiyan_hand"
+      end_effector_config:
+        port: /dev/ttyUSB0
+        baudrate: 460800
+        motor_ids: [1, 2, 3, 4, 5, 6]
+        default_velocity: 2000
+        default_current: 800
+        default_state: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+      hand_target_state: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+      hand_reset_state: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+      hand_action_scale: 1.0
+      joint_reset_qpos: [0, 0, 0, -1.9, 0, 2, 0]
+      success_hold_steps: 1  # define how many consecutive steps the robot must hold the position to succeed
+    data_collection:
+      enabled: True
+      save_dir: ${runner.logger.log_path}/collected_data
+      export_format: "pickle"
+      only_success: True
+      robot_type: "panda"
+      fps: 10
