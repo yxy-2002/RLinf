@@ -35,6 +35,10 @@ def crc16(data):
     return value
 
 
+class GloveFrameError(ValueError):
+    """A response has an invalid length, header, or checksum."""
+
+
 class PSIGloveDriver:
     def __init__(self, glove_type, side, port, baudrate=115200, timeout=0.3):
         if side not in ("left", "right"):
@@ -62,11 +66,11 @@ class PSIGloveDriver:
     def parse_frame(self, data):
         n = len(self.names)
         if len(data) != 5 + 2 * n or data[:3] != bytes((1, 3, 2 * n)):
-            raise ValueError(
+            raise GloveFrameError(
                 f"{self.glove_type} requires {n} channels; incompatible or truncated frame"
             )
         if crc16(data[:-2]) != int.from_bytes(data[-2:], "little"):
-            raise ValueError("Glove CRC mismatch")
+            raise GloveFrameError("Glove CRC mismatch")
         adc = struct.unpack(">" + "H" * n, data[3:-2])
         self.sequence += 1
         return GloveSample(
@@ -77,11 +81,19 @@ class PSIGloveDriver:
         if self.serial is None:
             raise RuntimeError("Driver not started")
         body = struct.pack(">BBHH", 1, 3, 1, len(self.names))
-        self.serial.write(body + crc16(body).to_bytes(2, "little"))
-        header = self.serial.read(3)
-        if len(header) != 3:
-            raise TimeoutError("No complete glove header")
-        return self.parse_frame(header + self.serial.read(header[2] + 2))
+        try:
+            self.serial.write(body + crc16(body).to_bytes(2, "little"))
+            header = self.serial.read(3)
+            if len(header) != 3:
+                raise TimeoutError("No complete glove header")
+            if header != bytes((1, 3, 2 * len(self.names))):
+                raise GloveFrameError(f"Unexpected glove header: {header.hex(' ')}")
+            return self.parse_frame(header + self.serial.read(header[2] + 2))
+        except (TimeoutError, GloveFrameError):
+            # Drop partial/invalid responses before the next bounded query.
+            # A serial failure here remains fatal; no automatic reconnect.
+            self.serial.reset_input_buffer()
+            raise
 
     def close(self):
         if self.serial is not None:

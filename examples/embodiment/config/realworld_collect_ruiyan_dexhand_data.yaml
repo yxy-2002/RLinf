@@ -48,7 +48,7 @@ env:
       type: channel_linear
     glove_config:
       type: psiglove_1
-      left_port: /dev/ttyACM1
+      left_port: /dev/ttyACM0
       frequency: 30
     override_cfg:
       enable_camera_player: false
@@ -63,6 +63,9 @@ env:
       #   "SERIAL1": [0.4, 0.3, 0.85, 0.7]
       # Reuse the target pose from realworld_collect_ruiyan_local.yaml.
       target_ee_pose: [0.60457839, 0.07754503, 0.41075155, 2.92728781, -0.15971884, 0.50731014]
+      ee_pose_limit_min_offset: [-0.20, -0.2, -0.2, -0.003, -0.003, -0.003]
+      ee_pose_limit_max_offset: [0.2, 0.2, 0.2, 0.003, 0.003, 0.003]
+      action_scale: [0.07, 0.5, 1.0]
       end_effector_type: "ruiyan_hand"
       end_effector_config:
         port: /dev/ttyUSB0

@@ -72,3 +72,39 @@ PYTHONPATH=. python -m pytest -q third_party/rlinf-dexhand/tests tests/dexhand
 ```
 
 库内测试覆盖协议、映射、兼容接口和数值等价性；RLinf 测试覆盖记录与测试通信。Wuji 数值测试需要可选数学依赖及原工作区，具体位置见 `tests/test_wuji_reference.py`。历史持续运行结果及其验证范围见 [VALIDATION.md](VALIDATION.md)。
+
+## PSI1 数采丢帧回退
+
+Franka + 睿研数采使用的 `rlinf_dexhand.glove.GloveExpert` 默认容忍读取超时、
+截断帧、错误帧头和 CRC 错误：丢弃坏帧、清理残留接收数据，保留最近一次有效
+`HandTarget` 并继续查询。坏帧不会进入重定向或滤波器。缓存的 `sequence` 和
+`timestamp` 保持原值；即使超过 0.5 秒也不会仅因缓存过期而退出。
+
+```python
+from rlinf_dexhand.glove import GloveExpert
+
+expert = GloveExpert(
+    left_port="/dev/ttyACM0",
+    startup_timeout=3.0,
+    warning_interval=5.0,
+)
+try:
+    target = expert.get_target()
+finally:
+    expert.close()
+```
+
+`get_target()` 在首次无数据时最多等待 `startup_timeout` 秒，仍无有效数据就报错，
+不会补零。`startup_timeout` 和 `warning_interval` 是有限正数，仅通过 Python
+接口配置，未增加 RLinf YAML 透传。首次异常立即 warning，后续告警最多每
+`warning_interval` 秒一次，包含串口、异常、连续失败次数、缓存年龄和回退状态；
+恢复有效采样时输出一次 info（需调用方启用 INFO 日志）。
+
+有缓存后的持续丢帧会无限期回退，因此数采继续并不表示手套信号已恢复。
+原有遥操作基准和映射保持不变，恢复后的新数据可能相对于旧基准产生目标变化。
+串口打开失败、设备断开、清理串口失败和映射程序异常仍会明确报错；不自动重连 USB。
+`TeleopPipeline.read()` 及直接调用 `PSIGloveDriver.read()` 仍会将读取异常交给调用方；
+回退策略仅在 `GloveExpert` 中实现。帧格式错误使用 `GloveFrameError(ValueError)`，
+原有捕获 `ValueError` 的调用保持兼容。
+
+修改 editable 源码后重新启动数采进程即可生效；已运行的 worker 不会热加载。

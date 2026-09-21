@@ -137,6 +137,37 @@ serial 是 ``wrist_1``，第二个 serial 是 ``wrist_2``，不会按序列号�
 如果你把某个相机命名成 ``global``，记得同时把任务 YAML 中的
 ``main_image_key`` 改成 ``global``。
 
+配置机械臂运动
+~~~~~~~~~~~~~~~~~~~~
+
+在 ``examples/embodiment/config/env/realworld_dex_pnp.yaml`` 中设置 Dexpnp
+任务默认值。该文件包含动作缩放、位姿偏移、奖励阈值、控制频率以及
+``compliance_param`` / ``precision_param`` 控制器参数字典。
+数采时通过 ``env.eval.override_cfg`` 覆盖单个参数，训练时使用
+``env.train.override_cfg``。下面的示例保留默认值：
+
+.. code-block:: yaml
+
+   env:
+     eval:
+       override_cfg:
+         action_scale: [0.03, 0.5, 1.0]
+         step_frequency: 5.0
+         reset_ee_pose_offset: [0.0, 0.0, 0.05, 0.0, 0.0, 0.0]
+         ee_pose_limit_min_offset: [-0.02, -0.02, -0.02, -0.003, -0.003, -0.003]
+         ee_pose_limit_max_offset: [0.02, 0.02, 0.1, 0.003, 0.003, 0.003]
+
+位姿向量顺序为 ``[x, y, z, roll, pitch, yaw]``，单位为米和弧度。
+Python 将偏移加到 ``target_ee_pose`` 上。也可以指定绝对值
+``reset_ee_pose``、``ee_pose_limit_min`` 或 ``ee_pose_limit_max``；
+每个绝对值优先于对应的偏移。直接通过 Python 创建 ``DexpnpConfig`` 时，
+必须提供这些绝对值或加载 YAML 中的偏移。
+
+``action_scale`` 依次表示每步每单位动作的平移缩放、旋转缩放和夹爪缩放。
+睿研灵巧手指令使用 ``hand_action_scale``。
+默认姿态窗口仅为 ±0.003 弧度，较大的旋转指令会被裁剪到该窗口内。
+``step_frequency`` 限制环境步频；提高数采 ``fps`` 不会提高这一上限。
+
 运行
 ----------------------------------------
 

@@ -80,6 +80,16 @@ def test_relative_press_release_and_policy_fallback():
     w._glove.values[:] = 0.3
     moved, _ = w.action(np.ones(12))
     np.testing.assert_allclose(moved[6:], [0.5] * 6)
+    # A retained glove sample must not accumulate hand motion across steps.
+    for _ in range(20):
+        held_sample, _ = w.action(np.ones(12))
+        np.testing.assert_allclose(held_sample[6:], [0.5] * 6)
+    # Fresh data resumes the existing press-relative mapping without rebasing.
+    w._glove.values[:] = 0.4
+    recovered, _ = w.action(np.ones(12))
+    np.testing.assert_allclose(recovered[6:], [0.6] * 6)
+    w._glove.values[:] = 0.3
+    w.action(np.ones(12))
     w._spacemouse.buttons = [0, 0]
     w._glove.values[:] = 0.9
     w._last_intervene = 0

@@ -22,3 +22,56 @@ video_cfg:
 init_params:
   id: "DexpnpEnv-v1"
   num_envs: null
+
+# Task defaults; override under env.train/eval.override_cfg in your experiment.
+# Pose vectors: [x, y, z, roll, pitch, yaw], in meters and radians.
+# Offsets are added to target_ee_pose unless an absolute pose/limit is supplied.
+# action_scale: [translation per step, rotation per step, gripper scale].
+override_cfg:
+  target_ee_pose: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+  reward_threshold: [0.01, 0.01, 0.01, 0.2, 0.2, 0.2]
+  enable_random_reset: true
+  enable_gripper_penalty: false
+  step_frequency: 10.0
+  action_scale: [0.03, 0.5, 1.0]
+  compliance_param:
+    translational_stiffness: 1000
+    translational_damping: 89
+    rotational_stiffness: 150
+    rotational_damping: 7
+    translational_Ki: 0
+    translational_clip_x: 0.015
+    translational_clip_y: 0.015
+    translational_clip_z: 0.015
+    translational_clip_neg_x: 0.015
+    translational_clip_neg_y: 0.015
+    translational_clip_neg_z: 0.015
+    rotational_clip_x: 0.02
+    rotational_clip_y: 0.02
+    rotational_clip_z: 0.02
+    rotational_clip_neg_x: 0.02
+    rotational_clip_neg_y: 0.02
+    rotational_clip_neg_z: 0.02
+    rotational_Ki: 0
+  precision_param:
+    translational_stiffness: 3000
+    translational_damping: 89
+    rotational_stiffness: 300
+    rotational_damping: 9
+    translational_Ki: 0.1
+    translational_clip_x: 0.01
+    translational_clip_y: 0.01
+    translational_clip_z: 0.01
+    translational_clip_neg_x: 0.01
+    translational_clip_neg_y: 0.01
+    translational_clip_neg_z: 0.01
+    rotational_clip_x: 0.05
+    rotational_clip_y: 0.05
+    rotational_clip_z: 0.05
+    rotational_clip_neg_x: 0.05
+    rotational_clip_neg_y: 0.05
+    rotational_clip_neg_z: 0.05
+    rotational_Ki: 0.1
+  reset_ee_pose_offset: [0, 0, 0.05, 0, 0, 0]
+  ee_pose_limit_min_offset: [-0.0, -0.02, -0.02, -0.003, -0.003, -0.003]
+  ee_pose_limit_max_offset: [0.02, 0.02, 0.1, 0.003, 0.003, 0.003]

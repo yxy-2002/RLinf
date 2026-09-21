@@ -14,7 +14,7 @@
 
 import copy
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 import numpy as np
 
@@ -23,69 +23,55 @@ from ..franka_env import FrankaEnv, FrankaRobotConfig
 
 @dataclass
 class DexpnpConfig(FrankaRobotConfig):
-    target_ee_pose: np.ndarray = field(default_factory=lambda: np.zeros(6))
-    reward_threshold: np.ndarray = field(
-        default_factory=lambda: np.array([0.01, 0.01, 0.01, 0.2, 0.2, 0.2])
-    )
-    enable_random_reset: bool = True
-    enable_gripper_penalty: bool = False
-    step_frequency: float = 5.0
+    """Resolve task poses from the defaults in env/realworld_dex_pnp.yaml.
 
-    def __post_init__(self):
-        self.compliance_param = {
-            "translational_stiffness": 1000,
-            "translational_damping": 89,
-            "rotational_stiffness": 150,
-            "rotational_damping": 7,
-            "translational_Ki": 0,
-            "translational_clip_x": 0.015,
-            "translational_clip_y": 0.015,
-            "translational_clip_z": 0.015,
-            "translational_clip_neg_x": 0.015,
-            "translational_clip_neg_y": 0.015,
-            "translational_clip_neg_z": 0.015,
-            "rotational_clip_x": 0.02,
-            "rotational_clip_y": 0.02,
-            "rotational_clip_z": 0.02,
-            "rotational_clip_neg_x": 0.02,
-            "rotational_clip_neg_y": 0.02,
-            "rotational_clip_neg_z": 0.02,
-            "rotational_Ki": 0,
-        }
-        self.precision_param = {
-            "translational_stiffness": 3000,
-            "translational_damping": 89,
-            "rotational_stiffness": 300,
-            "rotational_damping": 9,
-            "translational_Ki": 0.1,
-            "translational_clip_x": 0.01,
-            "translational_clip_y": 0.01,
-            "translational_clip_z": 0.01,
-            "translational_clip_neg_x": 0.01,
-            "translational_clip_neg_y": 0.01,
-            "translational_clip_neg_z": 0.01,
-            "rotational_clip_x": 0.05,
-            "rotational_clip_y": 0.05,
-            "rotational_clip_z": 0.05,
-            "rotational_clip_neg_x": 0.05,
-            "rotational_clip_neg_y": 0.05,
-            "rotational_clip_neg_z": 0.05,
-            "rotational_Ki": 0.1,
-        }
-        self.target_ee_pose = np.array(self.target_ee_pose)
-        self.reset_ee_pose = self.target_ee_pose + np.array(
-            [0.0, 0.0, 0.05, 0.0, 0.0, 0.0]
-        )
-        self.reward_threshold = np.array(self.reward_threshold)
-        self.action_scale = np.array([0.03, 0.5, 1])
-        self.ee_pose_limit_min = self.target_ee_pose - np.array(
-            [0.02, 0.02, 0.02, 0.003, 0.003, 0.003]
-        )
-        self.ee_pose_limit_max = self.target_ee_pose + np.array(
-            [0.02, 0.02, 0.1, 0.003, 0.003, 0.003]
-        )
-        self.hand_target_state = np.array(self.hand_target_state)
-        self.hand_reset_state = np.array(self.hand_reset_state)
+    Explicit absolute poses take precedence over offsets from target_ee_pose.
+    Direct callers must supply either an absolute value or its YAML offset.
+    """
+
+    reset_ee_pose: np.ndarray | None = None
+    ee_pose_limit_min: np.ndarray | None = None
+    ee_pose_limit_max: np.ndarray | None = None
+    reset_ee_pose_offset: list[float] | None = None
+    ee_pose_limit_min_offset: list[float] | None = None
+    ee_pose_limit_max_offset: list[float] | None = None
+
+    def __post_init__(self) -> None:
+        """Resolve relative poses without replacing explicit task settings."""
+        target = self._pose_vector("target_ee_pose", self.target_ee_pose)
+        for name in ("reset_ee_pose", "ee_pose_limit_min", "ee_pose_limit_max"):
+            value = getattr(self, name)
+            if value is None:
+                offset_name = f"{name}_offset"
+                offset = getattr(self, offset_name)
+                if offset is None:
+                    raise ValueError(
+                        f"DexpnpConfig requires {name} or {offset_name}; "
+                        "load env/realworld_dex_pnp.yaml task defaults."
+                    )
+                value = target + self._pose_vector(offset_name, offset)
+            setattr(self, name, self._pose_vector(name, value))
+        super().__post_init__()
+        if np.any(self.ee_pose_limit_min > self.ee_pose_limit_max):
+            raise ValueError("ee_pose_limit_min must not exceed ee_pose_limit_max")
+        if (
+            self.action_scale.shape != (3,)
+            or not np.all(np.isfinite(self.action_scale))
+            or np.any(self.action_scale < 0)
+        ):
+            raise ValueError(
+                "action_scale must contain three finite nonnegative values"
+            )
+        if not np.isfinite(self.step_frequency) or self.step_frequency <= 0:
+            raise ValueError("step_frequency must be finite and positive")
+
+    @staticmethod
+    def _pose_vector(name: str, value: np.ndarray | list[float]) -> np.ndarray:
+        """Validate a Cartesian position and XYZ Euler-angle vector."""
+        vector = np.asarray(value, dtype=np.float64)
+        if vector.shape != (6,) or not np.all(np.isfinite(vector)):
+            raise ValueError(f"{name} must contain six finite values")
+        return vector
 
 
 class DexpnpEnv(FrankaEnv):

@@ -138,6 +138,39 @@ not affected. Without ``camera_names``, default names follow the
 If you rename a camera to ``global``, update ``main_image_key`` to ``global``
 in the task YAML as well.
 
+Configure Arm Motion
+~~~~~~~~~~~~~~~~~~~~
+
+Set Dexpnp task defaults in
+``examples/embodiment/config/env/realworld_dex_pnp.yaml``. This file contains
+motion scales, pose offsets, reward thresholds, control frequency, and the
+``compliance_param`` / ``precision_param`` controller dictionaries.
+Override individual values under ``env.eval.override_cfg`` for collection or
+``env.train.override_cfg`` for training. The following example retains the defaults:
+
+.. code-block:: yaml
+
+   env:
+     eval:
+       override_cfg:
+         action_scale: [0.03, 0.5, 1.0]
+         step_frequency: 5.0
+         reset_ee_pose_offset: [0.0, 0.0, 0.05, 0.0, 0.0, 0.0]
+         ee_pose_limit_min_offset: [-0.02, -0.02, -0.02, -0.003, -0.003, -0.003]
+         ee_pose_limit_max_offset: [0.02, 0.02, 0.1, 0.003, 0.003, 0.003]
+
+Pose vectors use ``[x, y, z, roll, pitch, yaw]`` in meters and radians.
+Offsets are added to ``target_ee_pose`` in Python. You can instead set absolute
+``reset_ee_pose``, ``ee_pose_limit_min``, or ``ee_pose_limit_max``; each absolute
+value takes precedence over its corresponding offset. Direct Python callers of
+``DexpnpConfig`` must supply those absolute values or load the YAML offsets.
+
+``action_scale`` contains translation and rotation per unit action per step,
+followed by the gripper scale. Ruiyan hand commands use ``hand_action_scale``.
+The default orientation window is only ±0.003 radians, so larger rotation
+commands are clipped to that window. ``step_frequency`` limits environment
+steps; setting collection ``fps`` higher does not increase this limit.
+
 Run It
 ------
 
