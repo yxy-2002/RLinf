@@ -138,6 +138,11 @@ not affected. Without ``camera_names``, default names follow the
 If you rename a camera to ``global``, update ``main_image_key`` to ``global``
 in the task YAML as well.
 
+If a camera stops producing frames, the environment waits five seconds,
+closes all configured cameras, and reopens them before retrying capture.
+This prevents reopening a device still held by another camera instance.
+It does not resolve the underlying cause of a camera or host freeze.
+
 Configure Arm Motion
 ~~~~~~~~~~~~~~~~~~~~
 
@@ -170,6 +175,10 @@ followed by the gripper scale. Ruiyan hand commands use ``hand_action_scale``.
 The default orientation window is only ±0.003 radians, so larger rotation
 commands are clipped to that window. ``step_frequency`` limits environment
 steps; setting collection ``fps`` higher does not increase this limit.
+
+With ``enable_random_reset: false``, normal resets move directly to
+``target_ee_pose + reset_ee_pose_offset`` unless an absolute ``reset_ee_pose``
+is supplied. The previous 3 cm + 2 cm clearance lift and its waits are disabled.
 
 Run It
 ------

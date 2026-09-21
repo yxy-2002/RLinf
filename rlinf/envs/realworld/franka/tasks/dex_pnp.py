@@ -12,8 +12,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import copy
-import time
 from dataclasses import dataclass
 
 import numpy as np
@@ -82,10 +80,7 @@ class DexpnpEnv(FrankaEnv):
         return "pick up the toy and place it onto the plate"
 
     def go_to_rest(self, joint_reset=False):
-        """
-        Move to the rest position defined in base class.
-        Add a small z offset before going to rest to avoid collision with object.
-        """
+        """Move directly to the configured rest pose without a clearance lift."""
         if self._is_hand:
             self._end_effector_action(self.config.hand_reset_state)
         else:
@@ -93,14 +88,14 @@ class DexpnpEnv(FrankaEnv):
         self._franka_state = self._controller.get_state().wait()[0]
         self._move_action(self._franka_state.tcp_pose)
 
-        self._franka_state = self._controller.get_state().wait()[0]
-        # Move up to clear the slot
-        reset_pose = copy.deepcopy(self._franka_state.tcp_pose)
-        reset_pose[2] += 0.03
-        time.sleep(5)
-        self._interpolate_move(reset_pose, timeout=1)
-        time.sleep(2)
-        reset_pose[2] += 0.02
-        self._interpolate_move(reset_pose, timeout=1)
+        # Clearance lift disabled: return directly to the configured rest pose.
+        # self._franka_state = self._controller.get_state().wait()[0]
+        # reset_pose = self._franka_state.tcp_pose.copy()
+        # reset_pose[2] += 0.03
+        # time.sleep(5)
+        # self._interpolate_move(reset_pose, timeout=1)
+        # time.sleep(2)
+        # reset_pose[2] += 0.02
+        # self._interpolate_move(reset_pose, timeout=1)
 
         super().go_to_rest(joint_reset)

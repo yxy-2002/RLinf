@@ -776,7 +776,9 @@ class FrankaEnv(gym.Env):
                     f"Camera {camera._camera_info.name} is not producing frames. Wait 5 seconds and try again."
                 )
                 time.sleep(5)
-                camera.close()
+                # Reopening creates every configured camera, so release all
+                # existing devices first, including cameras still streaming.
+                self._close_cameras()
                 self._open_cameras()
                 return self._get_camera_frames()
 
