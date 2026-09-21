@@ -95,14 +95,29 @@ class _SerialLink:
 
         frame = struct.pack(
             "<B B B 2B 3H 1B",
-            0xA5, motor_id, 0x00, 0x08, instruction,
-            position, velocity, current, 0x00,
+            0xA5,
+            motor_id,
+            0x00,
+            0x08,
+            instruction,
+            position,
+            velocity,
+            current,
+            0x00,
         )
         checksum = sum(frame) & 0xFF
         frame = struct.pack(
             "<B B B 2B 3H 1B 1B",
-            0xA5, motor_id, 0x00, 0x08, instruction,
-            position, velocity, current, 0x00, checksum,
+            0xA5,
+            motor_id,
+            0x00,
+            0x08,
+            instruction,
+            position,
+            velocity,
+            current,
+            0x00,
+            checksum,
         )
         self._serial.write(frame)
 
@@ -165,11 +180,11 @@ class RuiyanHandDriver:
     _POS_RAW_SCALE = 4096  # raw → normalised: pos / 4095
     FINGER_NAMES = [
         "thumb_rotation",  # thumb rotation
-        "thumb_bend",      # thumb bend
-        "index",           # index finger
-        "middle",          # middle finger
-        "ring",            # ring finger
-        "pinky",           # pinky finger
+        "thumb_bend",  # thumb bend
+        "index",  # index finger
+        "middle",  # middle finger
+        "ring",  # ring finger
+        "pinky",  # pinky finger
     ]
 
     def __init__(
@@ -211,14 +226,11 @@ class RuiyanHandDriver:
 
     def initialize(self) -> None:
         """Open the serial port and start the background control loop."""
-        self._link = _SerialLink(
-            port=self._port, baudrate=self._baudrate
-        )
+        self._link = _SerialLink(port=self._port, baudrate=self._baudrate)
         self._link.connect()
         self._start_loop()
         logger.info(
-            f"RuiyanHandDriver initialised on {self._port} "
-            f"(baudrate={self._baudrate})."
+            f"RuiyanHandDriver initialised on {self._port} (baudrate={self._baudrate})."
         )
 
     def shutdown(self) -> None:
@@ -243,7 +255,8 @@ class RuiyanHandDriver:
         with self._lock:
             return {
                 "feedback_timestamp": self._feedback_timestamp,
-                "feedback_valid": self._feedback_timestamp > 0 and time.time() - self._feedback_timestamp <= 0.5,
+                "feedback_valid": self._feedback_timestamp > 0
+                and time.time() - self._feedback_timestamp <= 0.5,
                 "finger_names": list(self.FINGER_NAMES),
                 "positions": self._current_positions.copy().tolist(),
                 "velocities": self._current_velocities.copy().tolist(),
@@ -343,18 +356,10 @@ class RuiyanHandDriver:
         if all(p is not None for p in positions):
             with self._lock:
                 self._feedback_timestamp = time.time()
-                self._current_positions = np.array(
-                    positions, dtype=np.float64
-                )
-                self._current_velocities = np.array(
-                    velocities, dtype=np.float64
-                )
-                self._current_currents = np.array(
-                    currents, dtype=np.float64
-                )
-                self._current_statuses = np.array(
-                    statuses, dtype=np.int32
-                )
+                self._current_positions = np.array(positions, dtype=np.float64)
+                self._current_velocities = np.array(velocities, dtype=np.float64)
+                self._current_currents = np.array(currents, dtype=np.float64)
+                self._current_statuses = np.array(statuses, dtype=np.int32)
 
     def _send_targets(self, targets: np.ndarray) -> None:
         """Write target positions to all motors."""

@@ -42,7 +42,7 @@ class AoyiHandDriver:
     NUM_DOFS = 6
 
     # Register address mapping (from Aoyi documentation)
-    _TARGET_REG_START = 1155   # Write: target positions for 6 fingers
+    _TARGET_REG_START = 1155  # Write: target positions for 6 fingers
     _CURRENT_REG_START = 1165  # Read:  current positions for 6 fingers
     _SELFTEST_REG = 1008
     _INIT_REG = 1013
@@ -91,9 +91,7 @@ class AoyiHandDriver:
             stopbits=1,
         )
         if not self._client.connect():
-            raise ConnectionError(
-                f"Failed to connect to Aoyi hand on {self._port}"
-            )
+            raise ConnectionError(f"Failed to connect to Aoyi hand on {self._port}")
         time.sleep(1.0)
 
         # Initialise the hand (self-test + zero calibration)
@@ -183,9 +181,7 @@ class AoyiHandDriver:
     def _write_register(self, address: int, value: int) -> bool:
         """Write a single holding register."""
         try:
-            result = self._client.write_register(
-                address, value, unit=self._node_id
-            )
+            result = self._client.write_register(address, value, unit=self._node_id)
             if result.isError():
                 logger.warning(f"Modbus write error at register {address}")
                 return False
@@ -194,9 +190,7 @@ class AoyiHandDriver:
             logger.warning(f"Modbus communication error: {e}")
             return False
 
-    def _batch_read_registers(
-        self, start: int, count: int, max_retries: int = 3
-    ):
+    def _batch_read_registers(self, start: int, count: int, max_retries: int = 3):
         """Batch-read registers with retry and fallback to single reads."""
         for attempt in range(max_retries):
             try:
@@ -221,13 +215,9 @@ class AoyiHandDriver:
     def _batch_write_registers(self, start: int, values: list[int]) -> bool:
         """Batch-write a contiguous block of holding registers."""
         try:
-            result = self._client.write_registers(
-                start, values, unit=self._node_id
-            )
+            result = self._client.write_registers(start, values, unit=self._node_id)
             if result.isError():
-                logger.warning(
-                    f"Modbus batch write error at register {start}"
-                )
+                logger.warning(f"Modbus batch write error at register {start}")
                 return False
             return True
         except Exception as e:

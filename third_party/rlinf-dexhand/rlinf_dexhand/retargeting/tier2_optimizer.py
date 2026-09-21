@@ -238,9 +238,6 @@ class Tier2Optimizer:
         ref_wrist_tip = torch.as_tensor(
             self._ref["wrist_tip"], dtype=torch.float64
         )  # (5,3)
-        ref_pinch = torch.as_tensor(
-            self._ref["thumb_primary"], dtype=torch.float64
-        )  # (4,3)
         ref_dip_tip = torch.as_tensor(
             self._ref["dip_tip"], dtype=torch.float64
         )  # (5,3)
