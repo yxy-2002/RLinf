@@ -32,6 +32,8 @@ from typing import Optional
 
 import numpy as np
 
+from .. import debug_trace as trace
+
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
@@ -95,25 +97,40 @@ class _SerialLink:
 
         frame = struct.pack(
             "<B B B 2B 3H 1B",
-            0xA5, motor_id, 0x00, 0x08, instruction,
-            position, velocity, current, 0x00,
+            0xA5,
+            motor_id,
+            0x00,
+            0x08,
+            instruction,
+            position,
+            velocity,
+            current,
+            0x00,
         )
         checksum = sum(frame) & 0xFF
         frame = struct.pack(
             "<B B B 2B 3H 1B 1B",
-            0xA5, motor_id, 0x00, 0x08, instruction,
-            position, velocity, current, 0x00, checksum,
+            0xA5,
+            motor_id,
+            0x00,
+            0x08,
+            instruction,
+            position,
+            velocity,
+            current,
+            0x00,
+            checksum,
         )
         self._serial.write(frame)
 
     def read_responses(self, num_motors: int) -> list[Optional[_FingerStatus]]:
         """Read ``num_motors`` response frames (13 bytes each)."""
         raw = self._serial.read(13 * num_motors)
-        if raw is None or len(raw) != 13 * num_motors:
+        if not raw:
             return [None] * num_motors
 
         results: list[Optional[_FingerStatus]] = []
-        for i in range(num_motors):
+        for i in range(len(raw) // 13):
             chunk = raw[i * 13 : (i + 1) * 13]
             parsed = self._parse_frame(chunk)
             results.append(parsed)
@@ -165,11 +182,11 @@ class RuiyanHandDriver:
     _POS_RAW_SCALE = 4096  # raw → normalised: pos / 4095
     FINGER_NAMES = [
         "thumb_rotation",  # thumb rotation
-        "thumb_bend",      # thumb bend
-        "index",           # index finger
-        "middle",          # middle finger
-        "ring",            # ring finger
-        "pinky",           # pinky finger
+        "thumb_bend",  # thumb bend
+        "index",  # index finger
+        "middle",  # middle finger
+        "ring",  # ring finger
+        "pinky",  # pinky finger
     ]
 
     def __init__(
@@ -198,7 +215,10 @@ class RuiyanHandDriver:
         self._lock = threading.Lock()
         self._target_positions = np.zeros(self.NUM_DOFS, dtype=np.float64)
         self._current_positions = np.zeros(self.NUM_DOFS, dtype=np.float64)
+        self._trace_command_id = None
         self._feedback_timestamp = 0.0
+        self._feedback_complete = False
+        self._missing_motor_ids = set(self._motor_ids)
         self._current_velocities = np.zeros(self.NUM_DOFS, dtype=np.float64)
         self._current_currents = np.zeros(self.NUM_DOFS, dtype=np.float64)
         self._current_statuses = np.zeros(self.NUM_DOFS, dtype=np.int32)
@@ -211,14 +231,11 @@ class RuiyanHandDriver:
 
     def initialize(self) -> None:
         """Open the serial port and start the background control loop."""
-        self._link = _SerialLink(
-            port=self._port, baudrate=self._baudrate
-        )
+        self._link = _SerialLink(port=self._port, baudrate=self._baudrate)
         self._link.connect()
         self._start_loop()
         logger.info(
-            f"RuiyanHandDriver initialised on {self._port} "
-            f"(baudrate={self._baudrate})."
+            f"RuiyanHandDriver initialised on {self._port} (baudrate={self._baudrate})."
         )
 
     def shutdown(self) -> None:
@@ -243,7 +260,10 @@ class RuiyanHandDriver:
         with self._lock:
             return {
                 "feedback_timestamp": self._feedback_timestamp,
-                "feedback_valid": self._feedback_timestamp > 0 and time.time() - self._feedback_timestamp <= 0.5,
+                "feedback_valid": self._feedback_complete
+                and self._feedback_timestamp > 0
+                and time.time() - self._feedback_timestamp <= 0.5,
+                "missing_motor_ids": sorted(self._missing_motor_ids),
                 "finger_names": list(self.FINGER_NAMES),
                 "positions": self._current_positions.copy().tolist(),
                 "velocities": self._current_velocities.copy().tolist(),
@@ -275,6 +295,13 @@ class RuiyanHandDriver:
         action = np.clip(np.asarray(action, dtype=np.float64), 0.0, 1.0)
         with self._lock:
             self._target_positions = action.copy()
+            self._trace_command_id = trace.current_command_id()
+            if trace.enabled():
+                trace.emit(
+                    "hand_buffer",
+                    command_id=self._trace_command_id,
+                    target=action.tolist(),
+                )
         return True
 
     def reset(self, target_state: np.ndarray | None = None) -> None:
@@ -317,44 +344,66 @@ class RuiyanHandDriver:
 
     def _poll_state(self) -> None:
         """Send current targets and read back motor states."""
+        begin_ns = time.monotonic_ns()
         with self._lock:
             targets = self._target_positions.copy()
+            command_id = self._trace_command_id
 
         self._send_targets(targets)
+        sent_ns = time.monotonic_ns()
         responses = self._link.read_responses(len(self._motor_ids))
+        if trace.enabled():
+            trace.emit(
+                "hand_io",
+                command_id=command_id,
+                start_ns=begin_ns,
+                sent_ns=sent_ns,
+                motor_ids=list(self._motor_ids),
+                target=targets.tolist(),
+                responses=[
+                    None
+                    if r is None
+                    else {
+                        "motor_id": r.motor_id,
+                        "position": r.position,
+                        "velocity": r.velocity,
+                        "current": r.current,
+                        "status": r.status,
+                    }
+                    for r in responses
+                ],
+            )
 
-        positions = []
-        velocities = []
-        currents = []
-        statuses = []
+        index_by_id = {motor_id: i for i, motor_id in enumerate(self._motor_ids)}
+        received = {}
         for resp in responses:
-            if resp is not None:
-                positions.append(resp.position / 4095.0)
-                velocities.append(float(resp.velocity))
-                currents.append(float(resp.current))
-                statuses.append(int(resp.status))
-            else:
-                positions.append(None)
-                velocities.append(None)
-                currents.append(None)
-                statuses.append(None)
+            if resp is None or resp.motor_id not in index_by_id:
+                continue
+            try:
+                position = float(resp.position) / 4095.0
+            except (TypeError, ValueError):
+                continue
+            if not np.isfinite(position):
+                continue
+            # Match infra: the last valid response for a repeated ID wins.
+            received[resp.motor_id] = (position, resp)
 
-        # Only update if we got valid readings for all motors
-        if all(p is not None for p in positions):
-            with self._lock:
-                self._feedback_timestamp = time.time()
-                self._current_positions = np.array(
-                    positions, dtype=np.float64
-                )
-                self._current_velocities = np.array(
-                    velocities, dtype=np.float64
-                )
-                self._current_currents = np.array(
-                    currents, dtype=np.float64
-                )
-                self._current_statuses = np.array(
-                    statuses, dtype=np.int32
-                )
+        with self._lock:
+            self._missing_motor_ids = set(self._motor_ids) - received.keys()
+            self._feedback_complete = not self._missing_motor_ids
+            if not received:
+                return
+            # Preserve missing positions; missing velocity/current default to zero
+            # as in infra's read_joint_state(). Never use arrival order as joint order.
+            self._current_velocities.fill(0)
+            self._current_currents.fill(0)
+            for motor_id, (position, resp) in received.items():
+                index = index_by_id[motor_id]
+                self._current_positions[index] = position
+                self._current_velocities[index] = float(resp.velocity)
+                self._current_currents[index] = float(resp.current)
+                self._current_statuses[index] = int(resp.status)
+            self._feedback_timestamp = time.time()
 
     def _send_targets(self, targets: np.ndarray) -> None:
         """Write target positions to all motors."""

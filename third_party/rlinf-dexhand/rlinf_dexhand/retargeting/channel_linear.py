@@ -10,6 +10,7 @@ from types import SimpleNamespace
 import numpy as np
 import yaml
 
+from .. import debug_trace as trace
 from ..glove.psi_glove_driver.controller import PSIGloveJointType
 from ..types import HandSpec, HandTarget
 
@@ -69,6 +70,7 @@ class ChannelLinear:
             or len(sample.adc) != 21
         ):
             raise ValueError("channel_linear requires matching psiglove_1 sample")
+        self._trace_seq = sample.sequence
         values = self.update_values(sample.adc)
         self.spec.validate(values)
         return HandTarget(self.spec, tuple(values), sample.sequence, sample.timestamp)
@@ -176,11 +178,23 @@ class ChannelLinear:
             ),
         ]
 
+        before_filter = list(positions) if trace.enabled() else None
         # Apply low-pass filter
         positions = self.hand_low_pass_filters[hand_type].filter(positions)
 
+        after_limit = list(positions) if trace.enabled() else None
         # Append to queue and compute average (additional smoothing)
         self.hand_joint_position_queues[hand_type].append(positions)
         positions = np.mean(self.hand_joint_position_queues[hand_type], axis=0).tolist()
 
+        if trace.enabled():
+            trace.emit(
+                "glove_filter",
+                glove_seq=getattr(self, "_trace_seq", None),
+                before=before_filter,
+                limited=after_limit,
+                smoothed=positions,
+                window_size=10,
+                delta_limit=0.1,
+            )
         return positions

@@ -30,6 +30,7 @@ from rlinf.scheduler import (
     FrankaHWInfo,
     WorkerInfo,
 )
+from rlinf.utils import teleop_trace as trace
 from rlinf.utils.logging import get_logger
 
 from .end_effectors.base import EndEffectorType, normalize_end_effector_type
@@ -753,7 +754,14 @@ class FrankaEnv(gym.Env):
         display_frames = {}
         for camera in self._cameras:
             try:
+                begin_ns = time.monotonic_ns()
                 frame = camera.get_frame()
+                trace.emit(
+                    "camera_frame",
+                    command_id=getattr(self, "_debug_command_id", None),
+                    camera=camera._camera_info.name,
+                    start_ns=begin_ns,
+                )
                 reshape_size = self.observation_space["frames"][
                     camera._camera_info.name
                 ].shape[:2][::-1]
@@ -772,6 +780,12 @@ class FrankaEnv(gym.Env):
                     cropped_frame  # Non-resized version
                 )
             except queue.Empty:
+                trace.emit(
+                    "camera_timeout",
+                    command_id=getattr(self, "_debug_command_id", None),
+                    camera=camera._camera_info.name,
+                    start_ns=begin_ns,
+                )
                 self._logger.warning(
                     f"Camera {camera._camera_info.name} is not producing frames. Wait 5 seconds and try again."
                 )
@@ -850,7 +864,18 @@ class FrankaEnv(gym.Env):
                 max_d = self.config.hand_max_delta_per_step
                 scaled = self._last_hand_command + np.clip(delta, -max_d, max_d)
             self._last_hand_command = scaled.copy()
-            self._controller.command_end_effector(scaled).wait()
+            if trace.enabled():
+                command_id = getattr(self, "_debug_command_id", None)
+                begin_ns = time.monotonic_ns()
+                trace.emit(
+                    "hand_rpc_start", command_id=command_id, target=scaled.tolist()
+                )
+                self._controller.command_end_effector(
+                    scaled, trace_id=command_id
+                ).wait()
+                trace.emit("hand_rpc_end", command_id=command_id, start_ns=begin_ns)
+            else:
+                self._controller.command_end_effector(scaled).wait()
             return True
 
     def _interpolate_move(self, pose: np.ndarray, timeout: float = 1.5):
@@ -873,7 +898,13 @@ class FrankaEnv(gym.Env):
     def _move_action(self, position: np.ndarray):
         if not self.config.is_dummy:
             self._clear_error()
+            begin_ns = time.monotonic_ns()
             self._controller.move_arm(position.astype(np.float32)).wait()
+            trace.emit(
+                "arm_rpc",
+                command_id=getattr(self, "_debug_command_id", None),
+                start_ns=begin_ns,
+            )
         else:
             print(f"Executing dummy action towards {position=}.")
 

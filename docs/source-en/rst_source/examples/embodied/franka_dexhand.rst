@@ -91,6 +91,10 @@ Dexterous-hand teleoperation uses:
 - a data glove for 6-D finger control
 - the SpaceMouse left button to enable relative glove control
 
+For opt-in local timing logs and the matching Franka infra event schema, see
+``toolkits/realworld_check/TELEOP_TRACE.md`` in the repository. Set the trace
+environment variables before starting Ray; logging is disabled by default.
+
 Reward Model
 ------------
 

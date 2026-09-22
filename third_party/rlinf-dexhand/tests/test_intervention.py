@@ -5,12 +5,14 @@
 
 import ast
 import time
+import uuid
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Optional
 
 import gymnasium as gym
 import numpy as np
+from rlinf_dexhand import debug_trace as trace
 from rlinf_dexhand.retargeting.channel_linear import ChannelLinear
 from rlinf_dexhand.types import HandTarget
 
@@ -57,6 +59,8 @@ def test_relative_press_release_and_policy_fallback():
     cls = next(n for n in ast.parse(source).body if isinstance(n, ast.ClassDef))
     ns = {
         "gym": gym,
+        "trace": trace,
+        "uuid": uuid,
         "np": np,
         "time": time,
         "Optional": Optional,

@@ -17,6 +17,7 @@
 from __future__ import annotations
 
 import time
+import uuid
 from typing import Optional
 
 import gymnasium as gym
@@ -24,6 +25,7 @@ import numpy as np
 
 from rlinf.envs.realworld.common.glove.glove_expert import GloveExpert
 from rlinf.envs.realworld.common.spacemouse.spacemouse_expert import SpaceMouseExpert
+from rlinf.utils import teleop_trace as trace
 
 
 class DexHandIntervention(gym.ActionWrapper):
@@ -88,7 +90,8 @@ class DexHandIntervention(gym.ActionWrapper):
         if self.left or self.right:
             self._last_intervene = time.time()
 
-        glove_raw = np.asarray(self._glove.get_target().values, dtype=np.float64)
+        glove_target = self._glove.get_target()
+        glove_raw = np.asarray(glove_target.values, dtype=np.float64)
 
         if self.left:
             if not self._prev_left:
@@ -104,6 +107,22 @@ class DexHandIntervention(gym.ActionWrapper):
 
         self._prev_left = self.left
 
+        if trace.enabled():
+            self.env.unwrapped._debug_command_id = uuid.uuid4().hex
+            trace.emit(
+                "teleop_target",
+                command_id=self.env.unwrapped._debug_command_id,
+                glove_seq=glove_target.sequence,
+                glove_age_s=time.time() - glove_target.timestamp,
+                glove=glove_raw.tolist(),
+                baseline=None
+                if self._glove_baseline is None
+                else self._glove_baseline.tolist(),
+                hand_target=hand_target.tolist(),
+                arm_action=arm_expert.tolist(),
+                pressed=self.left,
+            )
+
         expert_action = np.concatenate([arm_expert, hand_target])
 
         if time.time() - self._last_intervene < self._timeout:
@@ -114,9 +133,17 @@ class DexHandIntervention(gym.ActionWrapper):
         return fallback, False
 
     def step(self, action):
+        begin_ns = time.monotonic_ns()
         new_action, replaced = self.action(action)
 
         obs, rew, done, truncated, info = self.env.step(new_action)
+        if trace.enabled():
+            trace.emit(
+                "env_step",
+                command_id=getattr(self.env.unwrapped, "_debug_command_id", None),
+                start_ns=begin_ns,
+                replaced=replaced,
+            )
         if replaced:
             info["intervene_action"] = new_action
         info["left"] = self.left

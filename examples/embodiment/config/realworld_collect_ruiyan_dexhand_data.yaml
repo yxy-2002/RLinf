@@ -49,7 +49,7 @@ env:
     glove_config:
       type: psiglove_1
       left_port: /dev/ttyACM0
-      frequency: 30
+      frequency: 60
     override_cfg:
       enable_camera_player: false
       enable_random_reset: false
