@@ -3,6 +3,11 @@
 
 """Lazy legacy export; importing a driver must not construct an expert."""
 
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from .glove_expert import GloveExpert
+
 __all__ = ["GloveExpert"]
 
 

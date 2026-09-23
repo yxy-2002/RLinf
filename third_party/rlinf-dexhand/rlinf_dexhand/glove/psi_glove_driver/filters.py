@@ -1,3 +1,6 @@
+# Copyright 2026 The RLinf Authors.
+# SPDX-License-Identifier: Apache-2.0
+
 """Shared signal-processing utilities for the glove driver."""
 
 import numpy as np

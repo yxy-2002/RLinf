@@ -6,8 +6,12 @@ import logging
 import struct
 from enum import IntEnum
 
-from .interface import (CommunicationInterface, PSIGloveRequestMessage,
-                        PSIGloveRequestType, PSIGloveStatusMessage)
+from .interface import (
+    CommunicationInterface,
+    PSIGloveRequestMessage,
+    PSIGloveRequestType,
+    PSIGloveStatusMessage,
+)
 
 
 class PSIGloveJointType(IntEnum):
@@ -22,7 +26,6 @@ logger = logging.getLogger(__name__)
 
 
 class PSIGloveController:
-
     def __init__(self, communication_interface: CommunicationInterface):
         self.communication_interface = communication_interface
         self.last_status = None

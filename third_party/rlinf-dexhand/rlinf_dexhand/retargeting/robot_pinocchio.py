@@ -6,7 +6,7 @@
 # Does NOT handle mimic joints (the Wuji hand has none, DOA == DOF == nq).
 """Thin pinocchio wrapper used by the Tier 2 retargeting optimizer."""
 
-from typing import List, Optional
+from typing import Optional
 
 import numpy as np
 import pinocchio as pin
@@ -21,16 +21,18 @@ class RobotPinocchio:
         elif robot_file_type == "urdf":
             self.model = pin.buildModelFromUrdf(robot_file_path)
         else:
-            raise NotImplementedError(f"Unsupported robot file type: {robot_file_type}.")
+            raise NotImplementedError(
+                f"Unsupported robot file type: {robot_file_type}."
+            )
         self.data = self.model.createData()
-        self._frame_names: List[str] = [f.name for f in self.model.frames]
+        self._frame_names: list[str] = [f.name for f in self.model.frames]
 
     @property
-    def joint_names(self) -> List[str]:
+    def joint_names(self) -> list[str]:
         return list(self.model.names[1:])  # exclude the first 'universe'
 
     @property
-    def dof_joint_names(self) -> List[str]:
+    def dof_joint_names(self) -> list[str]:
         nqs = self.model.nqs
         return [name for i, name in enumerate(self.model.names) if nqs[i] > 0]
 
@@ -39,7 +41,7 @@ class RobotPinocchio:
         return self.model.nq
 
     @property
-    def frame_names(self) -> List[str]:
+    def frame_names(self) -> list[str]:
         return list(self._frame_names)
 
     @property
@@ -50,9 +52,7 @@ class RobotPinocchio:
 
     def get_frame_index(self, name: str) -> int:
         if name not in self._frame_names:
-            raise ValueError(
-                f"{name} is not a frame name. Valid: {self._frame_names}"
-            )
+            raise ValueError(f"{name} is not a frame name. Valid: {self._frame_names}")
         return self.model.getFrameId(name)
 
     def check_joint_dim(self, q: np.ndarray) -> None:
@@ -89,7 +89,11 @@ class RobotPinocchio:
         if qpos is not None:
             self.check_joint_dim(qpos)
             return pin.computeFrameJacobian(
-                self.model, self.data, q=qpos, frame_id=frame_id, reference_frame=reference_frame
+                self.model,
+                self.data,
+                q=qpos,
+                frame_id=frame_id,
+                reference_frame=reference_frame,
             )
         return pin.getFrameJacobian(
             self.model, self.data, frame_id=frame_id, reference_frame=reference_frame

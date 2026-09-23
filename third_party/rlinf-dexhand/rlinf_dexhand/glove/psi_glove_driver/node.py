@@ -4,11 +4,12 @@
 
 import logging
 import time
-import yaml
+from collections import deque
 from pathlib import Path
 from typing import Optional
-from collections import deque
+
 import numpy as np
+import yaml
 
 from .controller import PSIGloveController, PSIGloveJointType
 from .filters import LowPassFilter
@@ -120,22 +121,24 @@ class PSIGloveStandalone:
         if calibration_max == calibration_min:
             normalized_value = 0.0
         else:
-            normalized_value = (value - calibration_min) / (calibration_max - calibration_min)
+            normalized_value = (value - calibration_min) / (
+                calibration_max - calibration_min
+            )
 
         # Step 2: Remap to [0, 1] via source range
         if clip_source_max == clip_source_min:
             remapped_value = 0.0
         else:
-            remapped_value = (normalized_value - clip_source_min) / (clip_source_max - clip_source_min)
+            remapped_value = (normalized_value - clip_source_min) / (
+                clip_source_max - clip_source_min
+            )
 
         # Step 3: Clamp with target bounds
         final_value = np.clip(remapped_value, clip_target_min, clip_target_max)
 
         return float(final_value)
 
-    def _process_status(
-        self, status: PSIGloveStatusMessage, hand_type: str
-    ) -> list:
+    def _process_status(self, status: PSIGloveStatusMessage, hand_type: str) -> list:
         """Process status message with calibration and filtering.
 
         Returns:
@@ -219,10 +222,7 @@ class PSIGloveStandalone:
                 left_status = self.left_hand.loop()
                 if left_status:
                     left_positions = self._process_status(left_status, "left")
-                    results["left"] = {
-                        "raw": left_status,
-                        "processed": left_positions
-                    }
+                    results["left"] = {"raw": left_status, "processed": left_positions}
             except Exception as e:
                 logger.warning(f"Error reading left glove: {type(e).__name__}: {e}")
 
@@ -233,7 +233,7 @@ class PSIGloveStandalone:
                     right_positions = self._process_status(right_status, "right")
                     results["right"] = {
                         "raw": right_status,
-                        "processed": right_positions
+                        "processed": right_positions,
                     }
             except Exception as e:
                 logger.warning(f"Error reading right glove: {type(e).__name__}: {e}")
@@ -283,7 +283,7 @@ class PSIGloveStandalone:
             "index_back",
             "middle_back",
             "ring_back",
-            "pinky_back"
+            "pinky_back",
         ]
 
         for hand_type in ["left", "right"]:
@@ -293,11 +293,21 @@ class PSIGloveStandalone:
                 positions = data["processed"]
 
                 print(f"\n[{hand_type.upper()} glove raw sensor values]")
-                print(f"Thumb:  [tip={status.thumb[0]:4d}, mid={status.thumb[1]:4d}, back={status.thumb[2]:4d}, side={status.thumb[3]:4d}, rotate={status.thumb[4]:4d}]")
-                print(f"Index:  [tip={status.index[0]:4d}, mid={status.index[1]:4d}, back={status.index[2]:4d}, side={status.index[3]:4d}]")
-                print(f"Middle: [tip={status.middle[0]:4d}, mid={status.middle[1]:4d}, back={status.middle[2]:4d}, side={status.middle[3]:4d}]")
-                print(f"Ring:   [tip={status.ring[0]:4d}, mid={status.ring[1]:4d}, back={status.ring[2]:4d}, side={status.ring[3]:4d}]")
-                print(f"Pinky:  [tip={status.pinky[0]:4d}, mid={status.pinky[1]:4d}, back={status.pinky[2]:4d}, side={status.pinky[3]:4d}]")
+                print(
+                    f"Thumb:  [tip={status.thumb[0]:4d}, mid={status.thumb[1]:4d}, back={status.thumb[2]:4d}, side={status.thumb[3]:4d}, rotate={status.thumb[4]:4d}]"
+                )
+                print(
+                    f"Index:  [tip={status.index[0]:4d}, mid={status.index[1]:4d}, back={status.index[2]:4d}, side={status.index[3]:4d}]"
+                )
+                print(
+                    f"Middle: [tip={status.middle[0]:4d}, mid={status.middle[1]:4d}, back={status.middle[2]:4d}, side={status.middle[3]:4d}]"
+                )
+                print(
+                    f"Ring:   [tip={status.ring[0]:4d}, mid={status.ring[1]:4d}, back={status.ring[2]:4d}, side={status.ring[3]:4d}]"
+                )
+                print(
+                    f"Pinky:  [tip={status.pinky[0]:4d}, mid={status.pinky[1]:4d}, back={status.pinky[2]:4d}, side={status.pinky[3]:4d}]"
+                )
 
                 print(f"\n[{hand_type.upper()} glove mapped values (normalised)]")
                 for name, pos in zip(joint_names, positions):
@@ -317,10 +327,16 @@ def main():
     import argparse
 
     parser = argparse.ArgumentParser(description="PSI Glove Standalone Controller")
-    parser.add_argument("--left-port", type=str, default="/dev/ttyACM0", help="Left hand port")
-    parser.add_argument("--right-port", type=str, default="/dev/ttyACM1", help="Right hand port")
+    parser.add_argument(
+        "--left-port", type=str, default="/dev/ttyACM0", help="Left hand port"
+    )
+    parser.add_argument(
+        "--right-port", type=str, default="/dev/ttyACM1", help="Right hand port"
+    )
     parser.add_argument("--baudrate", type=int, default=115200, help="Baudrate")
-    parser.add_argument("--frequency", type=int, default=100, help="Reading frequency (Hz)")
+    parser.add_argument(
+        "--frequency", type=int, default=100, help="Reading frequency (Hz)"
+    )
     parser.add_argument("--config", type=str, default=None, help="Config file")
     parser.add_argument("--no-left", action="store_true", help="Disable left hand")
     parser.add_argument("--no-right", action="store_true", help="Disable right hand")
@@ -352,8 +368,9 @@ def main():
     if controller.right_hand and not controller.right_hand.is_connected():
         logger.error(f"Failed to connect to right hand: {args.right_port}")
 
-    if (controller.left_hand and not controller.left_hand.is_connected()) or \
-       (controller.right_hand and not controller.right_hand.is_connected()):
+    if (controller.left_hand and not controller.left_hand.is_connected()) or (
+        controller.right_hand and not controller.right_hand.is_connected()
+    ):
         logger.error("Connection failed. Exiting.")
         return
 

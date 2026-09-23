@@ -5,7 +5,6 @@
 import logging
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import List
 
 logger = logging.getLogger(__name__)
 
@@ -22,15 +21,14 @@ class PSIGloveRequestMessage:
 
 @dataclass
 class PSIGloveStatusMessage:
-    thumb: List[int]
-    index: List[int]
-    middle: List[int]
-    ring: List[int]
-    pinky: List[int]
+    thumb: list[int]
+    index: list[int]
+    middle: list[int]
+    ring: list[int]
+    pinky: list[int]
 
 
 class CommunicationInterface(ABC):
-
     def __init__(self, auto_connect: bool):
         self.connected = False
         if auto_connect:
@@ -54,7 +52,6 @@ class CommunicationInterface(ABC):
 
 
 class SerialInterface(CommunicationInterface):
-
     def __init__(
         self,
         port: str,
@@ -115,16 +112,12 @@ class SerialInterface(CommunicationInterface):
             return False
 
         if self.mock:
-            logger.debug(
-                f"Send - Frame data: {[hex(x) for x in message.bytes]}"
-            )
+            logger.debug(f"Send - Frame data: {[hex(x) for x in message.bytes]}")
             return True
 
         try:
             self.serial_controller.write(message.bytes)
-            logger.debug(
-                f"Send - Frame data: {[hex(x) for x in message.bytes]}"
-            )
+            logger.debug(f"Send - Frame data: {[hex(x) for x in message.bytes]}")
             return True
         except Exception as e:
             logger.error(f"Serial message send failed: {e}")
