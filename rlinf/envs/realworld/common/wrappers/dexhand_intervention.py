@@ -37,6 +37,7 @@ class DexHandIntervention(gym.ActionWrapper):
         glove_frequency: int = 60,
         glove_config_file: Optional[str] = None,
         timeout: float = 0.5,
+        right_button_labels_only: bool = False,
     ) -> None:
         super().__init__(env)
         assert self.action_space.shape == (12,), (
@@ -52,6 +53,7 @@ class DexHandIntervention(gym.ActionWrapper):
             config_file=glove_config_file,
         )
 
+        self._right_button_labels_only = right_button_labels_only
         self._timeout = timeout
         self._last_intervene: float = 0.0
         self.left: bool = False
@@ -85,7 +87,7 @@ class DexHandIntervention(gym.ActionWrapper):
 
         if np.linalg.norm(arm_expert) > 0.001:
             self._last_intervene = time.time()
-        if self.left or self.right:
+        if self.left or (self.right and not self._right_button_labels_only):
             self._last_intervene = time.time()
 
         glove_target = self._glove.get_target()
@@ -118,6 +120,8 @@ class DexHandIntervention(gym.ActionWrapper):
         new_action, replaced = self.action(action)
 
         obs, rew, done, truncated, info = self.env.step(new_action)
+        if self._right_button_labels_only:
+            info["executed_action"] = new_action.copy()
         if replaced:
             info["intervene_action"] = new_action
         info["left"] = self.left
@@ -125,5 +129,12 @@ class DexHandIntervention(gym.ActionWrapper):
         return obs, rew, done, truncated, info
 
     def close(self):
-        self._glove.close()
-        super().close()
+        if not self._right_button_labels_only:
+            self._glove.close()
+            super().close()
+            return
+        try:
+            self._glove.close()
+            self._spacemouse.close()
+        finally:
+            super().close()

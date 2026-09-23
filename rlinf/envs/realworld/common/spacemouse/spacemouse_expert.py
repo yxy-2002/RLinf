@@ -31,11 +31,12 @@ class SpaceMouseExpert:
 
         self.state_lock = threading.Lock()
         self.latest_data: dict = {"action": np.zeros(6), "buttons": [0, 0]}
+        self._stop = threading.Event()
         self.thread = threading.Thread(target=self._read_spacemouse, daemon=True)
         self.thread.start()
 
     def _read_spacemouse(self) -> None:
-        while True:
+        while not self._stop.is_set():
             state = self._device.read()
             with self.state_lock:
                 self.latest_data["action"] = np.array(
@@ -47,6 +48,12 @@ class SpaceMouseExpert:
         """Returns the latest action and button state of the SpaceMouse."""
         with self.state_lock:
             return self.latest_data["action"], self.latest_data["buttons"]
+
+    def close(self) -> None:
+        """Stop polling and release the SpaceMouse device."""
+        self._stop.set()
+        self.thread.join(timeout=1.0)
+        self._device.close()
 
 
 if __name__ == "__main__":

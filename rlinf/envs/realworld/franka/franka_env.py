@@ -61,6 +61,9 @@ class FrankaRobotConfig:
     reward_scale: float = 1.0  # Scale dense reward to make training stable
     step_frequency: float = 10.0  # Max number of steps per second
 
+    reward_success_confirmation: bool = False
+    enable_pose_reward: bool = True
+    reward_camera_keys: Optional[list[str]] = None
     use_reward_model: bool = False
     reward_worker_cfg: Optional[dict] = None
     reward_worker_hardware_rank: Optional[int] = None
@@ -169,18 +172,17 @@ class FrankaEnv(gym.Env):
 
         self._franka_state = FrankaRobotState()
         if not self.config.is_dummy:
-            self._reset_pose = np.concatenate(
-                [
-                    self.config.reset_ee_pose[:3],
-                    R.from_euler("xyz", self.config.reset_ee_pose[3:].copy()).as_quat(),
-                ]
-            ).copy()
+            self._reset_pose = np.concatenate([
+                self.config.reset_ee_pose[:3],
+                R.from_euler("xyz", self.config.reset_ee_pose[3:].copy()).as_quat(),
+            ]).copy()
         else:
             self._reset_pose = np.zeros(7)
         self._num_steps = 0
         self._joint_reset_cycle = cycle(range(self.config.joint_reset_cycle))
         next(self._joint_reset_cycle)  # Initialize the cycle
 
+        self._reward_probability = 0.0
         self._success_hold_counter = 0  # Initialize the success hold counter
         self._last_hand_command: np.ndarray | None = None
         self._reward_worker = None
@@ -366,8 +368,20 @@ class FrankaEnv(gym.Env):
         )
 
         truncated = self._num_steps >= self.config.max_num_steps
-        reward *= self.config.reward_scale
-        return observation, reward, terminated, truncated, {}
+        confirm_success = (
+            self.config.use_reward_model and self.config.reward_success_confirmation
+        )
+        if not confirm_success:
+            reward *= self.config.reward_scale
+        info = {}
+        if confirm_success:
+            info = {
+                "reward_probability": self._reward_probability,
+                "success": bool(terminated),
+            }
+            # A confirmed success takes precedence over a simultaneous timeout.
+            truncated = truncated and not terminated
+        return observation, reward, terminated, truncated, info
 
     @property
     def num_steps(self):
@@ -393,7 +407,7 @@ class FrankaEnv(gym.Env):
             observation (Dict[str, np.ndarray]): The current observation from the environment.
             is_gripper_action_effective (bool): Whether the gripper action was effective (i.e., the gripper state changed).
         """
-        if self.config.use_reward_model:
+        if self.config.use_reward_model and not self.config.reward_success_confirmation:
             reward = self._compute_reward_model(observation)
             if reward >= 1.0:
                 self._success_hold_counter += 1
@@ -402,6 +416,26 @@ class FrankaEnv(gym.Env):
             if self.config.enable_gripper_penalty and is_gripper_action_effective:
                 reward -= self.config.gripper_penalty
             return reward
+
+        if self.config.use_reward_model:
+            probability = self._compute_reward_model(observation)
+            if not np.isfinite(probability) or not 0 <= probability <= 1:
+                raise ValueError(f"Invalid reward probability: {probability}")
+            self._reward_probability = probability
+            threshold = float(
+                self.config.reward_worker_cfg.get("reward_threshold", 0.6)
+            )
+            if not 0 <= threshold <= 1 or self.config.success_hold_steps < 1:
+                raise ValueError("Invalid reward threshold or success_hold_steps")
+            if probability > threshold:
+                self._success_hold_counter += 1
+            else:
+                self._success_hold_counter = 0
+            return float(self._success_hold_counter >= self.config.success_hold_steps)
+
+        if not self.config.enable_pose_reward:
+            self._success_hold_counter = 0
+            return 0.0
 
         if not self.config.is_dummy:
             # Convert orientation to euler angles
@@ -454,19 +488,23 @@ class FrankaEnv(gym.Env):
         if not frames:
             raise ValueError("No frames available for reward model inference.")
 
-        image_key = self.config.reward_image_key
-        if image_key is None:
-            image_key = sorted(frames.keys())[0]
-        if image_key not in frames:
-            raise KeyError(
-                f"reward_image_key '{image_key}' not found in frames. "
-                f"Available keys: {list(frames.keys())}"
-            )
+        if self.config.reward_camera_keys:
+            from rlinf.data.reward_collection import stack_camera_frames
 
-        image_batch = np.expand_dims(frames[image_key], axis=0)
-        reward_output = self._reward_worker.compute_image_rewards(
-            {"main_images": image_batch}
-        ).wait()[0]
+            inputs = {
+                "reward_images": np.expand_dims(
+                    stack_camera_frames(frames, self.config.reward_camera_keys), 0
+                )
+            }
+        else:
+            image_key = self.config.reward_image_key or sorted(frames)[0]
+            if image_key not in frames:
+                raise KeyError(
+                    f"reward_image_key '{image_key}' not found in frames. "
+                    f"Available keys: {list(frames.keys())}"
+                )
+            inputs = {"main_images": np.expand_dims(frames[image_key], 0)}
+        reward_output = self._reward_worker.compute_image_rewards(inputs).wait()[0]
         if hasattr(reward_output, "detach"):
             reward_output = reward_output.detach().cpu().numpy()
         reward_array = np.asarray(reward_output).reshape(-1)
@@ -585,31 +623,21 @@ class FrankaEnv(gym.Env):
             ee_state_dim = 1
             ee_low, ee_high = -1.0, 1.0
 
-        self.observation_space = gym.spaces.Dict(
-            {
-                "state": gym.spaces.Dict(
-                    {
-                        "tcp_pose": gym.spaces.Box(
-                            -np.inf, np.inf, shape=(obs_tcp_pose_dim,)
-                        ),
-                        "tcp_vel": gym.spaces.Box(-np.inf, np.inf, shape=(6,)),
-                        ee_state_key: gym.spaces.Box(
-                            ee_low, ee_high, shape=(ee_state_dim,)
-                        ),
-                        "tcp_force": gym.spaces.Box(-np.inf, np.inf, shape=(3,)),
-                        "tcp_torque": gym.spaces.Box(-np.inf, np.inf, shape=(3,)),
-                    }
-                ),
-                "frames": gym.spaces.Dict(
-                    {
-                        camera_info.name: gym.spaces.Box(
-                            0, 255, shape=(128, 128, 3), dtype=np.uint8
-                        )
-                        for camera_info in self._camera_infos
-                    }
-                ),
-            }
-        )
+        self.observation_space = gym.spaces.Dict({
+            "state": gym.spaces.Dict({
+                "tcp_pose": gym.spaces.Box(-np.inf, np.inf, shape=(obs_tcp_pose_dim,)),
+                "tcp_vel": gym.spaces.Box(-np.inf, np.inf, shape=(6,)),
+                ee_state_key: gym.spaces.Box(ee_low, ee_high, shape=(ee_state_dim,)),
+                "tcp_force": gym.spaces.Box(-np.inf, np.inf, shape=(3,)),
+                "tcp_torque": gym.spaces.Box(-np.inf, np.inf, shape=(3,)),
+            }),
+            "frames": gym.spaces.Dict({
+                camera_info.name: gym.spaces.Box(
+                    0, 255, shape=(128, 128, 3), dtype=np.uint8
+                )
+                for camera_info in self._camera_infos
+            }),
+        })
         self._base_observation_space = copy.deepcopy(self.observation_space)
 
     @staticmethod
@@ -700,11 +728,19 @@ class FrankaEnv(gym.Env):
 
     def close(self):
         """Release all hardware resources including cameras and video player."""
-        if hasattr(self, "camera_player"):
-            self.camera_player.stop()
-        if not self.config.is_dummy and hasattr(self, "_cameras"):
-            self._close_cameras()
-        super().close()
+        try:
+            if (
+                self.config.reward_success_confirmation
+                and getattr(self, "_reward_worker", None) is not None
+            ):
+                self._reward_worker._close()
+                self._reward_worker = None
+        finally:
+            if hasattr(self, "camera_player"):
+                self.camera_player.stop()
+            if not self.config.is_dummy and hasattr(self, "_cameras"):
+                self._close_cameras()
+            super().close()
 
     def _close_cameras(self):
         for camera in self._cameras:
@@ -764,9 +800,9 @@ class FrankaEnv(gym.Env):
                 )
                 frames[camera._camera_info.name] = resized_frame[
                     ..., ::-1
-                ]  # Convert RGB to BGR
+                ]  # Convert camera BGR to model RGB
                 display_frames[camera._camera_info.name] = (
-                    resized_frame  # Original RGB for display
+                    resized_frame  # Original BGR for display
                 )
                 display_frames[f"{camera._camera_info.name}_full"] = (
                     cropped_frame  # Non-resized version
@@ -893,9 +929,9 @@ class FrankaEnv(gym.Env):
                     hand_pos = np.zeros(6)
                 state["hand_position"] = hand_pos
             else:
-                state["gripper_position"] = np.array(
-                    [self._franka_state.gripper_position]
-                )
+                state["gripper_position"] = np.array([
+                    self._franka_state.gripper_position
+                ])
             state = {
                 key: np.asarray(value, dtype=np.float32) for key, value in state.items()
             }
@@ -925,10 +961,8 @@ class FrankaEnv(gym.Env):
 
     @property
     def target_ee_pose(self):
-        tgt = np.concatenate(
-            [
-                self.config.target_ee_pose[:3],
-                R.from_euler("xyz", self.config.target_ee_pose[3:].copy()).as_quat(),
-            ]
-        ).copy()
+        tgt = np.concatenate([
+            self.config.target_ee_pose[:3],
+            R.from_euler("xyz", self.config.target_ee_pose[3:].copy()).as_quat(),
+        ]).copy()
         return tgt

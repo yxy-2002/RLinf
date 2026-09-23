@@ -308,30 +308,12 @@ class EnvWorker(Worker):
         if env_cfg.env_type != "realworld":
             return
 
-        reward_placements = self._component_placement.get_strategy(
-            "reward"
-        ).get_placement(Cluster())
-        assert len(reward_placements) > 0, (
-            "Reward placement must contain at least one worker."
-        )
-        reward_placement = reward_placements[0]
-        reward_hardware_ranks = self._component_placement.get_hardware_ranks("reward")
-        assert len(reward_hardware_ranks) > 0, (
-            "Reward placement must contain at least one hardware rank."
-        )
+        from rlinf.utils.realworld_reward import inject_realworld_reward_cfg
 
-        override_cfg = OmegaConf.to_container(
-            env_cfg.get("override_cfg", {}), resolve=True
+        resolved = inject_realworld_reward_cfg(
+            self.cfg, env_cfg, self._component_placement, Cluster()
         )
-        override_cfg["use_reward_model"] = True
-        override_cfg["reward_worker_cfg"] = OmegaConf.to_container(
-            self.cfg.reward, resolve=True
-        )
-        override_cfg["reward_worker_hardware_rank"] = reward_hardware_ranks[0]
-        override_cfg["reward_worker_node_rank"] = reward_placement.cluster_node_rank
-        override_cfg["reward_worker_node_group"] = reward_placement.node_group_label
-        override_cfg["reward_image_key"] = env_cfg.main_image_key
-        setattr(env_cfg, "override_cfg", OmegaConf.create(override_cfg))
+        env_cfg.override_cfg = resolved.override_cfg
 
     def _setup_env_and_wrappers(self, env_cls, env_cfg, num_envs_per_stage: int):
         env_list = []

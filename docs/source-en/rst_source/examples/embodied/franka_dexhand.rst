@@ -8,6 +8,10 @@ Using Dexterous Hand with Franka
 
 Adapt the Franka real-world workflow to a Ruiyan five-finger dexterous hand. You'll keep the same cluster and reward-model flow, then change the end effector, teleoperation input, action layout, and dex-hand configs.
 
+For Ruiyan tasks that require dexterous operations after reaching a pose, use
+:doc:`dexhand_collection` to collect labels, train a dual-camera reward model,
+and then collect model-confirmed demos.
+
 Overview
 --------
 

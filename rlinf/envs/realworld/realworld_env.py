@@ -243,8 +243,15 @@ class RealWorldEnv(gym.Env):
         else:
             timeout_truncations = self.elapsed_steps >= self.cfg.max_episode_steps
         if not self.manual_episode_control_only:
-            truncations = timeout_truncations
+            if self.cfg.get("preserve_env_truncations", False):
+                truncations = np.logical_or(truncations, timeout_truncations)
+            else:
+                truncations = timeout_truncations
 
+        if self.override_cfg.get("use_reward_model", False) and self.override_cfg.get(
+            "reward_success_confirmation", False
+        ):
+            truncations = np.logical_and(truncations, ~terminations)
         obs = self._wrap_obs(raw_obs)
         step_reward = self._calc_step_reward(_reward)
         success_current_step = np.isclose(step_reward, 1.0)

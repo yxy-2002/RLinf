@@ -39,8 +39,8 @@ class ResNetRewardModel(BaseRewardModel):
     to output scalar rewards. It is trained using binary cross-entropy loss
     on individual images with success/fail labels.
 
-    Training Input: (B, C, H, W) - batch of images with labels
-    Inference Input: observation dict containing ``main_images``
+    Training input: images [B,C,H,W], or [B,V,H,W,C] with camera_keys.
+    Inference input: main_images for single-view, reward_images for multi-view.
 
     Attributes:
         backbone: ResNet feature extractor with modified final layer.
@@ -79,6 +79,10 @@ class ResNetRewardModel(BaseRewardModel):
             torch.tensor(self.IMAGENET_STD).view(1, 3, 1, 1),
             persistent=False,
         )
+
+        self.camera_keys = list(cfg.camera_keys) if cfg.get("camera_keys") else None
+        if self.camera_keys and len(set(self.camera_keys)) != len(self.camera_keys):
+            raise ValueError("camera_keys must be unique")
 
         self.arch = cfg.get("arch", "resnet18")
         if self.arch not in self.SUPPORTED_ARCHS:
@@ -160,9 +164,29 @@ class ResNetRewardModel(BaseRewardModel):
         # Get the number of features from the original fc layer
         num_features = self.backbone.fc.in_features
 
-        # Replace the final fc layer with reward head
-        if self.hidden_dim is not None:
-            # MLP head with hidden layer
+        if self.camera_keys:
+            self.backbone.fc = nn.Identity()
+            self.head = nn.Sequential(
+                nn.Linear(num_features * len(self.camera_keys), self.hidden_dim or 256),
+                nn.ReLU(),
+                nn.Dropout(self.dropout_rate),
+                nn.Linear(self.hidden_dim or 256, 1),
+            )
+            self.register_buffer(
+                "_preprocessing_signature",
+                torch.tensor(
+                    [*self.image_size, int(self.normalize)], dtype=torch.int64
+                ),
+            )
+            # Persist view identity to reject reordered cameras at inference.
+            self.register_buffer(
+                "_camera_signature",
+                torch.tensor(
+                    list("\0".join(self.camera_keys).encode("utf-8")), dtype=torch.uint8
+                ),
+            )
+
+        elif self.hidden_dim is not None:
             self.backbone.fc = nn.Sequential(
                 nn.Linear(num_features, self.hidden_dim),
                 nn.ReLU(),
@@ -170,7 +194,6 @@ class ResNetRewardModel(BaseRewardModel):
                 nn.Linear(self.hidden_dim, 1),
             )
         else:
-            # Simple linear head
             self.backbone.fc = nn.Linear(num_features, 1)
 
         # Initialize weights
@@ -178,37 +201,16 @@ class ResNetRewardModel(BaseRewardModel):
 
     def _init_head_weights(self) -> None:
         """Initialize the reward head weights."""
-        for module in self.backbone.fc.modules():
+        for module in (self.head if self.camera_keys else self.backbone.fc).modules():
             if isinstance(module, nn.Linear):
                 nn.init.xavier_uniform_(module.weight)
                 if module.bias is not None:
                     nn.init.zeros_(module.bias)
 
     def _load_model(self):
-        model_path = self.cfg.get("model_path", None)
+        model_path = self.cfg.get("model_path")
         if model_path is not None:
-            if model_path.endswith(".safetensors"):
-                from safetensors.torch import load_file
-
-                state_dict = load_file(model_path)
-            else:
-                state_dict = torch.load(
-                    model_path, map_location="cpu", weights_only=False
-                )
-
-            new_state_dict = {}
-            for k, v in state_dict.items():
-                new_key = k
-                for prefix in ["module.", "_orig_mod.", "model."]:
-                    if new_key.startswith(prefix):
-                        new_key = new_key[len(prefix) :]
-                # Skip mean/std buffers (they are persistent=False, auto-created)
-                if new_key in ["mean", "std", "_mean", "_std"]:
-                    continue
-                new_state_dict[new_key] = v
-            state_dict = new_state_dict
-
-            self.load_state_dict(state_dict, strict=True)
+            self.load_from_path(model_path)
 
     def forward(
         self,
@@ -218,7 +220,7 @@ class ResNetRewardModel(BaseRewardModel):
         """Forward pass for training with binary classification loss.
 
         Args:
-            input_data: Image tensor of shape (B, C, H, W).
+            input_data: Image tensor [B,C,H,W] or multi-view [B,V,H,W,C].
             labels: Binary labels (B,) where 1=success, 0=fail.
 
         Returns:
@@ -228,19 +230,7 @@ class ResNetRewardModel(BaseRewardModel):
                 - "logits": Raw model outputs (B,).
                 - "probabilities": Sigmoid probabilities (B,).
         """
-        # Input shape: (B, C, H, W)
-        images = input_data
-
-        # Preprocess images (normalization, etc.)
-        images = self.preprocess_images(images)
-        model_parameter = next(self.parameters())
-        images = images.to(
-            device=model_parameter.device,
-            dtype=model_parameter.dtype,
-        )
-
-        # Forward through backbone
-        logits = self.backbone(images).squeeze(-1)  # (B,)
+        logits = self._image_logits(input_data)
 
         # Compute probabilities
         probabilities = torch.sigmoid(logits)
@@ -268,29 +258,19 @@ class ResNetRewardModel(BaseRewardModel):
         """Compute rewards for inference.
 
         Args:
-            observations: Observation dictionary containing ``main_images``.
+            observations: Batched ``main_images`` or multi-view ``reward_images``.
 
         Returns:
             torch.Tensor: Reward tensor of shape [B].
         """
-        images = observations.get("main_images", None)
+        key = "reward_images" if self.camera_keys else "main_images"
+        images = observations.get(key)
         if images is None:
-            raise ValueError(
-                "Missing main_images in observations for ResNetRewardModel."
-            )
-
+            raise ValueError(f"Missing {key} in reward observations")
         if isinstance(images, np.ndarray):
             images = torch.from_numpy(images)
-        model_parameter = next(self.parameters())
-        images = images.to(device=model_parameter.device)
-
-        images = self.preprocess_images(images)
-        images = images.to(dtype=model_parameter.dtype)
-
         with torch.no_grad():
-            logits = self.backbone(images).squeeze(-1)  # (B,)
-            # Return probabilities for binary classification
-            rewards = torch.sigmoid(logits)
+            rewards = torch.sigmoid(self._image_logits(images))
 
         # Optional thresholding: keep consistent with prior worker behavior.
         threshold = self.cfg.get("reward_threshold", None)
@@ -299,6 +279,35 @@ class ResNetRewardModel(BaseRewardModel):
             rewards = torch.where(rewards > thr, rewards, torch.zeros_like(rewards))
 
         return rewards
+
+    def _validate_camera_signature(self, state_dict: dict) -> None:
+        if self.camera_keys and not torch.equal(
+            state_dict.get("_camera_signature", torch.empty(0)).cpu(),
+            self._camera_signature.cpu(),
+        ):
+            raise ValueError("Checkpoint camera order does not match camera_keys")
+
+        if self.camera_keys and not torch.equal(
+            state_dict.get("_preprocessing_signature", torch.empty(0)).cpu(),
+            self._preprocessing_signature.cpu(),
+        ):
+            raise ValueError(
+                "Checkpoint image_size/normalize do not match model configuration"
+            )
+
+    def _image_logits(self, images: torch.Tensor) -> torch.Tensor:
+        parameter = next(self.parameters())
+        images = images.to(parameter.device)
+        if self.camera_keys:
+            if images.ndim != 5 or images.shape[1] != len(self.camera_keys):
+                raise ValueError("Expected images [B,V,H,W,C] or [B,V,C,H,W]")
+            batch, views = images.shape[:2]
+            images = images.flatten(0, 1)
+        images = self.preprocess_images(images).to(parameter.dtype)
+        features = self.backbone(images)
+        if self.camera_keys:
+            features = self.head(features.reshape(batch, views * features.shape[-1]))
+        return features.squeeze(-1)
 
     def load_from_path(self, model_path: str) -> None:
         """Load a ResNet reward checkpoint from a file path."""
@@ -319,4 +328,5 @@ class ResNetRewardModel(BaseRewardModel):
             if new_key in ["mean", "std", "_mean", "_std"]:
                 continue
             new_state_dict[new_key] = v
+        self._validate_camera_signature(new_state_dict)
         self.load_state_dict(new_state_dict, strict=True)

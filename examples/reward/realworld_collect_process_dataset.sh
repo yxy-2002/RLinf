@@ -1,22 +1,22 @@
 #!/bin/bash
+set -euo pipefail
 
-export REWARD_PATH="$( cd "$(dirname "${BASH_SOURCE[0]}")" && pwd )"
-export REPO_PATH=$(dirname $(dirname "$REWARD_PATH"))
-export SRC_FILE="${REWARD_PATH}/realworld_collect_process_dataset.py"
-
-export PYTHONPATH=${REPO_PATH}:$PYTHONPATH
+export REWARD_PATH="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+export REPO_PATH="$(dirname "$(dirname "${REWARD_PATH}")")"
+export PYTHONPATH="${REPO_PATH}:${PYTHONPATH:-}"
 export HYDRA_FULL_ERROR=1
-
-if [ -z "$1" ]; then
-    CONFIG_NAME="realworld_collect_dataset"
-else
-    CONFIG_NAME=$1
+# Some inherited configs refer to EMBODIED_PATH.
+export EMBODIED_PATH="${REPO_PATH}/examples/embodiment"
+CONFIG_NAME="realworld_collect_dataset"
+if [[ $# -gt 0 && "$1" != *=* && "$1" != --* ]]; then
+    CONFIG_NAME="$1"
+    shift
 fi
-
-echo "Using Python at $(which python)"
-LOG_DIR="${REPO_PATH}/logs/$(date +'%Y%m%d-%H:%M:%S')-${CONFIG_NAME}"
-MEGA_LOG_FILE="${LOG_DIR}/run_collect_process.log"
+LOG_DIR="${REPO_PATH}/logs/$(date +'%Y%m%d-%H%M%S')-${CONFIG_NAME}"
 mkdir -p "${LOG_DIR}"
-CMD="python ${SRC_FILE} --config-path ${REWARD_PATH}/config/ --config-name ${CONFIG_NAME} runner.logger.log_path=${LOG_DIR}"
-echo ${CMD} > ${MEGA_LOG_FILE}
-${CMD} 2>&1 | tee -a ${MEGA_LOG_FILE}
+CMD=(python "${REWARD_PATH}/realworld_collect_process_dataset.py"
+     --config-path "${REWARD_PATH}/config" --config-name "${CONFIG_NAME}"
+     "runner.logger.log_path=${LOG_DIR}" "$@")
+printf '%q ' "${CMD[@]}" > "${LOG_DIR}/run_collect_process.log"
+printf '\n' >> "${LOG_DIR}/run_collect_process.log"
+"${CMD[@]}" 2>&1 | tee -a "${LOG_DIR}/run_collect_process.log"

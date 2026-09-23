@@ -12,7 +12,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import asyncio
 import os
+import signal
 import time
 
 import hydra
@@ -30,9 +32,10 @@ from rlinf.scheduler import Cluster, ComponentPlacement, Worker
 
 
 class DataCollector(Worker):
-    def __init__(self, cfg):
+    def __init__(self, cfg, env_cfg=None):
         super().__init__()
 
+        self._quit = False
         self.cfg = cfg
         self.num_data_episodes = cfg.runner.num_data_episodes
         self.total_cnt = 0
@@ -41,7 +44,7 @@ class DataCollector(Worker):
             override_cfg.get("manual_episode_control_only", False)
         )
         self.env = RealWorldEnv(
-            cfg.env.eval,
+            env_cfg if env_cfg is not None else cfg.env.eval,
             num_envs=1,
             seed_offset=0,
             total_num_processes=1,
@@ -61,6 +64,9 @@ class DataCollector(Worker):
                 only_success=dc_cfg.get("only_success", False),
                 finalize_interval=dc_cfg.get("finalize_interval", 100),
                 resume=bool(dc_cfg.get("resume", False)),
+                record_executed_action=(
+                    cfg.runner.get("success_source") == "reward_model"
+                ),
             )
             self._preexisting_success = int(
                 getattr(self.env, "preexisting_episode_count", 0)
@@ -107,13 +113,31 @@ class DataCollector(Worker):
                 ret_obs[key] = val.clone()
         return ret_obs
 
-    def run(self):
+    async def request_stop(self) -> None:
+        """Stop after the current step and flush complete trajectories."""
+        self._quit = True
+
+    async def run(self) -> None:
+        """Keep the actor responsive to stop requests while collecting."""
+        if self.cfg.runner.get("success_source") != "reward_model":
+            self._collect()
+            self.buffer.close()
+            self.env.close()
+            return
+        try:
+            await asyncio.to_thread(self._collect)
+        finally:
+            try:
+                self.buffer.close()
+            finally:
+                self.env.close()
+
+    def _collect(self):
         obs, _ = self.env.reset()
         # Seed from preexisting episodes so resume bar + stop target line up.
         success_cnt = self._preexisting_success
         if success_cnt >= self.num_data_episodes:
             self.log_info(f"[resume] target {self.num_data_episodes} already met.")
-            self.env.close()
             return
         progress_bar = tqdm(
             total=self.num_data_episodes,
@@ -127,7 +151,7 @@ class DataCollector(Worker):
 
         current_obs_processed = self._process_obs(obs)
 
-        while success_cnt < self.num_data_episodes:
+        while success_cnt < self.num_data_episodes and not self._quit:
             iter_start = time.perf_counter()
             # Teleop wrapper overrides this via info["intervene_action"].
             action = np.zeros((1, self.action_dim))
@@ -139,7 +163,12 @@ class DataCollector(Worker):
             if kb_event:
                 self.log_info(f"[keyboard] {kb_event}")
 
-            if "intervene_action" in info:
+            if (
+                self.cfg.runner.get("success_source") == "reward_model"
+                and "executed_action" in info
+            ):
+                action = info["executed_action"]
+            elif "intervene_action" in info:
                 action = info["intervene_action"]
 
             next_obs_processed = self._process_obs(next_obs)
@@ -168,6 +197,10 @@ class DataCollector(Worker):
                 )
             if kb_phase in (None, "rec"):
                 current_rollout.append_step_result(step_result)
+                if self.cfg.runner.get("success_source") == "reward_model":
+                    current_rollout.mark_last_step_with_flags(
+                        torch.as_tensor(info.get("intervene_flag", [False]))
+                    )
                 current_rollout.append_transitions(
                     curr_obs=current_obs_processed, next_obs=next_obs_processed
                 )
@@ -193,7 +226,9 @@ class DataCollector(Worker):
                         manual_done = bool(md)
 
                 self.total_cnt += 1
-                if self.manual_episode_control_only:
+                if self.cfg.runner.get("success_source") == "reward_model":
+                    save_episode = bool(torch.as_tensor(info["success"]).any())
+                elif self.manual_episode_control_only:
                     save_episode = bool(manual_done)
                 else:
                     save_episode = bool(r_val >= 0.5 or manual_done)
@@ -207,9 +242,10 @@ class DataCollector(Worker):
                     )
 
                     trajectory = current_rollout.to_trajectory()
-                    trajectory.intervene_flags = torch.ones_like(
-                        trajectory.intervene_flags
-                    )
+                    if self.cfg.runner.get("success_source") != "reward_model":
+                        trajectory.intervene_flags = torch.ones_like(
+                            trajectory.intervene_flags
+                        )
                     self.buffer.add_trajectories([trajectory])
 
                     progress_bar.update(1)
@@ -235,24 +271,59 @@ class DataCollector(Worker):
                 if sleep_for > 0:
                     time.sleep(sleep_for)
 
-        self.buffer.close()
+        progress_bar.close()
         self.log_info(
             f"Finished. Demos saved in: {os.path.join(self.cfg.runner.logger.log_path, 'demos')}"
         )
-        self.env.close()
 
 
 @hydra.main(
     version_base="1.1", config_path="config", config_name="realworld_collect_data"
 )
 def main(cfg):
+    if cfg.runner.get("success_source") == "reward_model":
+        if not (cfg.reward.use_reward_model and cfg.reward.standalone_realworld):
+            raise ValueError("Demo collection requires standalone reward inference")
+        if not cfg.env.eval.override_cfg.get("reward_success_confirmation", False):
+            raise ValueError(
+                "Model-confirmed demos require reward_success_confirmation"
+            )
+        if cfg.env.eval.auto_reset or cfg.env.eval.ignore_terminations:
+            raise ValueError("Demo collector must own resets and observe terminations")
+        if cfg.env.eval.get("keyboard_reward_wrapper"):
+            raise ValueError("Model-confirmed demos cannot use keyboard rewards")
+        if cfg.env.eval.max_episode_steps != cfg.env.eval.override_cfg.max_num_steps:
+            raise ValueError("Inner and outer episode limits must match")
+
     cluster = Cluster(cluster_cfg=cfg.cluster)
     component_placement = ComponentPlacement(cfg, cluster)
     env_placement = component_placement.get_strategy("env")
-    collector = DataCollector.create_group(cfg).launch(
+    from rlinf.utils.realworld_reward import inject_realworld_reward_cfg
+
+    env_cfg = cfg.env.eval
+    if cfg.runner.get("success_source") == "reward_model":
+        env_cfg = inject_realworld_reward_cfg(
+            cfg, env_cfg, component_placement, cluster
+        )
+    collector = DataCollector.create_group(cfg, env_cfg=env_cfg).launch(
         cluster, name=cfg.env.group_name, placement_strategy=env_placement
     )
-    collector.run().wait()
+
+    if cfg.runner.get("success_source") != "reward_model":
+        collector.run().wait()
+        return
+
+    def request_stop(signum, frame):
+        collector.request_stop()
+
+    previous_handlers = {}
+    try:
+        for sig in (signal.SIGINT, signal.SIGTERM):
+            previous_handlers[sig] = signal.signal(sig, request_stop)
+        collector.run().wait()
+    finally:
+        for sig, handler in previous_handlers.items():
+            signal.signal(sig, handler)
 
 
 if __name__ == "__main__":

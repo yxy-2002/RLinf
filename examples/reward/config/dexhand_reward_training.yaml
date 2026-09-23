@@ -1,0 +1,11 @@
+defaults:
+  - reward_training
+  - _self_
+
+runner:
+  logger:
+    experiment_name: dexhand-reward-training
+
+actor:
+  model:
+    camera_keys: [wrist_1, global]

@@ -65,13 +65,14 @@ class RewardDatasetPayload:
 class RewardBinaryDataset(Dataset):
     """Dataset for binary classification reward model training.
 
-    Uses per-frame 'is_obj_placed' field from infos to determine success/fail labels.
-    This is more accurate than using episode-level labels from filenames.
+    Reads explicit binary labels from RewardDatasetPayload. Optional camera_keys
+    validate multi-view samples before training.
     """
 
     def __init__(
         self,
         data_path: str,
+        camera_keys: list[str] | None = None,
     ):
         """Initialize dataset from a preprocessed .pt file.
 
@@ -81,6 +82,21 @@ class RewardBinaryDataset(Dataset):
         Required payload schema is defined by `RewardDatasetPayload`.
         """
         payload = RewardDatasetPayload.load(data_path)
+        if camera_keys is not None and payload.metadata.get("camera_keys") != list(
+            camera_keys
+        ):
+            raise ValueError(
+                "Reward dataset camera_keys do not match model configuration"
+            )
+        if camera_keys is not None:
+            for image in payload.images:
+                if (
+                    image.dtype != torch.uint8
+                    or image.ndim != 4
+                    or image.shape[0] != len(camera_keys)
+                    or image.shape[-1] != 3
+                ):
+                    raise ValueError("Expected reward samples with shape [V,H,W,3]")
         self.images = payload.images
         self.labels = payload.labels
         self.metadata = payload.metadata

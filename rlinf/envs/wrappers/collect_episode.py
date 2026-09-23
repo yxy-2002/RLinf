@@ -95,6 +95,8 @@ class CollectEpisode(gym.Wrapper):
         robot_type: Robot type for LeRobot metadata. Defaults to ``"panda"``.
         fps: FPS for LeRobot metadata. Defaults to 10.
         only_success: Whether to save only successful episodes. Defaults to False.
+        record_executed_action: Prefer executed/intervention actions from info.
+            Defaults to False, preserving the caller-provided action.
         finalize_interval: Call ``writer.finalize()`` every this many completed
             episodes to flush ``info.json`` and ``stats.json`` as a checkpoint.
             ``0`` disables periodic flushing (lerobot only). Defaults to 100.
@@ -118,6 +120,7 @@ class CollectEpisode(gym.Wrapper):
         only_success: bool = False,
         finalize_interval: int = 100,
         resume: bool = False,
+        record_executed_action: bool = False,
     ):
         if isinstance(env, gym.Env):
             super().__init__(env)
@@ -137,6 +140,7 @@ class CollectEpisode(gym.Wrapper):
         self.export_format = export_format
         self.robot_type = robot_type
         self.fps = fps
+        self.record_executed_action = record_executed_action
         self.only_success = only_success
         self.finalize_interval = finalize_interval
 
@@ -391,7 +395,14 @@ class CollectEpisode(gym.Wrapper):
 
             buf = self._buffers[env_idx]
             buf["observations"].append(env_obs)
-            buf["actions"].append(self._slice_copy(action, env_idx))
+            recorded_action = self._slice_copy(action, env_idx)
+            if self.record_executed_action:
+                executed_action = env_info.get(
+                    "executed_action", env_info.get("intervene_action")
+                )
+                if executed_action is not None:
+                    recorded_action = copy.deepcopy(executed_action)
+            buf["actions"].append(recorded_action)
             buf["rewards"].append(self._slice_copy(reward, env_idx))
             buf["terminated"].append(self._slice_copy(terminated, env_idx))
             buf["truncated"].append(self._slice_copy(truncated, env_idx))
@@ -455,21 +466,19 @@ class CollectEpisode(gym.Wrapper):
             if ep_data is not None:
                 self._submit(self._write_lerobot_episode, ep_data)
         else:
-            episode_data = self._copy(
-                {
-                    "rank": self.rank,
-                    "env_idx": env_idx,
-                    "episode_id": self._episode_ids[env_idx],
-                    "step": self._global_step,
-                    "success": is_success,
-                    "observations": buf["observations"],
-                    "actions": buf["actions"],
-                    "rewards": buf["rewards"],
-                    "terminated": buf["terminated"],
-                    "truncated": buf["truncated"],
-                    "infos": buf["infos"],
-                }
-            )
+            episode_data = self._copy({
+                "rank": self.rank,
+                "env_idx": env_idx,
+                "episode_id": self._episode_ids[env_idx],
+                "step": self._global_step,
+                "success": is_success,
+                "observations": buf["observations"],
+                "actions": buf["actions"],
+                "rewards": buf["rewards"],
+                "terminated": buf["terminated"],
+                "truncated": buf["truncated"],
+                "infos": buf["infos"],
+            })
             label = "success" if is_success else "fail"
             filename = (
                 f"rank_{self.rank}_env_{env_idx}_"

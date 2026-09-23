@@ -1,0 +1,115 @@
+# @package _global_
+cluster:
+  num_nodes: 1
+  component_placement:
+    env:
+      node_group: franka
+      placement: 0
+  node_groups:
+  - label: franka
+    node_ranks: 0
+    hardware:
+      type: Franka
+      configs:
+      - robot_ip: 172.17.0.2
+        node_rank: 0
+env:
+  group_name: EnvGroup
+  eval:
+    ignore_terminations: false
+    auto_reset: false
+    no_gripper: false
+    use_spacemouse: true
+    max_episode_steps: 10000
+    retargeting:
+      type: channel_linear
+    glove_config:
+      type: psiglove_1
+      left_port: /dev/ttyACM0
+      frequency: 60
+    override_cfg:
+      enable_camera_player: false
+      enable_random_reset: false
+      camera_serials:
+      - '323622272844'
+      - '105322251046'
+      camera_names:
+        '323622272844': wrist_1
+        '105322251046': global
+      target_ee_pose:
+      - 0.70416806
+      - 0.11882583
+      - 0.39912649
+      - 1.65310945
+      - 0.73057801
+      - 0.99932396
+      ee_pose_limit_min_offset:
+      - -0.2
+      - -0.2
+      - -0.2
+      - -0.003
+      - -0.003
+      - -0.003
+      ee_pose_limit_max_offset:
+      - 0.2
+      - 0.2
+      - 0.2
+      - 0.003
+      - 0.003
+      - 0.003
+      action_scale:
+      - 0.07
+      - 0.5
+      - 1.0
+      end_effector_type: ruiyan_hand
+      end_effector_config:
+        port: /dev/ttyUSB0
+        baudrate: 460800
+        motor_ids:
+        - 1
+        - 2
+        - 3
+        - 4
+        - 5
+        - 6
+        default_velocity: 2000
+        default_current: 800
+        default_state:
+        - 0.0
+        - 0.0
+        - 0.0
+        - 0.0
+        - 0.0
+        - 0.0
+      hand_target_state:
+      - 0.0
+      - 0.0
+      - 0.0
+      - 0.0
+      - 0.0
+      - 0.0
+      hand_reset_state:
+      - 0.0
+      - 0.0
+      - 0.0
+      - 0.0
+      - 0.0
+      - 0.0
+      hand_action_scale: 1.0
+      joint_reset_qpos:
+      - 0
+      - 0
+      - 0
+      - -1.9
+      - 0
+      - 2
+      - 0
+      success_hold_steps: 1
+      step_frequency: 100.0
+    data_collection:
+      enabled: true
+      save_dir: ${runner.logger.log_path}/collected_data
+      export_format: pickle
+      only_success: true
+      robot_type: panda
+      fps: 10

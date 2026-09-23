@@ -1,0 +1,67 @@
+defaults:
+  - env/realworld_dex_pnp@env.eval
+  - collection/ruiyan
+  - override hydra/job_logging: stdout
+  - _self_
+
+hydra:
+  run:
+    dir: .
+  output_subdir: null
+
+cluster:
+  num_nodes: 2
+  component_placement:
+    reward:
+      node_group: reward_gpu
+      placement: 0
+  node_groups:
+    - label: franka
+      node_ranks: 0
+      hardware:
+        type: Franka
+        configs:
+          - robot_ip: 172.17.0.2
+            node_rank: 0
+    - label: reward_gpu
+      node_ranks: 1
+
+runner:
+  task_type: embodied
+  num_data_episodes: 20
+  record_task_description: false
+  success_source: reward_model
+  logger:
+    log_path: null
+    project_name: rlinf
+    logger_backends: [tensorboard]
+    experiment_name: dexhand-demo-data
+
+env:
+  eval:
+    max_episode_steps: 600
+    preserve_env_truncations: true
+    keyboard_reward_wrapper: null
+    right_button_labels_only: true
+    override_cfg:
+      reward_success_confirmation: true
+      enable_pose_reward: false
+      max_num_steps: 600
+      success_hold_steps: 1
+
+reward:
+  use_reward_model: true
+  standalone_realworld: true
+  group_name: RewardGroup
+  reward_threshold: 0.95
+  model:
+    model_type: resnet
+    model_path: ???
+    camera_keys: [wrist_1, global]
+    pretrained: false
+    arch: resnet18
+    hidden_dim: 256
+    dropout: 0.1
+    image_size: [3, 224, 224]
+    normalize: true
+    precision: fp32

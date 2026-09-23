@@ -14,6 +14,10 @@ Using Reward Model with Franka
 
 Add a learned visual reward model to the Franka real-world pipeline. You'll collect labeled frames, train a ResNet reward model, and let the environment use model predictions to decide success and resets.
 
+For Ruiyan tasks that require dexterous operations after reaching a pose, use
+:doc:`dexhand_collection` to collect labels, train a dual-camera reward model,
+and then collect model-confirmed demos.
+
 Overview
 --------
 

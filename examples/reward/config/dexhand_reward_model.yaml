@@ -1,0 +1,44 @@
+defaults:
+  - /env/realworld_dex_pnp@env.eval
+  - /collection/ruiyan
+  - override hydra/job_logging: stdout
+  - _self_
+
+hydra:
+  run:
+    dir: .
+  output_subdir: null
+  searchpath:
+    - file://${oc.env:REPO_PATH}/examples/embodiment/config
+
+runner:
+  task_type: embodied
+  logger:
+    log_path: null
+    project_name: rlinf
+    experiment_name: dexhand-reward-model
+    logger_backends: [tensorboard]
+  label_source: spacemouse_right
+  camera_keys: [wrist_1, global]
+  num_success_frames: 200
+  num_fail_frames: 600
+  val_split: 0.2
+  fail_success_ratio: 3.0
+  random_seed: 42
+  fps: 10
+
+env:
+  eval:
+    max_episode_steps: 200
+    preserve_env_truncations: true
+    auto_reset: false
+    ignore_terminations: false
+    keyboard_reward_wrapper: null
+    right_button_labels_only: true
+    override_cfg:
+      enable_pose_reward: false
+      use_reward_model: false
+      max_num_steps: 200
+      step_frequency: 10.0
+    data_collection:
+      enabled: false

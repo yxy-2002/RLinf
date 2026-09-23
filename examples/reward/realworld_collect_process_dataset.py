@@ -12,28 +12,24 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Collect per-frame success/fail labels in a single episode and save as .pt.
+"""Collect keyboard-labeled frames or multi-episode SpaceMouse-labeled views.
 
-Workflow (end-to-end, no intermediate pkl):
-  1. Run one episode using the RealWorld env with SpaceMouse/keyboard.
-  2. Label each step via keyboard: 'c' = success frame, 'a' = fail frame.
-  3. Stop when both configured thresholds are reached (or max_steps exhausted).
-  4. Apply fail:success ratio sampling and train/val split.
-  5. Save train.pt / val.pt directly (no .pkl intermediate).
-
-Usage:
-    bash examples/reward/realworld_collect_process_dataset.sh
-    # or with explicit config:
-    bash examples/reward/realworld_collect_process_dataset.sh realworld_collect_dataset
+The dexhand_reward_model config uses the right button for positive frames,
+retains raw episodes, and splits complete episodes into train/validation sets.
+The realworld_collect_dataset config retains the legacy keyboard workflow.
 """
 
+import asyncio
 import json
 import os
 import random
+import signal
+import time
 
 import hydra
 import numpy as np
 import torch
+from omegaconf import OmegaConf
 
 from rlinf.data.datasets.reward_model import RewardDatasetPayload
 from rlinf.envs.realworld.common.keyboard.keyboard_listener import KeyboardListener
@@ -45,15 +41,11 @@ logger = get_logger()
 
 
 class FrameCollector(Worker):
-    """Collects per-frame success/fail labels within a single episode.
-
-    Uses keyboard keys 'c' (success) and 'a' (fail) to label each step.
-    Collection stops when both configured thresholds are reached.
-    On exit, frames are ratio-sampled, split into train/val, and saved as .pt.
-    """
+    """Collect labeled frames using the configured input and persistence mode."""
 
     def __init__(self, cfg):
         super().__init__()
+        self._quit = False
         self.cfg = cfg
         self.target_success = cfg.runner.num_success_frames
         self.target_fail = cfg.runner.num_fail_frames
@@ -64,6 +56,31 @@ class FrameCollector(Worker):
         self.success_frames: list[torch.Tensor] = []
         self.fail_frames: list[torch.Tensor] = []
 
+        self.label_source = cfg.runner.get("label_source", "keyboard")
+        if self.label_source not in ("keyboard", "spacemouse_right"):
+            raise ValueError(f"Unknown label_source: {self.label_source}")
+        if self.label_source == "spacemouse_right":
+            env_cfg = cfg.env.eval
+            if env_cfg.auto_reset or env_cfg.ignore_terminations:
+                raise ValueError(
+                    "Frame collection owns resets and requires terminations"
+                )
+            if env_cfg.override_cfg.get(
+                "enable_pose_reward", True
+            ) or env_cfg.override_cfg.get("use_reward_model", False):
+                raise ValueError("Frame labels require pose and model rewards disabled")
+            if env_cfg.get("keyboard_reward_wrapper"):
+                raise ValueError(
+                    "SpaceMouse labeling cannot use a keyboard reward wrapper"
+                )
+            if env_cfg.max_episode_steps != env_cfg.override_cfg.max_num_steps:
+                raise ValueError("Inner and outer episode limits must match")
+            if min(self.target_success, self.target_fail, cfg.runner.fps) <= 0:
+                raise ValueError("Frame targets and fps must be positive")
+            available = list(env_cfg.override_cfg.camera_names.values())
+            if any(key not in available for key in cfg.runner.camera_keys):
+                raise ValueError("Reward camera_keys must name configured cameras")
+
         self.env = RealWorldEnv(
             cfg.env.eval,
             num_envs=1,
@@ -72,7 +89,7 @@ class FrameCollector(Worker):
             worker_info=self.worker_info,
         )
 
-        self.listener = KeyboardListener()
+        self.listener = KeyboardListener() if self.label_source == "keyboard" else None
         self.step_count = 0
 
     def _nhwc_to_chw(self, img: torch.Tensor) -> torch.Tensor:
@@ -128,7 +145,96 @@ class FrameCollector(Worker):
             return "fail"
         return None
 
-    def run(self):
+    async def request_stop(self) -> None:
+        """Request a graceful flush after the current step."""
+        self._quit = True
+
+    async def run(self) -> None:
+        """Collect in a thread so the actor can receive stop requests."""
+        if self.label_source == "keyboard":
+            self._run_legacy()
+            self.env.close()
+            return
+        try:
+            await asyncio.to_thread(self._run_spacemouse)
+        finally:
+            self.env.close()
+
+    def _run_spacemouse(self):
+        from rlinf.data.reward_collection import (
+            save_reward_episode,
+            select_reward_images,
+            split_reward_episodes,
+        )
+
+        cfg = self.cfg
+        camera_keys = list(cfg.runner.camera_keys)
+        available = list(cfg.env.eval.override_cfg.camera_names.values())
+        metadata = {
+            "camera_keys": camera_keys,
+            "preprocessing": {
+                "layout": "VHWC",
+                "dtype": "uint8",
+                "color_space": "RGB",
+                "camera_crop_regions": OmegaConf.to_container(
+                    cfg.env.eval.override_cfg.get("camera_crop_regions")
+                    or OmegaConf.create({}),
+                    resolve=True,
+                ),
+            },
+        }
+        raw_dir = os.path.join(cfg.runner.logger.log_path, "raw_reward_episodes")
+        images, labels, steps = [], [], []
+        episode_id = 0
+        success_count = fail_count = 0
+        step = 0
+        period = 1.0 / float(cfg.runner.get("fps", 10))
+        try:
+            self.env.reset()
+            while not self._quit:
+                started = time.monotonic()
+                obs, _, terminated, truncated, info = self.env.step(
+                    np.zeros(self.env.action_space.shape, dtype=np.float32)
+                )
+                step += 1
+                label = int(bool(np.asarray(info["right"]).reshape(-1)[0]))
+                images.append(
+                    select_reward_images(
+                        obs, camera_keys, cfg.env.eval.main_image_key, available
+                    )
+                )
+                labels.append(label)
+                steps.append(step)
+                success_count += label
+                fail_count += 1 - label
+                if bool(terminated.any() or truncated.any()):
+                    save_reward_episode(
+                        raw_dir, episode_id, images, labels, steps, metadata
+                    )
+                    images, labels, steps = [], [], []
+                    episode_id += 1
+                    step = 0
+                    self.log_info(
+                        f"Reward frames: success={success_count}/{self.target_success}, failure={fail_count}/{self.target_fail}; episodes={episode_id}"
+                    )
+                    self.env.reset()
+                    if (
+                        success_count >= self.target_success
+                        and fail_count >= self.target_fail
+                    ):
+                        break
+                time.sleep(max(0, period - (time.monotonic() - started)))
+        finally:
+            save_reward_episode(raw_dir, episode_id, images, labels, steps, metadata)
+        split_reward_episodes(
+            raw_dir,
+            cfg.runner.logger.log_path,
+            self.val_split,
+            self.fail_success_ratio,
+            self.random_seed,
+        )
+
+    def _run_legacy(self):
         self._extract_main_image(self.env.reset()[0])
         max_steps = self.cfg.env.eval.max_episode_steps
 
@@ -138,7 +244,7 @@ class FrameCollector(Worker):
             f"{self.target_fail} fail frames | 'c'=success 'a'=fail"
         )
 
-        while True:
+        while not self._quit:
             self._print_progress()
 
             s_ok = len(self.success_frames)
@@ -147,10 +253,7 @@ class FrameCollector(Worker):
                 logger.info("Target frame counts reached, ending collection.")
                 break
 
-            if self.cfg.env.eval.get("no_gripper", True):
-                action = np.zeros((1, 6))
-            else:
-                action = np.zeros((1, 7))
+            action = np.zeros(self.env.action_space.shape, dtype=np.float32)
             next_obs, reward, done, _, info = self.env.step(action)
 
             if "intervene_action" in info:
@@ -179,7 +282,6 @@ class FrameCollector(Worker):
 
         print()
         self._save_pt()
-        self.env.close()
 
     def _save_pt(self):
         out_dir = self.cfg.runner.logger.log_path
@@ -297,7 +399,22 @@ def main(cfg):
     collector = FrameCollector.create_group(cfg).launch(
         cluster, name=cfg.env.group_name, placement_strategy=env_placement
     )
-    collector.run().wait()
+
+    if cfg.runner.get("label_source", "keyboard") != "spacemouse_right":
+        collector.run().wait()
+        return
+
+    def request_stop(signum, frame):
+        collector.request_stop()
+
+    previous_handlers = {}
+    try:
+        for sig in (signal.SIGINT, signal.SIGTERM):
+            previous_handlers[sig] = signal.signal(sig, request_stop)
+        collector.run().wait()
+    finally:
+        for sig, handler in previous_handlers.items():
+            signal.signal(sig, handler)
 
 
 if __name__ == "__main__":

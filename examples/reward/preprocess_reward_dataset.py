@@ -301,6 +301,9 @@ def parse_args() -> argparse.Namespace:
         description="Preprocess reward dataset from raw episode .pkl files."
     )
     parser.add_argument(
+        "--raw-format", choices=["pickle", "labeled_frames"], default="pickle"
+    )
+    parser.add_argument(
         "--raw-data-path",
         type=str,
         required=True,
@@ -366,6 +369,24 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
+    if args.raw_format == "labeled_frames":
+        from rlinf.data.reward_collection import split_reward_episodes
+
+        if (
+            args.train_output_path
+            or args.val_output_path
+            or args.num_samples_per_episode
+        ):
+            raise ValueError("labeled_frames uses --output-dir and all labeled frames")
+        split_reward_episodes(
+            args.raw_data_path,
+            args.output_dir,
+            args.val_split,
+            args.fail_success_ratio,
+            args.seed,
+        )
+        logger.info(f"Saved episode-disjoint splits to {args.output_dir}")
+        return
     os.makedirs(args.output_dir, exist_ok=True)
 
     train_output_path = args.train_output_path or os.path.join(

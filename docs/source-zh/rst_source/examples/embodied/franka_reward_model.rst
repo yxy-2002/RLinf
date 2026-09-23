@@ -14,6 +14,10 @@
 
 为 Franka 真机流程加入学习得到的视觉 reward model。你将采集标注帧，训练 ResNet reward model，并让环境用模型预测来判定成功与重置。
 
+对于到达位姿后仍需进行灵巧操作的 Ruiyan 任务，请使用
+:doc:`dexhand_collection`，先采集标签并训练双相机 reward model，
+再采集模型确认成功的 demo。
+
 概览
 ----------------------------------------
 
