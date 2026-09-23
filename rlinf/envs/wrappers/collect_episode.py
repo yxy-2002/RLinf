@@ -424,9 +424,13 @@ class CollectEpisode(gym.Wrapper):
     def _maybe_flush(self, terminated, truncated) -> None:
         """Save finished episodes and reset their buffers."""
         for env_idx in range(self.num_envs):
-            is_success = self._get_episode_success(self._buffers[env_idx], env_idx)
             done_by_term = self._scalar_flag(terminated, env_idx)
             done_by_trunc = self._scalar_flag(truncated, env_idx)
+            if not (done_by_term or done_by_trunc):
+                continue
+
+            # Success inspection can scan the full history; only do it at episode end.
+            is_success = self._get_episode_success(self._buffers[env_idx], env_idx)
             if self.only_success:
                 if is_success and done_by_term:
                     self._flush_episode(env_idx, is_success)

@@ -21,7 +21,6 @@ import psutil
 from scipy.spatial.transform import Rotation as R
 
 from rlinf.scheduler import Cluster, NodePlacementStrategy, Worker
-from rlinf.utils import teleop_trace as trace
 from rlinf.utils.logging import get_logger
 
 from .end_effectors import (
@@ -341,9 +340,7 @@ class FrankaController(Worker):
         self._ros.put_channel(self._arm_equilibrium_channel, pose_msg)
         self.log_debug(f"Move arm to position: {position}")
 
-    def command_end_effector(
-        self, action: np.ndarray, trace_id: str | None = None
-    ) -> bool:
+    def command_end_effector(self, action: np.ndarray) -> bool:
         """Send an action to the active end-effector."""
         if self._end_effector_type.is_gripper:
             value = float(np.asarray(action).reshape(-1)[0])
@@ -356,9 +353,7 @@ class FrankaController(Worker):
             return False
 
         assert self._end_effector is not None
-        with trace.command_context(trace_id):
-            trace.emit("controller_hand", target=np.asarray(action).tolist())
-            return self._end_effector.command(action)
+        return self._end_effector.command(action)
 
     def reset_end_effector(self, target_state: np.ndarray | None = None) -> None:
         """Reset the end-effector to a target or default state."""

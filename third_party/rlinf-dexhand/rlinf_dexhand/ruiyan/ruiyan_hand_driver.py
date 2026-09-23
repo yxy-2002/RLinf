@@ -32,8 +32,6 @@ from typing import Optional
 
 import numpy as np
 
-from .. import debug_trace as trace
-
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
@@ -64,6 +62,7 @@ class _SerialLink:
         self._baudrate = baudrate
         self._timeout = timeout
         self._serial = None
+        self._rx_buffer = bytearray()
 
     def connect(self) -> None:
         import serial
@@ -75,7 +74,10 @@ class _SerialLink:
             parity=serial.PARITY_NONE,
             stopbits=serial.STOPBITS_ONE,
             bytesize=serial.EIGHTBITS,
+            exclusive=True,
+            write_timeout=0.1,
         )
+        self._rx_buffer.clear()
         logger.info("Ruiyan serial opened: %s", self._port)
 
     def disconnect(self) -> None:
@@ -121,27 +123,50 @@ class _SerialLink:
             0x00,
             checksum,
         )
-        self._serial.write(frame)
+        written = self._serial.write(frame)
+        if written != len(frame):
+            raise IOError(f"Short Ruiyan serial write: {written}/{len(frame)}")
 
     def read_responses(self, num_motors: int) -> list[Optional[_FingerStatus]]:
-        """Read ``num_motors`` response frames (13 bytes each)."""
-        raw = self._serial.read(13 * num_motors)
-        if not raw:
-            return [None] * num_motors
+        """Parse a byte stream, retaining partial frames across serial reads.
 
-        results: list[Optional[_FingerStatus]] = []
-        for i in range(len(raw) // 13):
-            chunk = raw[i * 13 : (i + 1) * 13]
-            parsed = self._parse_frame(chunk)
-            results.append(parsed)
+        A rejected candidate advances by one byte so a valid frame embedded
+        after corruption can still be recovered. The pending tail is <13 bytes.
+        """
+        raw = self._serial.read(13 * num_motors)
+        self._rx_buffer.extend(raw)
+        results = []
+        while self._rx_buffer:
+            header = self._rx_buffer.find(b"\xa5")
+            if header < 0:
+                self._rx_buffer.clear()
+                break
+            del self._rx_buffer[:header]
+            if len(self._rx_buffer) < 13:
+                break
+            parsed = self._parse_frame(bytes(self._rx_buffer[:13]))
+            if parsed is None:
+                del self._rx_buffer[0]
+            else:
+                results.append(parsed)
+                del self._rx_buffer[:13]
         return results
 
     @staticmethod
     def _parse_frame(raw: bytes) -> Optional[_FingerStatus]:
-        if len(raw) < 13:
+        if len(raw) != 13:
             return None
         header, motor_id = struct.unpack("<BB", raw[:2])
-        if header != 0xA5:
+        if (
+            header != 0xA5
+            or raw[2:4] != b"\x01\x08"
+            or raw[4]
+            not in (
+                _InstructionType.READ_MOTOR_INFO,
+                _InstructionType.CTRL_POSITION_VEL_CUR,
+            )
+            or (sum(raw[:-1]) & 0xFF) != raw[-1]
+        ):
             return None
         data_u64 = struct.unpack("<Q", raw[4:12])[0]
         status = (data_u64 >> 8) & 0xFF
@@ -176,6 +201,7 @@ class RuiyanHandDriver:
         default_velocity: Default command velocity for all motors.
         default_current: Default command current for all motors.
         default_state: Default hand state used during ``reset()``.
+        command_interval_s: Delay after each motor write, for paced serial control.
     """
 
     NUM_DOFS = 6
@@ -197,7 +223,11 @@ class RuiyanHandDriver:
         default_velocity: int = 2000,
         default_current: int = 800,
         default_state: Optional[list[float]] = None,
+        command_interval_s: float = 0.001,
     ):
+        if not np.isfinite(command_interval_s) or command_interval_s < 0:
+            raise ValueError("command_interval_s must be finite and nonnegative")
+        self._command_interval_s = command_interval_s
         self._port = port
         self._baudrate = baudrate
         self._motor_ids = list(motor_ids)
@@ -215,7 +245,7 @@ class RuiyanHandDriver:
         self._lock = threading.Lock()
         self._target_positions = np.zeros(self.NUM_DOFS, dtype=np.float64)
         self._current_positions = np.zeros(self.NUM_DOFS, dtype=np.float64)
-        self._trace_command_id = None
+        self._motor_feedback_ns = np.zeros(self.NUM_DOFS, dtype=np.int64)
         self._feedback_timestamp = 0.0
         self._feedback_complete = False
         self._missing_motor_ids = set(self._motor_ids)
@@ -260,6 +290,10 @@ class RuiyanHandDriver:
         with self._lock:
             return {
                 "feedback_timestamp": self._feedback_timestamp,
+                "feedback_age_s_by_motor": [
+                    None if stamp == 0 else (time.monotonic_ns() - int(stamp)) / 1e9
+                    for stamp in self._motor_feedback_ns
+                ],
                 "feedback_valid": self._feedback_complete
                 and self._feedback_timestamp > 0
                 and time.time() - self._feedback_timestamp <= 0.5,
@@ -295,13 +329,6 @@ class RuiyanHandDriver:
         action = np.clip(np.asarray(action, dtype=np.float64), 0.0, 1.0)
         with self._lock:
             self._target_positions = action.copy()
-            self._trace_command_id = trace.current_command_id()
-            if trace.enabled():
-                trace.emit(
-                    "hand_buffer",
-                    command_id=self._trace_command_id,
-                    target=action.tolist(),
-                )
         return True
 
     def reset(self, target_state: np.ndarray | None = None) -> None:
@@ -344,35 +371,11 @@ class RuiyanHandDriver:
 
     def _poll_state(self) -> None:
         """Send current targets and read back motor states."""
-        begin_ns = time.monotonic_ns()
         with self._lock:
             targets = self._target_positions.copy()
-            command_id = self._trace_command_id
 
         self._send_targets(targets)
-        sent_ns = time.monotonic_ns()
         responses = self._link.read_responses(len(self._motor_ids))
-        if trace.enabled():
-            trace.emit(
-                "hand_io",
-                command_id=command_id,
-                start_ns=begin_ns,
-                sent_ns=sent_ns,
-                motor_ids=list(self._motor_ids),
-                target=targets.tolist(),
-                responses=[
-                    None
-                    if r is None
-                    else {
-                        "motor_id": r.motor_id,
-                        "position": r.position,
-                        "velocity": r.velocity,
-                        "current": r.current,
-                        "status": r.status,
-                    }
-                    for r in responses
-                ],
-            )
 
         index_by_id = {motor_id: i for i, motor_id in enumerate(self._motor_ids)}
         received = {}
@@ -399,6 +402,7 @@ class RuiyanHandDriver:
             self._current_currents.fill(0)
             for motor_id, (position, resp) in received.items():
                 index = index_by_id[motor_id]
+                self._motor_feedback_ns[index] = time.monotonic_ns()
                 self._current_positions[index] = position
                 self._current_velocities[index] = float(resp.velocity)
                 self._current_currents[index] = float(resp.current)
@@ -416,3 +420,5 @@ class RuiyanHandDriver:
                 velocity=self._default_velocity,
                 current=self._default_current,
             )
+            if self._command_interval_s:
+                time.sleep(self._command_interval_s)

@@ -6,6 +6,7 @@
 from unittest.mock import Mock
 
 import numpy as np
+import pytest
 from rlinf_dexhand.ruiyan.ruiyan_hand_driver import (
     RuiyanHandDriver,
     _FingerStatus,
@@ -68,10 +69,80 @@ def test_partial_duplicate_unknown_and_invalid_feedback():
     assert driver.get_detailed_state()["feedback_valid"]
 
 
-def test_short_serial_read_preserves_complete_frames():
+def frame(motor_id=3, position=500, velocity=-2, current=-3):
+    payload = (
+        0xAA | (position << 16) | ((velocity & 0xFFF) << 28) | ((current & 0xFFF) << 40)
+    )
+    raw = bytes([0xA5, motor_id, 1, 8]) + payload.to_bytes(8, "little")
+    return raw + bytes([sum(raw) & 255])
+
+
+@pytest.mark.parametrize("split", range(1, 13))
+def test_partial_frames_survive_next_read(split):
     link = _SerialLink("/unused", 460800)
     link._serial = Mock()
-    link._serial.read.return_value = b"\xa5\x03" + b"\x00" * 11 + b"\xa5"
-    frames = link.read_responses(6)
-    assert len(frames) == 1
-    assert frames[0].motor_id == 3
+    data = frame()
+    link._serial.read.side_effect = [data[:split], b"", data[split:] + frame(4)]
+    assert link.read_responses(6) == []
+    assert link.read_responses(6) == []
+    result = link.read_responses(6)
+    assert [r.motor_id for r in result] == [3, 4]
+    assert (result[0].position, result[0].velocity, result[0].current) == (500, -2, -3)
+    assert not link._rx_buffer
+
+
+def test_corruption_resynchronizes_and_checks_checksum():
+    link = _SerialLink("/unused", 460800)
+    link._serial = Mock()
+    bad = bytearray(frame())
+    bad[6] ^= 1
+    link._serial.read.return_value = b"noise" + bytes(bad) + frame(6) + b"\xa5"
+    result = link.read_responses(6)
+    assert [r.motor_id for r in result] == [6]
+    assert link._rx_buffer == b"\xa5"
+
+
+@pytest.mark.parametrize("index,value", [(0, 0), (2, 0), (3, 7), (4, 0xA5)])
+def test_wrong_protocol_fields_rejected(index, value):
+    raw = bytearray(frame())
+    raw[index] = value
+    raw[-1] = sum(raw[:-1]) & 255
+    assert _SerialLink._parse_frame(bytes(raw)) is None
+
+
+def test_captured_read_response():
+    result = _SerialLink._parse_frame(bytes.fromhex("a5030108a0008e0000000000df"))
+    assert result.motor_id == 3
+    assert result.position == 142
+    assert result.status == 0
+
+
+def test_short_write_rejected():
+    link = _SerialLink("/unused", 460800)
+    link._serial = Mock()
+    link._serial.write.return_value = 12
+    with pytest.raises(IOError, match="Short Ruiyan"):
+        link.send_command(1, 0xAA, 0, 2000, 800)
+
+
+def test_default_send_pacing(monkeypatch):
+    from rlinf_dexhand.ruiyan import ruiyan_hand_driver as module
+
+    sleep = Mock()
+    monkeypatch.setattr(module.time, "sleep", sleep)
+    driver = RuiyanHandDriver()
+    driver._link = Mock()
+    driver._send_targets(np.full(6, 0.25))
+    assert driver._link.send_command.call_count == 6
+    assert sleep.call_count == 6
+    sleep.assert_called_with(0.001)
+
+
+def test_feedback_ages_preserve_missing_motors():
+    driver = RuiyanHandDriver(command_interval_s=0)
+    driver._link = Mock()
+    driver._link.read_responses.return_value = [response(1)]
+    driver._poll_state()
+    ages = driver.get_detailed_state()["feedback_age_s_by_motor"]
+    assert ages[0] >= 0
+    assert ages[1:] == [None] * 5

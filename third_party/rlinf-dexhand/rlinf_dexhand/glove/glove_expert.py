@@ -10,7 +10,6 @@ import time
 
 import numpy as np
 
-from .. import debug_trace as trace
 from ..retargeting.channel_linear import ChannelLinear
 from ..types import HandTarget
 from .driver import GloveFrameError, PSIGloveDriver
@@ -79,36 +78,15 @@ class GloveExpert:
             self.driver.start()
             while not self.stop.is_set():
                 begin = time.monotonic()
-                read_start_ns = time.monotonic_ns()
                 try:
                     sample = self.driver.read()
                 except (TimeoutError, GloveFrameError) as exc:
-                    trace.emit(
-                        "glove_read",
-                        start_ns=read_start_ns,
-                        ok=False,
-                        error=type(exc).__name__,
-                        port=self.driver.port,
-                    )
                     with self.condition:
                         self._failures += 1
                         self._warn_locked(f"{type(exc).__name__}: {exc}")
                 else:
-                    trace.emit(
-                        "glove_read",
-                        start_ns=read_start_ns,
-                        ok=True,
-                        glove_seq=sample.sequence,
-                        port=self.driver.port,
-                        target_hz=self.frequency,
-                    )
                     # Mapping errors are fatal, not communication failures.
                     target = self.retargeter.update(sample)
-                    trace.emit(
-                        "glove_ready",
-                        glove_seq=sample.sequence,
-                        values=list(target.values),
-                    )
                     with self.condition:
                         if self._degraded:
                             logger.info(
@@ -124,7 +102,6 @@ class GloveExpert:
                         self.condition.notify_all()
                 self.stop.wait(max(0, 1 / self.frequency - (time.monotonic() - begin)))
         except Exception as exc:
-            trace.emit("glove_fatal", error=type(exc).__name__, port=self.driver.port)
             self._set_error(exc)
         finally:
             try:

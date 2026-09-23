@@ -41,6 +41,7 @@ class RuiyanHand(EndEffector):
         default_velocity: Default command velocity for all motors.
         default_current: Default command current for all motors.
         default_state: Default hand state used during ``reset()``.
+        command_interval_s: Delay after each motor command (seconds).
     """
 
     _NUM_DOFS = 6
@@ -61,6 +62,7 @@ class RuiyanHand(EndEffector):
         default_velocity: int = 2000,
         default_current: int = 800,
         default_state: Optional[list[float]] = None,
+        command_interval_s: float = 0.001,
     ):
         from rlinf_dexhand.ruiyan import RuiyanHandDriver
 
@@ -71,6 +73,7 @@ class RuiyanHand(EndEffector):
             default_velocity=default_velocity,
             default_current=default_current,
             default_state=default_state,
+            command_interval_s=command_interval_s,
         )
         self._logger = get_logger()
 

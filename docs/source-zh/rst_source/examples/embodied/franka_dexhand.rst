@@ -91,10 +91,6 @@
 - 数据手套控制 6 维手指动作
 - SpaceMouse 左键用于启用相对手套控制
 
-本地延迟日志的启用步骤及 Franka infra 对照字段见仓库中的
-``toolkits/realworld_check/TELEOP_TRACE.md``。调试环境变量必须在 Ray 启动前设置，
-默认关闭日志。
-
 Reward Model
 ------------
 
