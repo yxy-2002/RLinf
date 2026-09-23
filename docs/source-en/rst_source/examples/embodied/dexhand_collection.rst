@@ -21,7 +21,7 @@ Run on the control node with a one-node Ray cluster. Hold the SpaceMouse right b
 
    bash examples/reward/realworld_collect_process_dataset.sh dexhand_reward_model
 
-This command collects synchronized view pairs and labels from the same environment step. It disables pose-based success. The defaults are 10 Hz, 600 steps per episode, 200 positive frames and 600 negative frames. Collection stops at an episode boundary once both targets are met. Override ``runner.num_success_frames``, ``runner.num_fail_frames`` and ``runner.fps`` as needed; keep ``env.eval.max_episode_steps`` and ``env.eval.override_cfg.max_num_steps`` equal.
+This command collects synchronized view pairs and labels from the same environment step and disables pose-based success. The default rate is 10 Hz and the positive-frame target is 200. Once the positive target is reached, collection saves the current frames and stops immediately, without waiting for the episode boundary. Negative frames have no collection target or limit. Override ``runner.num_success_frames`` and ``runner.fps`` as needed; keep ``env.eval.max_episode_steps`` and ``env.eval.override_cfg.max_num_steps`` equal.
 
 Hold the right button throughout each successful state; releasing it immediately returns to negative labeling. Gather both classes across multiple episodes and vary object placement and lighting.
 
@@ -41,6 +41,15 @@ To repeat preprocessing on saved raw episodes, run:
      --raw-data-path /path/to/run/raw_reward_episodes \
      --output-dir /path/to/processed_reward_data \
      --fail-success-ratio 3
+
+Review and Crop Offline Data
+----------------------------------------
+
+Run ``python -m toolkits.dexhand.review_classifier_data --input /path/to/raw_reward_episodes --output-dir /path/to/reviewed`` to inspect views and keep/discard frames. Unreviewed frames are kept; input files remain unchanged unless ``--replace-inputs`` is specified, which creates backups first. Use ``--dry-run`` without a desktop.
+
+Use ``python -m toolkits.dexhand.crop_classifier_data --data-dir /path/to/reviewed/review_<timestamp> --output-dir /path/to/cropped --crop-config toolkits/dexhand/config/classifier_crop.yaml`` for offline crops. The example keeps the full image; edit the normalized bounds before use. Demo datasets also require ``--camera-keys wrist_1 global``. Images retain their original size and dtype. Labels, episode/step IDs and non-image demo fields are preserved. Stored-image and raw-camera crop coordinates are distinct; synchronize the online camera crop before deploying a model trained on cropped data.
+
+See ``toolkits/dexhand/DATASET_TOOLS.md`` for controls, backups, supported formats and coordinate conversion. Rebuild train/validation splits from reviewed raw episodes using the preprocessing command above.
 
 Train the Reward Model
 ----------------------------------------

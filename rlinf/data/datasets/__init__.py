@@ -13,22 +13,39 @@
 # limitations under the License.
 
 import logging
-from typing import Any
+from importlib import import_module
+from typing import TYPE_CHECKING, Any
 
 import torch
 from omegaconf import DictConfig
 from torch.utils.data import Dataset
-from transformers import AutoTokenizer
 
 from rlinf.data.datasets.item import DatasetItem
-from rlinf.data.datasets.reasoning import ReasoningDataset
-from rlinf.data.datasets.rstar2 import Rstar2Dataset
-from rlinf.data.datasets.vlm import VLMDatasetRegistry
-from rlinf.data.datasets.wideseek_r1 import WideSeekR1Dataset
+
+if TYPE_CHECKING:
+    from transformers import AutoTokenizer
+
+
+_LAZY_IMPORTS = {
+    "AutoTokenizer": "transformers",
+    "ReasoningDataset": "rlinf.data.datasets.reasoning",
+    "Rstar2Dataset": "rlinf.data.datasets.rstar2",
+    "VLMDatasetRegistry": "rlinf.data.datasets.vlm",
+    "WideSeekR1Dataset": "rlinf.data.datasets.wideseek_r1",
+}
+
+
+def __getattr__(name: str) -> Any:
+    """Keep existing exports without loading training dependencies at import time."""
+    if name not in _LAZY_IMPORTS:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    value = getattr(import_module(_LAZY_IMPORTS[name]), name)
+    globals()[name] = value
+    return value
 
 
 def create_rl_dataset(
-    config: DictConfig, tokenizer: AutoTokenizer
+    config: DictConfig, tokenizer: "AutoTokenizer"
 ) -> tuple[Dataset, Dataset]:
     """Create rl datasets.
 
@@ -43,13 +60,13 @@ def create_rl_dataset(
     """
 
     dataset_type_map = {
-        "reasoning": ReasoningDataset,
-        "math": ReasoningDataset,
-        "wideseek_r1": WideSeekR1Dataset,
-        "rstar2": Rstar2Dataset,
+        "reasoning": "ReasoningDataset",
+        "math": "ReasoningDataset",
+        "wideseek_r1": "WideSeekR1Dataset",
+        "rstar2": "Rstar2Dataset",
     }
     if config.data.type in dataset_type_map:
-        datast_cls = dataset_type_map[config.data.type]
+        datast_cls = __getattr__(dataset_type_map[config.data.type])
         logging.info(f"Using dataset class: {datast_cls.__name__}")
 
         train_dataset, val_dataset = None, None
@@ -69,6 +86,8 @@ def create_rl_dataset(
 
         return train_dataset, val_dataset
     elif config.data.type == "vision_language":
+        from rlinf.data.datasets.vlm import VLMDatasetRegistry
+
         # Prefer new factory-based VLM datasets; fallback to legacy if requested
         dataset_name = getattr(config.data, "dataset_name", None)
         lazy_loading = bool(getattr(config.data, "lazy_loading", False))

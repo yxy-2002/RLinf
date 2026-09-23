@@ -235,7 +235,7 @@ def test_frame_collector_multi_episode(tmp_path):
     collector.random_seed = 42
     collector.log_info = Mock()
     collector._run_spacemouse()
-    assert collector.env.resets == 3
+    assert collector.env.resets == 2
     first = RewardDatasetPayload.load(
         str(tmp_path / "raw_reward_episodes/episode_000000.pt")
     )

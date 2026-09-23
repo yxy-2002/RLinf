@@ -1,0 +1,8 @@
+# Bounds are [top, left, bottom, right], normalized to the STORED image.
+# This example keeps the full image; adjust it after inspecting your data.
+coordinates: stored
+cameras:
+  wrist_1:
+    crop: [0.0, 0.0, 1.0, 1.0]
+  global:
+    crop: [0.0, 0.0, 1.0, 1.0]

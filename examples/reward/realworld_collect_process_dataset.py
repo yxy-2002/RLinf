@@ -30,6 +30,7 @@ import hydra
 import numpy as np
 import torch
 from omegaconf import OmegaConf
+from tqdm import tqdm
 
 from rlinf.data.datasets.reward_model import RewardDatasetPayload
 from rlinf.envs.realworld.common.keyboard.keyboard_listener import KeyboardListener
@@ -48,7 +49,10 @@ class FrameCollector(Worker):
         self._quit = False
         self.cfg = cfg
         self.target_success = cfg.runner.num_success_frames
-        self.target_fail = cfg.runner.num_fail_frames
+        self.label_source = cfg.runner.get("label_source", "keyboard")
+        self.target_fail = (
+            cfg.runner.num_fail_frames if self.label_source == "keyboard" else None
+        )
         self.val_split = cfg.runner.get("val_split", 0.2)
         self.fail_success_ratio = cfg.runner.get("fail_success_ratio", 2.0)
         self.random_seed = cfg.runner.get("random_seed", 42)
@@ -56,7 +60,6 @@ class FrameCollector(Worker):
         self.success_frames: list[torch.Tensor] = []
         self.fail_frames: list[torch.Tensor] = []
 
-        self.label_source = cfg.runner.get("label_source", "keyboard")
         if self.label_source not in ("keyboard", "spacemouse_right"):
             raise ValueError(f"Unknown label_source: {self.label_source}")
         if self.label_source == "spacemouse_right":
@@ -75,7 +78,7 @@ class FrameCollector(Worker):
                 )
             if env_cfg.max_episode_steps != env_cfg.override_cfg.max_num_steps:
                 raise ValueError("Inner and outer episode limits must match")
-            if min(self.target_success, self.target_fail, cfg.runner.fps) <= 0:
+            if min(self.target_success, cfg.runner.fps) <= 0:
                 raise ValueError("Frame targets and fps must be positive")
             available = list(env_cfg.override_cfg.camera_names.values())
             if any(key not in available for key in cfg.runner.camera_keys):
@@ -189,43 +192,64 @@ class FrameCollector(Worker):
         success_count = fail_count = 0
         step = 0
         period = 1.0 / float(cfg.runner.get("fps", 10))
-        try:
-            self.env.reset()
-            while not self._quit:
-                started = time.monotonic()
-                obs, _, terminated, truncated, info = self.env.step(
-                    np.zeros(self.env.action_space.shape, dtype=np.float32)
-                )
-                step += 1
-                label = int(bool(np.asarray(info["right"]).reshape(-1)[0]))
-                images.append(
-                    select_reward_images(
-                        obs, camera_keys, cfg.env.eval.main_image_key, available
+        with tqdm(
+            total=self.target_success,
+            desc="Reward frames",
+            unit="frame",
+            dynamic_ncols=True,
+        ) as progress_bar:
+            try:
+                self.env.reset()
+                while not self._quit:
+                    started = time.monotonic()
+                    obs, _, terminated, truncated, info = self.env.step(
+                        np.zeros(self.env.action_space.shape, dtype=np.float32)
                     )
-                )
-                labels.append(label)
-                steps.append(step)
-                success_count += label
-                fail_count += 1 - label
-                if bool(terminated.any() or truncated.any()):
-                    save_reward_episode(
-                        raw_dir, episode_id, images, labels, steps, metadata
+                    step += 1
+                    label = int(bool(np.asarray(info["right"]).reshape(-1)[0]))
+                    images.append(
+                        select_reward_images(
+                            obs, camera_keys, cfg.env.eval.main_image_key, available
+                        )
                     )
-                    images, labels, steps = [], [], []
-                    episode_id += 1
-                    step = 0
-                    self.log_info(
-                        f"Reward frames: success={success_count}/{self.target_success}, failure={fail_count}/{self.target_fail}; episodes={episode_id}"
+                    labels.append(label)
+                    steps.append(step)
+                    success_count += label
+                    fail_count += 1 - label
+                    ended = bool(terminated.any() or truncated.any())
+                    target_met = success_count >= self.target_success
+                    progress_bar.set_postfix(
+                        success=f"{success_count}/{self.target_success}",
+                        failure=fail_count,
+                        episode=episode_id + 1,
+                        step=f"{step}/{cfg.env.eval.max_episode_steps}",
+                        label="positive" if label else "negative",
+                        status="saving"
+                        if target_met
+                        else ("resetting" if ended else "collecting"),
+                        refresh=False,
                     )
-                    self.env.reset()
-                    if (
-                        success_count >= self.target_success
-                        and fail_count >= self.target_fail
-                    ):
+                    completed = min(success_count, self.target_success)
+                    progress_bar.update(completed - progress_bar.n)
+                    progress_bar.refresh()
+                    if target_met:
                         break
-                time.sleep(max(0, period - (time.monotonic() - started)))
-        finally:
-            save_reward_episode(raw_dir, episode_id, images, labels, steps, metadata)
+                    if ended:
+                        save_reward_episode(
+                            raw_dir, episode_id, images, labels, steps, metadata
+                        )
+                        images, labels, steps = [], [], []
+                        episode_id += 1
+                        step = 0
+                        self.log_info(
+                            f"Reward frames: success={success_count}/{self.target_success}, failure={fail_count}; episodes={episode_id}"
+                        )
+                        self.env.reset()
+                    time.sleep(max(0, period - (time.monotonic() - started)))
+            finally:
+                save_reward_episode(
+                    raw_dir, episode_id, images, labels, steps, metadata
+                )
         split_reward_episodes(
             raw_dir,
             cfg.runner.logger.log_path,

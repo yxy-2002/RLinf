@@ -21,7 +21,6 @@ runner:
   label_source: spacemouse_right
   camera_keys: [wrist_1, global]
   num_success_frames: 200
-  num_fail_frames: 600
   val_split: 0.2
   fail_success_ratio: 3.0
   random_seed: 42
@@ -29,7 +28,7 @@ runner:
 
 env:
   eval:
-    max_episode_steps: 200
+    max_episode_steps: 1000 # Keep same as env.eval.override_cfg.max_num_steps
     preserve_env_truncations: true
     auto_reset: false
     ignore_terminations: false
@@ -38,7 +37,6 @@ env:
     override_cfg:
       enable_pose_reward: false
       use_reward_model: false
-      max_num_steps: 200
-      step_frequency: 10.0
+      max_num_steps: 1000 # Keep same as env.eval.max_episode_steps
     data_collection:
       enabled: false

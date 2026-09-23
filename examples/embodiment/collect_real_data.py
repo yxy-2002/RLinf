@@ -139,10 +139,15 @@ class DataCollector(Worker):
         if success_cnt >= self.num_data_episodes:
             self.log_info(f"[resume] target {self.num_data_episodes} already met.")
             return
+        model_collection = self.cfg.runner.get("success_source") == "reward_model"
+        episode_step = total_frames = failed_episodes = timeout_episodes = 0
         progress_bar = tqdm(
             total=self.num_data_episodes,
             initial=success_cnt,
-            desc="Collecting Data Episodes:",
+            desc="Successful demos"
+            if model_collection
+            else "Collecting Data Episodes:",
+            dynamic_ncols=True,
         )
 
         current_rollout = EmbodiedRolloutResult(
@@ -151,127 +156,159 @@ class DataCollector(Worker):
 
         current_obs_processed = self._process_obs(obs)
 
-        while success_cnt < self.num_data_episodes and not self._quit:
-            iter_start = time.perf_counter()
-            # Teleop wrapper overrides this via info["intervene_action"].
-            action = np.zeros((1, self.action_dim))
-            next_obs, reward, terminated, truncated, info = self.env.step(action)
+        try:
+            while success_cnt < self.num_data_episodes and not self._quit:
+                iter_start = time.perf_counter()
+                # Teleop wrapper overrides this via info["intervene_action"].
+                action = np.zeros((1, self.action_dim))
+                next_obs, reward, terminated, truncated, info = self.env.step(action)
+                episode_step += 1
+                total_frames += 1
 
-            # ``kb_phase is None`` ⇒ no keyboard wrapper attached → upstream "record every step".
-            kb_event = info["keyboard_event"][0] if "keyboard_event" in info else None
-            kb_phase = info["keyboard_phase"][0] if "keyboard_phase" in info else None
-            if kb_event:
-                self.log_info(f"[keyboard] {kb_event}")
-
-            if (
-                self.cfg.runner.get("success_source") == "reward_model"
-                and "executed_action" in info
-            ):
-                action = info["executed_action"]
-            elif "intervene_action" in info:
-                action = info["intervene_action"]
-
-            next_obs_processed = self._process_obs(next_obs)
-
-            terminated_tensor = terminated.unsqueeze(1)
-            truncated_tensor = truncated.unsqueeze(1)
-            done_tensor = terminated_tensor | truncated_tensor
-            done = bool(done_tensor.any().item())
-
-            action_tensor = torch.as_tensor(action, dtype=torch.float32)
-            reward_tensor = reward.float().unsqueeze(1)
-
-            step_result = ChunkStepResult(
-                actions=action_tensor,
-                rewards=reward_tensor,
-                dones=done_tensor,
-                terminations=terminated_tensor,
-                truncations=truncated_tensor,
-                forward_inputs={"action": action_tensor},
-            )
-
-            # Rebuild rollout on rec-start or abort; ``restart`` kept for older wrappers.
-            if kb_event in ("start", "restart", "abort"):
-                current_rollout = EmbodiedRolloutResult(
-                    max_episode_length=self.cfg.env.eval.max_episode_steps,
+                # ``kb_phase is None`` ⇒ no keyboard wrapper attached → upstream "record every step".
+                kb_event = (
+                    info["keyboard_event"][0] if "keyboard_event" in info else None
                 )
-            if kb_phase in (None, "rec"):
-                current_rollout.append_step_result(step_result)
-                if self.cfg.runner.get("success_source") == "reward_model":
-                    current_rollout.mark_last_step_with_flags(
-                        torch.as_tensor(info.get("intervene_flag", [False]))
+                kb_phase = (
+                    info["keyboard_phase"][0] if "keyboard_phase" in info else None
+                )
+                if kb_event:
+                    self.log_info(f"[keyboard] {kb_event}")
+
+                if (
+                    self.cfg.runner.get("success_source") == "reward_model"
+                    and "executed_action" in info
+                ):
+                    action = info["executed_action"]
+                elif "intervene_action" in info:
+                    action = info["intervene_action"]
+
+                next_obs_processed = self._process_obs(next_obs)
+
+                terminated_tensor = terminated.unsqueeze(1)
+                truncated_tensor = truncated.unsqueeze(1)
+                done_tensor = terminated_tensor | truncated_tensor
+                done = bool(done_tensor.any().item())
+
+                action_tensor = torch.as_tensor(action, dtype=torch.float32)
+                reward_tensor = reward.float().unsqueeze(1)
+
+                step_result = ChunkStepResult(
+                    actions=action_tensor,
+                    rewards=reward_tensor,
+                    dones=done_tensor,
+                    terminations=terminated_tensor,
+                    truncations=truncated_tensor,
+                    forward_inputs={"action": action_tensor},
+                )
+
+                # Rebuild rollout on rec-start or abort; ``restart`` kept for older wrappers.
+                if kb_event in ("start", "restart", "abort"):
+                    current_rollout = EmbodiedRolloutResult(
+                        max_episode_length=self.cfg.env.eval.max_episode_steps,
                     )
-                current_rollout.append_transitions(
-                    curr_obs=current_obs_processed, next_obs=next_obs_processed
-                )
-
-            obs = next_obs
-            current_obs_processed = next_obs_processed
-
-            if done:
-                r_val = (
-                    reward[0]
-                    if hasattr(reward, "__getitem__") and len(reward) > 0
-                    else reward
-                )
-                if isinstance(r_val, torch.Tensor):
-                    r_val = r_val.item()
-
-                manual_done = False
-                if "manual_done" in info:
-                    md = info["manual_done"]
-                    if hasattr(md, "__getitem__") and len(md) > 0:
-                        manual_done = bool(md[0])
-                    else:
-                        manual_done = bool(md)
-
-                self.total_cnt += 1
-                if self.cfg.runner.get("success_source") == "reward_model":
-                    save_episode = bool(torch.as_tensor(info["success"]).any())
-                elif self.manual_episode_control_only:
-                    save_episode = bool(manual_done)
-                else:
-                    save_episode = bool(r_val >= 0.5 or manual_done)
-
-                if save_episode:
-                    success_cnt += 1
-
-                    self.log_info(
-                        f"Success (reward={r_val}, manual_done={manual_done}). "
-                        f"Total: {success_cnt}/{self.num_data_episodes}"
-                    )
-
-                    trajectory = current_rollout.to_trajectory()
-                    if self.cfg.runner.get("success_source") != "reward_model":
-                        trajectory.intervene_flags = torch.ones_like(
-                            trajectory.intervene_flags
+                if kb_phase in (None, "rec"):
+                    current_rollout.append_step_result(step_result)
+                    if self.cfg.runner.get("success_source") == "reward_model":
+                        current_rollout.mark_last_step_with_flags(
+                            torch.as_tensor(info.get("intervene_flag", [False]))
                         )
-                    self.buffer.add_trajectories([trajectory])
-
-                    progress_bar.update(1)
-                else:
-                    self.log_info(
-                        f"Episode ended (reward={r_val:.2f}). "
-                        f"Discarded. Total success: {success_cnt}/{self.num_data_episodes}"
+                    current_rollout.append_transitions(
+                        curr_obs=current_obs_processed, next_obs=next_obs_processed
                     )
 
-                reset_options = None
-                if success_cnt >= self.num_data_episodes:
-                    reset_options = {"skip_wait_for_start": True}
-                obs, _ = self.env.reset(options=reset_options)
-                current_obs_processed = self._process_obs(obs)
-                current_rollout = EmbodiedRolloutResult(
-                    max_episode_length=self.cfg.env.eval.max_episode_steps,
-                )
+                obs = next_obs
+                current_obs_processed = next_obs_processed
 
-            # Pin loop period; on ``done`` env.reset usually exceeds it → sleep_for≤0 no-ops.
-            if self._target_step_period is not None:
-                elapsed = time.perf_counter() - iter_start
-                sleep_for = self._target_step_period - elapsed
-                if sleep_for > 0:
-                    time.sleep(sleep_for)
+                if done:
+                    r_val = (
+                        reward[0]
+                        if hasattr(reward, "__getitem__") and len(reward) > 0
+                        else reward
+                    )
+                    if isinstance(r_val, torch.Tensor):
+                        r_val = r_val.item()
 
-        progress_bar.close()
+                    manual_done = False
+                    if "manual_done" in info:
+                        md = info["manual_done"]
+                        if hasattr(md, "__getitem__") and len(md) > 0:
+                            manual_done = bool(md[0])
+                        else:
+                            manual_done = bool(md)
+
+                    self.total_cnt += 1
+                    if self.cfg.runner.get("success_source") == "reward_model":
+                        save_episode = bool(torch.as_tensor(info["success"]).any())
+                    elif self.manual_episode_control_only:
+                        save_episode = bool(manual_done)
+                    else:
+                        save_episode = bool(r_val >= 0.5 or manual_done)
+
+                    if save_episode:
+                        success_cnt += 1
+
+                        self.log_info(
+                            f"Success (reward={r_val}, manual_done={manual_done}). "
+                            f"Total: {success_cnt}/{self.num_data_episodes}"
+                        )
+
+                        trajectory = current_rollout.to_trajectory()
+                        if self.cfg.runner.get("success_source") != "reward_model":
+                            trajectory.intervene_flags = torch.ones_like(
+                                trajectory.intervene_flags
+                            )
+                        self.buffer.add_trajectories([trajectory])
+
+                        progress_bar.update(1)
+                    else:
+                        self.log_info(
+                            f"Episode ended (reward={r_val:.2f}). "
+                            f"Discarded. Total success: {success_cnt}/{self.num_data_episodes}"
+                        )
+
+                    if not save_episode:
+                        failed_episodes += 1
+                        timeout_episodes += int(bool(truncated_tensor.any()))
+
+                if model_collection:
+                    progress = {
+                        "success": f"{success_cnt}/{self.num_data_episodes}",
+                        "failure": failed_episodes,
+                        "timeouts": timeout_episodes,
+                        "episode": self.total_cnt if done else self.total_cnt + 1,
+                        "step": f"{episode_step}/{self.cfg.env.eval.max_episode_steps}",
+                        "frames": total_frames,
+                        "status": "resetting" if done else "collecting",
+                    }
+                    if "reward_probability" in info:
+                        progress["probability"] = (
+                            f"{float(torch.as_tensor(info['reward_probability']).reshape(-1)[0]):.3f}"
+                        )
+                    progress_bar.set_postfix(progress, refresh=False)
+                    progress_bar.refresh()
+
+                if done:
+                    reset_options = None
+                    if success_cnt >= self.num_data_episodes:
+                        reset_options = {"skip_wait_for_start": True}
+                    obs, _ = self.env.reset(options=reset_options)
+                    current_obs_processed = self._process_obs(obs)
+                    current_rollout = EmbodiedRolloutResult(
+                        max_episode_length=self.cfg.env.eval.max_episode_steps,
+                    )
+
+                    episode_step = 0
+
+                # Pin loop period; on ``done`` env.reset usually exceeds it → sleep_for≤0 no-ops.
+                if self._target_step_period is not None:
+                    elapsed = time.perf_counter() - iter_start
+                    sleep_for = self._target_step_period - elapsed
+                    if sleep_for > 0:
+                        time.sleep(sleep_for)
+
+        finally:
+            progress_bar.close()
         self.log_info(
             f"Finished. Demos saved in: {os.path.join(self.cfg.runner.logger.log_path, 'demos')}"
         )

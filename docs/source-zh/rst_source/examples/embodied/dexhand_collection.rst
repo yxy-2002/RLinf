@@ -21,7 +21,7 @@ Ruiyan 灵巧手 Reward Model 数采
 
    bash examples/reward/realworld_collect_process_dataset.sh dexhand_reward_model
 
-此命令采集同一环境步的双相机图像和标签，并关闭位姿成功判定。默认频率为 10 Hz，每回合 600 步，目标为 200 正帧和 600 负帧。两个目标均达到后，在回合边界停止。可覆盖 ``runner.num_success_frames``、``runner.num_fail_frames`` 和 ``runner.fps``；请保持 ``env.eval.max_episode_steps`` 与 ``env.eval.override_cfg.max_num_steps`` 相等。
+此命令采集同一环境步的双相机图像和标签，并关闭位姿成功判定。默认频率为 10 Hz，正帧目标为 200。达到正帧目标后立即保存当前已采帧并停止，不等待回合结束；负帧不设采集目标或上限。可覆盖 ``runner.num_success_frames`` 和 ``runner.fps``；请保持 ``env.eval.max_episode_steps`` 与 ``env.eval.override_cfg.max_num_steps`` 相等。
 
 成功状态持续期间需要持续按住右键，松开即恢复负样本标注。请跨多个回合采集两类样本，并覆盖不同物体位置和光照。
 
@@ -41,6 +41,15 @@ Ruiyan 灵巧手 Reward Model 数采
      --raw-data-path /path/to/run/raw_reward_episodes \
      --output-dir /path/to/processed_reward_data \
      --fail-success-ratio 3
+
+离线审核与裁剪
+----------------------------------------
+
+运行 ``python -m toolkits.dexhand.review_classifier_data --input /path/to/raw_reward_episodes --output-dir /path/to/reviewed`` 查看各相机图像，标记保留或丢弃帧。未审核帧默认保留；仅在显式指定 ``--replace-inputs`` 时先备份再覆盖输入文件。无桌面时使用 ``--dry-run``。
+
+使用 ``python -m toolkits.dexhand.crop_classifier_data --data-dir /path/to/reviewed/review_<timestamp> --output-dir /path/to/cropped --crop-config toolkits/dexhand/config/classifier_crop.yaml`` 离线裁剪。示例默认保留全图，使用前请修改归一化裁剪范围；demo 数据还需添加 ``--camera-keys wrist_1 global``。图像保持原尺寸和 dtype，标签、episode/step 标识及 demo 非图像字段不变。已保存图像坐标与原始相机坐标不同；部署使用裁剪数据训练的模型前，需同步在线相机裁剪配置。
+
+按键、备份、支持格式及坐标换算见 ``toolkits/dexhand/DATASET_TOOLS.md``。审核后的原始回合可用上文预处理命令重新生成训练/验证集。
 
 训练 Reward Model
 ----------------------------------------

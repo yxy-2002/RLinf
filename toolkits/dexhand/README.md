@@ -1,6 +1,13 @@
-# 手套重定向实时 RViz 可视化
+# 灵巧手工具
 
-本目录只用于实时观察 `rlinf_dexhand` 重定向输出，不采集 episode、不读取回放文件、不提供硬件反馈。正式遥操作与数采沿用 `examples/embodiment/collect_real_data.py` 和现有 RealWorld 环境；Wuji 的完整 RealWorld 集成尚未完成。
+本目录提供手套重定向实时 RViz 可视化，以及离线 reward 数据审核、reward/demo 图像裁剪工具。正式遥操作与数采沿用 `examples/embodiment/collect_real_data.py` 和现有 RealWorld 环境；Wuji 的完整 RealWorld 集成尚未完成。
+
+## 离线数据工具
+
+- [review_classifier_data.py](review_classifier_data.py)：逐帧查看相机图像，标记保留/丢弃，保存审核后的 reward 数据。
+- [crop_classifier_data.py](crop_classifier_data.py)：按相机配置批量裁剪 reward 和 demo 图像。
+
+启动命令、按键和裁剪坐标说明见 [DATASET_TOOLS.md](DATASET_TOOLS.md)。以下章节介绍实时 RViz 可视化。
 
 ## 安装与标定
 
