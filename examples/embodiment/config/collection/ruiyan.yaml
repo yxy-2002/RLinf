@@ -36,13 +36,18 @@ env:
       camera_names:
         '323622272844': wrist_1
         '105322251046': global
+      # Raw-frame ROI matching cropped_reward_20260924 (640x480 input).
+      # Order: top, left, bottom, right; normalized to raw frame dimensions.
+      camera_crop_regions:
+        '323622272844': [0.0, 0.125, 1.0, 0.875]
+        '105322251046': [0.0, 0.21875, 0.75, 0.78125]
       target_ee_pose:
-      - 0.70416806
-      - 0.11882583
-      - 0.39912649
-      - 1.65310945
-      - 0.73057801
-      - 0.99932396
+      - 0.61432717
+      - -0.073132
+      - 0.34262782
+      - 2.0990719
+      - -0.80534689
+      - 1.18319270
       ee_pose_limit_min_offset:
       - -0.2
       - -0.2

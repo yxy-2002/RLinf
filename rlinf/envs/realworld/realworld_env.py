@@ -31,6 +31,27 @@ from rlinf.envs.utils import to_tensor
 from rlinf.scheduler import WorkerInfo
 
 
+def _executed_action_tensor(infos: dict, expected_shape: tuple) -> torch.Tensor:
+    """Unpack vector-env action info without fabricating missing actions."""
+    values = infos["executed_action"]
+    mask = infos.get("_executed_action")
+    if mask is not None and not np.asarray(mask, dtype=bool).all():
+        raise ValueError("executed_action is missing for an environment")
+    if len(values) != expected_shape[0] or any(v is None for v in values):
+        raise ValueError("executed_action must contain one action per environment")
+    rows = [
+        v.detach().cpu().numpy() if isinstance(v, torch.Tensor) else v for v in values
+    ]
+    actions = np.stack([np.asarray(v, dtype=np.float32) for v in rows])
+    if actions.shape != tuple(expected_shape):
+        raise ValueError(
+            f"executed_action shape {actions.shape} != expected {expected_shape}"
+        )
+    if not np.isfinite(actions).all():
+        raise ValueError("executed_action contains non-finite values")
+    return torch.from_numpy(actions)
+
+
 class RealWorldEnv(gym.Env):
     def __init__(self, cfg, num_envs, seed_offset, total_num_processes, worker_info):
         assert num_envs == 1, (
@@ -280,6 +301,8 @@ class RealWorldEnv(gym.Env):
                     intervene_action[env_id] = env_intervene_action.copy()
         infos["intervene_action"] = to_tensor(intervene_action)
         infos["intervene_flag"] = to_tensor(intervene_flag)
+        if "executed_action" in infos:
+            infos["executed_action"] = _executed_action_tensor(infos, actions.shape)
 
         dones = terminations | truncations
         _auto_reset = auto_reset and self.auto_reset

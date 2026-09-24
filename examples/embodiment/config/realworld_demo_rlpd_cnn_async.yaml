@@ -1,0 +1,383 @@
+defaults:
+- env/realworld_dex_pnp@env.train
+- env/realworld_dex_pnp@env.eval
+- model/cnn_policy@actor.model
+- training_backend/fsdp@actor.fsdp_config
+- weight_syncer/patch_syncer@weight_syncer
+- override hydra/job_logging: stdout
+- _self_
+hydra:
+  run:
+    dir: .
+  output_subdir: null
+  searchpath:
+  - file://${oc.env:EMBODIED_PATH}/config/
+cluster:
+  num_nodes: 2
+  component_placement:
+    actor:
+      node_group: '4090'
+      placement: 0
+    env:
+      node_group: franka
+      placement: 0
+    rollout:
+      node_group: '4090'
+      placement: 0
+    reward:
+      node_group: '4090'
+      placement: 0
+  node_groups:
+  - label: '4090'
+    node_ranks: 1
+  - label: franka
+    node_ranks: 0
+    hardware:
+      type: Franka
+      configs:
+      - robot_ip: 172.17.0.2
+        node_rank: 0
+runner:
+  task_type: embodied
+  logger:
+    log_path: ../results
+    project_name: rlinf
+    experiment_name: franka_ruiyan_rlpd
+    logger_backends:
+    - tensorboard
+  max_epochs: 1000
+  max_steps: -1
+  only_eval: false
+  val_check_interval: -1
+  save_interval: 50
+  resume_dir: null
+  ckpt_path: null
+algorithm:
+  update_epoch: 8
+  group_size: 1
+  agg_q: min
+  actor_agg_q: mean
+  enable_drq: false
+  backup_entropy: false
+  critic_subsample_size: 2
+  adv_type: embodied_sac
+  loss_type: embodied_sac
+  loss_agg_func: token-mean
+  bootstrap_type: standard
+  gamma: 0.96
+  tau: 0.005
+  entropy_tuning:
+    alpha_type: softplus
+    initial_alpha: 0.01
+    target_entropy: -6
+    optim:
+      lr: 0.0003
+      lr_scheduler: torch_constant
+      clip_grad: 10.0
+  critic_actor_ratio: 4
+  replay_buffer:
+    enable_cache: true
+    cache_size: 200
+    min_buffer_size: 2
+    sample_window_size: 200
+    auto_save: false
+  demo_buffer:
+    enable_cache: true
+    cache_size: 200
+    min_buffer_size: 1
+    sample_window_size: 200
+    load_path: /workspace/RLinf/datasets/demos_20260924_103922
+    auto_save: false
+  target_update_freq: 1
+env:
+  group_name: EnvGroup
+  eval:
+    rollout_epoch: 1
+    total_num_envs: 1
+    no_gripper: false
+    use_spacemouse: true
+    retargeting:
+      type: channel_linear
+    glove_config:
+      type: psiglove_1
+      left_port: /dev/ttyACM0
+      frequency: 60
+    auto_reset: true
+    ignore_terminations: false
+    max_episode_steps: 600
+    preserve_env_truncations: true
+    right_button_labels_only: true
+    override_cfg:
+      target_ee_pose:
+      - 0.61432717
+      - -0.073132
+      - 0.34262782
+      - 2.0990719
+      - -0.80534689
+      - 1.1831927
+      end_effector_type: ruiyan_hand
+      end_effector_config:
+        port: /dev/ttyUSB0
+        baudrate: 460800
+        motor_ids:
+        - 1
+        - 2
+        - 3
+        - 4
+        - 5
+        - 6
+        default_velocity: 2000
+        default_current: 800
+        default_state:
+        - 0.0
+        - 0.0
+        - 0.0
+        - 0.0
+        - 0.0
+        - 0.0
+      hand_target_state:
+      - 0.0
+      - 0.0
+      - 0.0
+      - 0.0
+      - 0.0
+      - 0.0
+      hand_reset_state:
+      - 0.0
+      - 0.0
+      - 0.0
+      - 0.0
+      - 0.0
+      - 0.0
+      hand_action_scale: 0.0
+      joint_reset_qpos:
+      - 0
+      - 0
+      - 0
+      - -1.9
+      - 0
+      - 2
+      - 0
+      use_dense_reward: false
+      is_dummy: false
+      enable_camera_player: false
+      enable_random_reset: false
+      camera_serials:
+      - '323622272844'
+      - '105322251046'
+      camera_names:
+        '323622272844': wrist_1
+        '105322251046': global
+      camera_crop_regions:
+        '323622272844':
+        - 0.0
+        - 0.125
+        - 1.0
+        - 0.875
+        '105322251046':
+        - 0.0
+        - 0.21875
+        - 0.75
+        - 0.78125
+      ee_pose_limit_min_offset:
+      - -0.2
+      - -0.2
+      - -0.2
+      - -0.003
+      - -0.003
+      - -0.003
+      ee_pose_limit_max_offset:
+      - 0.2
+      - 0.2
+      - 0.2
+      - 0.003
+      - 0.003
+      - 0.003
+      action_scale:
+      - 0.07
+      - 0.5
+      - 1.0
+      success_hold_steps: 1
+      step_frequency: 100.0
+      max_num_steps: 600
+      reward_success_confirmation: true
+      enable_pose_reward: false
+  train:
+    ignore_terminations: false
+    total_num_envs: 1
+    no_gripper: false
+    use_spacemouse: true
+    glove_config:
+      type: psiglove_1
+      left_port: /dev/ttyACM0
+      frequency: 60
+    override_cfg:
+      target_ee_pose:
+      - 0.61432717
+      - -0.073132
+      - 0.34262782
+      - 2.0990719
+      - -0.80534689
+      - 1.1831927
+      end_effector_type: ruiyan_hand
+      end_effector_config:
+        port: /dev/ttyUSB0
+        baudrate: 460800
+        motor_ids:
+        - 1
+        - 2
+        - 3
+        - 4
+        - 5
+        - 6
+        default_velocity: 2000
+        default_current: 800
+        default_state:
+        - 0.0
+        - 0.0
+        - 0.0
+        - 0.0
+        - 0.0
+        - 0.0
+      hand_target_state:
+      - 0.0
+      - 0.0
+      - 0.0
+      - 0.0
+      - 0.0
+      - 0.0
+      hand_reset_state:
+      - 0.0
+      - 0.0
+      - 0.0
+      - 0.0
+      - 0.0
+      - 0.0
+      hand_action_scale: 0.0
+      joint_reset_qpos:
+      - 0
+      - 0
+      - 0
+      - -1.9
+      - 0
+      - 2
+      - 0
+      use_dense_reward: false
+      is_dummy: false
+      enable_camera_player: false
+      enable_random_reset: false
+      camera_serials:
+      - '323622272844'
+      - '105322251046'
+      camera_names:
+        '323622272844': wrist_1
+        '105322251046': global
+      camera_crop_regions:
+        '323622272844':
+        - 0.0
+        - 0.125
+        - 1.0
+        - 0.875
+        '105322251046':
+        - 0.0
+        - 0.21875
+        - 0.75
+        - 0.78125
+      ee_pose_limit_min_offset:
+      - -0.2
+      - -0.2
+      - -0.2
+      - -0.003
+      - -0.003
+      - -0.003
+      ee_pose_limit_max_offset:
+      - 0.2
+      - 0.2
+      - 0.2
+      - 0.003
+      - 0.003
+      - 0.003
+      action_scale:
+      - 0.07
+      - 0.5
+      - 1.0
+      success_hold_steps: 1
+      step_frequency: 100.0
+      max_num_steps: 600
+      reward_success_confirmation: true
+      enable_pose_reward: false
+    retargeting:
+      type: channel_linear
+    auto_reset: true
+    max_episode_steps: 600
+    preserve_env_truncations: true
+    right_button_labels_only: true
+rollout:
+  group_name: RolloutGroup
+  backend: huggingface
+  enable_offload: false
+  pipeline_stage_num: 1
+  collect_transitions: true
+  collect_prev_infos: false
+  model:
+    model_path: /workspace/RLinf/RLinf-ResNet10-pretrained
+    precision: ${actor.model.precision}
+    action_dim: 12
+    num_q_heads: 10
+  enable_torch_compile: false
+  enable_cuda_graph: false
+actor:
+  group_name: ActorGroup
+  training_backend: fsdp
+  micro_batch_size: 256
+  global_batch_size: 256
+  seed: 1234
+  enable_offload: false
+  model:
+    model_path: /workspace/RLinf/RLinf-ResNet10-pretrained
+    state_dim: 24
+    action_dim: 12
+    num_q_heads: 10
+  optim:
+    clip_grad: 10.0
+    lr: 0.0003
+    lr_scheduler: torch_constant
+  critic_optim:
+    clip_grad: 10.0
+    lr: 0.0003
+    lr_scheduler: torch_constant
+  fsdp_config:
+    strategy: fsdp
+    sharding_strategy: no_shard
+    mixed_precision:
+      param_dtype: ${actor.model.precision}
+      reduce_dtype: ${actor.model.precision}
+      buffer_dtype: ${actor.model.precision}
+reward:
+  use_reward_model: true
+  group_name: RewardGroup
+  standalone_realworld: true
+  reward_mode: per_step
+  reward_threshold: 0.95
+  reward_weight: 1.0
+  env_reward_weight: 0.0
+  model:
+    model_path: /workspace/RLinf/logs/20260924-094123-dexhand_reward_training/dexhand-reward-training/checkpoints/best_model/actor/model_state_dict/full_weights.pt
+    model_type: resnet
+    pretrained: false
+    arch: resnet18
+    hidden_dim: 256
+    dropout: 0.1
+    image_size:
+    - 3
+    - 224
+    - 224
+    normalize: true
+    precision: fp32
+    camera_keys:
+    - wrist_1
+    - global
+critic:
+  use_critic_model: false
+weight_syncer:
+  nccl_max_ctas: 32

@@ -28,7 +28,7 @@ runner:
 
 env:
   eval:
-    max_episode_steps: 1000 # Keep same as env.eval.override_cfg.max_num_steps
+    max_episode_steps: 100 # Keep same as env.eval.max_episode_steps
     preserve_env_truncations: true
     auto_reset: false
     ignore_terminations: false
@@ -37,6 +37,6 @@ env:
     override_cfg:
       enable_pose_reward: false
       use_reward_model: false
-      max_num_steps: 1000 # Keep same as env.eval.max_episode_steps
+      max_num_steps: 100 # Keep same as env.eval.max_episode_steps
     data_collection:
       enabled: false

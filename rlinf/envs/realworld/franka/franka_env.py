@@ -280,7 +280,7 @@ class FrankaEnv(gym.Env):
                 "use_reward_model=True but reward_worker_cfg is not provided in env override_cfg."
             )
 
-        from rlinf.workers.reward.reward_worker import EmbodiedRewardWorker
+        from rlinf.workers.reward.embodied_reward_worker import EmbodiedRewardWorker
 
         reward_node_rank = self.config.reward_worker_node_rank
         if reward_node_rank is None:

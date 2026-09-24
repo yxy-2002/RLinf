@@ -1,0 +1,8 @@
+# Bounds are [top, left, bottom, right], normalized to the STORED image.
+# Keep the stored wrist image; crop the global view to the reviewed task region.
+coordinates: stored
+cameras:
+  wrist_1:
+    crop: [0.0, 0.0, 1.0, 1.0]
+  global:
+    crop: [0, 0.125, 0.75, 0.875]

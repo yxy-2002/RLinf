@@ -65,6 +65,10 @@ class RelativeFrame(gym.Wrapper):
                 info["intervene_action"]
             )
 
+        # Recorded actions must use the same frame as policy inputs.
+        if "executed_action" in info:
+            info["executed_action"] = self.transform_action_inv(info["executed_action"])
+
         # Update adjoint matrix
         self.adjoint_matrix = construct_adjoint_matrix(obs["state"]["tcp_pose"])
 

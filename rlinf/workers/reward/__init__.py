@@ -12,16 +12,23 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Reward workers for RLinf."""
-
-from rlinf.workers.reward.reward_worker import (
-    FSDPRewardWorker,
-    RewardBinaryDataset,
-    RewardWorker,
-)
+"""Reward workers with training dependencies loaded only when requested."""
 
 __all__ = [
     "RewardWorker",
     "FSDPRewardWorker",
     "RewardBinaryDataset",
+    "EmbodiedRewardWorker",
 ]
+
+
+def __getattr__(name):
+    if name == "EmbodiedRewardWorker":
+        from rlinf.workers.reward.embodied_reward_worker import EmbodiedRewardWorker
+
+        return EmbodiedRewardWorker
+    if name in __all__:
+        from rlinf.workers.reward import reward_worker
+
+        return getattr(reward_worker, name)
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
