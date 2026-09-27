@@ -69,7 +69,9 @@ export RLINF_NODE_RANK=1
 ray start --address=<控制节点IP>:6379
 ```
 
-仅在控制节点启动采集，权重路径必须在 GPU 节点可读：
+在已加入上述 Ray 集群的 GPU 节点、具备完整训练依赖的 Python 环境中启动以下采集入口。入口先创建并初始化 GPU 奖励服务，再将服务名称传给控制节点上的采集 Worker；机器人、相机、手套和 SpaceMouse 仍由控制节点访问。权重路径必须在 GPU 节点可读。
+
+控制节点只通过 Ray 调用奖励服务，不导入奖励 Worker 的实现。采集结束时，启动进程先关闭采集 Worker，再关闭奖励服务。`runner.logger.log_path` 用于控制节点上的数据保存；下面的 `$PWD` 由启动命令所在机器展开，请确保该路径在控制节点可写：
 
 ```bash
 bash examples/embodiment/collect_data.sh dexhand_demo_data \

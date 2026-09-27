@@ -65,6 +65,8 @@ class FrankaRobotConfig:
     enable_pose_reward: bool = True
     reward_camera_keys: Optional[list[str]] = None
     use_reward_model: bool = False
+    # Runtime address of a reward service owned by the collection driver.
+    reward_service_name: Optional[str] = None
     reward_worker_cfg: Optional[dict] = None
     reward_worker_hardware_rank: Optional[int] = None
     reward_worker_node_rank: Optional[int] = None
@@ -279,6 +281,12 @@ class FrankaEnv(gym.Env):
             raise ValueError(
                 "use_reward_model=True but reward_worker_cfg is not provided in env override_cfg."
             )
+
+        if self.config.reward_service_name is not None:
+            from rlinf.utils.realworld_reward import RealWorldRewardClient
+
+            self._reward_worker = RealWorldRewardClient(self.config.reward_service_name)
+            return
 
         from rlinf.workers.reward.reward_worker import EmbodiedRewardWorker
 
@@ -504,7 +512,10 @@ class FrankaEnv(gym.Env):
                     f"Available keys: {list(frames.keys())}"
                 )
             inputs = {"main_images": np.expand_dims(frames[image_key], 0)}
-        reward_output = self._reward_worker.compute_image_rewards(inputs).wait()[0]
+        if self.config.reward_service_name is not None:
+            reward_output = self._reward_worker.compute_image_rewards(inputs)
+        else:
+            reward_output = self._reward_worker.compute_image_rewards(inputs).wait()[0]
         if hasattr(reward_output, "detach"):
             reward_output = reward_output.detach().cpu().numpy()
         reward_array = np.asarray(reward_output).reshape(-1)
@@ -733,7 +744,8 @@ class FrankaEnv(gym.Env):
                 self.config.reward_success_confirmation
                 and getattr(self, "_reward_worker", None) is not None
             ):
-                self._reward_worker._close()
+                if self.config.reward_service_name is None:
+                    self._reward_worker._close()
                 self._reward_worker = None
         finally:
             if hasattr(self, "camera_player"):

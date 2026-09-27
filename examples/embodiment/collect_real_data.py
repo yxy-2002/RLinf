@@ -32,7 +32,7 @@ from rlinf.scheduler import Cluster, ComponentPlacement, Worker
 
 
 class DataCollector(Worker):
-    def __init__(self, cfg, env_cfg=None):
+    def __init__(self, cfg, env_cfg=None, reward_service_name: str | None = None):
         super().__init__()
 
         self._quit = False
@@ -49,6 +49,7 @@ class DataCollector(Worker):
             seed_offset=0,
             total_num_processes=1,
             worker_info=self.worker_info,
+            reward_service_name=reward_service_name,
         )
 
         dc_cfg = cfg.env.eval.get("data_collection")
@@ -342,25 +343,36 @@ def main(cfg):
         env_cfg = inject_realworld_reward_cfg(
             cfg, env_cfg, component_placement, cluster
         )
-    collector = DataCollector.create_group(cfg, env_cfg=env_cfg).launch(
-        cluster, name=cfg.env.group_name, placement_strategy=env_placement
-    )
-
-    if cfg.runner.get("success_source") != "reward_model":
-        collector.run().wait()
-        return
-
-    def request_stop(signum, frame):
-        collector.request_stop()
-
+    reward_group = None
+    collector = None
     previous_handlers = {}
     try:
-        for sig in (signal.SIGINT, signal.SIGTERM):
-            previous_handlers[sig] = signal.signal(sig, request_stop)
+        reward_service_name = None
+        if cfg.runner.get("success_source") == "reward_model":
+            from rlinf.utils.realworld_reward import launch_realworld_reward_service
+
+            reward_group, reward_service_name = launch_realworld_reward_service(env_cfg)
+        collector = DataCollector.create_group(
+            cfg, env_cfg=env_cfg, reward_service_name=reward_service_name
+        ).launch(cluster, name=cfg.env.group_name, placement_strategy=env_placement)
+
+        if cfg.runner.get("success_source") == "reward_model":
+
+            def request_stop(signum, frame):
+                collector.request_stop()
+
+            for sig in (signal.SIGINT, signal.SIGTERM):
+                previous_handlers[sig] = signal.signal(sig, request_stop)
         collector.run().wait()
     finally:
         for sig, handler in previous_handlers.items():
             signal.signal(sig, handler)
+        try:
+            if collector is not None:
+                collector._close()
+        finally:
+            if reward_group is not None:
+                reward_group._close()
 
 
 if __name__ == "__main__":

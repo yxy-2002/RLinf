@@ -12,9 +12,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Shared placement injection for environment-owned real-world reward workers."""
+"""Placement, service creation and lightweight clients for real-world rewards."""
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from omegaconf import DictConfig, OmegaConf
 
@@ -66,3 +66,58 @@ def inject_realworld_reward_cfg(
     if reward.model.get("camera_keys"):
         override.reward_camera_keys = reward.model.camera_keys
     return result
+
+
+class RealWorldRewardClient:
+    """Call an existing reward actor without importing its implementation.
+
+    Args:
+        service_name: Ray actor name in the RLinf cluster namespace.
+    """
+
+    def __init__(self, service_name: str):
+        import ray
+
+        from rlinf.scheduler import Cluster
+
+        self._actor = ray.get_actor(service_name, namespace=Cluster.NAMESPACE)
+
+    def compute_image_rewards(self, observations: dict[str, Any]) -> Any:
+        """Return image rewards from the GPU service, blocking until ready."""
+        import ray
+
+        return ray.get(self._actor.compute_image_rewards.remote(observations))
+
+
+def launch_realworld_reward_service(env_cfg: DictConfig) -> tuple[Any, str]:
+    """Create and initialize a reward service in the configured placement.
+
+    Call from a driver with training dependencies installed. The caller owns
+    the returned worker group and must close it after all clients finish.
+    Only the returned actor name should be passed to environment workers.
+
+    Args:
+        env_cfg: Environment config returned by inject_realworld_reward_cfg.
+
+    Returns:
+        The owned worker group and the name used by lightweight clients.
+    """
+    from rlinf.scheduler import WorkerAddress
+    from rlinf.workers.reward.reward_worker import EmbodiedRewardWorker
+
+    override = env_cfg.override_cfg
+    group = EmbodiedRewardWorker.launch_for_realworld(
+        reward_cfg=OmegaConf.to_container(override.reward_worker_cfg, resolve=True),
+        node_rank=override.reward_worker_node_rank,
+        node_group_label=override.reward_worker_node_group,
+        hardware_rank=override.reward_worker_hardware_rank,
+    )
+    try:
+        group.init_worker().wait()
+        service_name = WorkerAddress(
+            root_group_name=group.worker_group_name, ranks=0
+        ).get_name()
+    except BaseException:
+        group._close()
+        raise
+    return group, service_name
