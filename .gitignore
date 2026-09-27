@@ -22,3 +22,4 @@ PKG-INFO
 *.egg-info/
 .claude/settings.json
 /franka_infra
+/psi-glove-air2wuji-hand
