@@ -8,7 +8,7 @@ from pathlib import Path
 import numpy as np
 import yaml
 
-from ..types import HandSpec, HandTarget
+from ..types import HandTarget
 from .kinematics import ASSETS, GloveKinematics
 from .reference import TIP_IDX, WRIST_IDX, build_ref_values
 
@@ -40,15 +40,11 @@ class WujiTier2:
         if list(self.cfg.target_joint_names) != self.robot.joint_names:
             raise ValueError("Wuji optimizer and action joint order differ")
         self.optimizer = Tier2Optimizer(self.robot, self.cfg)
-        limits = self.robot.joint_limits
-        self.spec = HandSpec(
-            "wuji1hand",
-            side,
-            tuple(self.cfg.target_joint_names),
-            "rad",
-            tuple(limits[:, 0]),
-            tuple(limits[:, 1]),
-        )
+        from ..wuji_spec import wuji_spec
+
+        self.spec = wuji_spec(side)
+        if tuple(self.cfg.target_joint_names) != self.spec.joint_names:
+            raise ValueError("Custom retargeting joint order differs from hardware")
         self.scale = None
         if not calibrating:
             if not scale_file:
@@ -78,6 +74,7 @@ class WujiTier2:
         if (
             sample.glove_type != "psiglove_2"
             or sample.side != self.side
+            or len(sample.adc) != 22
             or tuple(sample.channel_names) != channel_names("psiglove_2")
         ):
             raise ValueError("wuji_tier2 requires matching psiglove_2 channels")

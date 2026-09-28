@@ -64,7 +64,7 @@ python -m rlinf_dexhand.calibrate --config path/to/config.yaml \
 
 [RViz 测试说明](../../toolkits/dexhand/README.md)提供独立脚本，仅用于验证重定向。测试通过后可移除该工具目录，第三方库不依赖它。
 
-正式遥操作与采集沿用 `examples/embodiment/collect_real_data.py` 和现有 RealWorld 环境。RViz 仅用于实时可视化，不提供采集、文件回放或硬件反馈接口。Wuji 的完整 RealWorld 集成尚未完成。
+正式遥操作与采集沿用 `examples/embodiment/collect_real_data.py` 和现有 RealWorld 环境。Wuji 通过 ROS1 驱动接入现有 EndEffector；RViz 订阅 SDK 输入目标和硬件反馈。安装与故障恢复见上述工具说明，真机验收状态见 VALIDATION.md。
 
 ```bash
 bash requirements/install.sh dexhand test
@@ -75,7 +75,9 @@ PYTHONPATH=. python -m pytest -q third_party/rlinf-dexhand/tests tests/dexhand
 
 ## PSI1 数采丢帧回退
 
-Franka + 睿研数采使用的 `rlinf_dexhand.glove.GloveExpert` 默认容忍读取超时、
+`GloveExpert` 必须显式传入完整 `pipeline_config`；缺失或文件不存在会报错，不再支持仅通过 `left_port`、`right_port`、`config_file` 构造的旧接口。仅接受 `psiglove_1 + channel_linear + ruiyanhand` 或 `psiglove_2 + wuji_tier2 + wuji1hand`，左右手也必须一致。配置检查在读取线程启动前完成。可复制 `configs/psiglove_1_ruiyan_left.yaml` 或 `configs/psiglove_2_wuji_left.yaml`，再填写现场串口及标定文件。
+
+Franka + 睿研/Wuji 数采共用的 `rlinf_dexhand.glove.GloveExpert` 默认容忍读取超时、
 截断帧、错误帧头和 CRC 错误：丢弃坏帧、清理残留接收数据，保留最近一次有效
 `HandTarget` 并继续查询。坏帧不会进入重定向或滤波器。缓存的 `sequence` 和
 `timestamp` 保持原值；即使超过 0.5 秒也不会仅因缓存过期而退出。
@@ -84,7 +86,7 @@ Franka + 睿研数采使用的 `rlinf_dexhand.glove.GloveExpert` 默认容忍读
 from rlinf_dexhand.glove import GloveExpert
 
 expert = GloveExpert(
-    left_port="/dev/ttyACM0",
+    pipeline_config="/absolute/path/glove.yaml",
     startup_timeout=3.0,
     warning_interval=5.0,
 )
@@ -99,6 +101,8 @@ finally:
 接口配置，未增加 RLinf YAML 透传。首次异常立即 warning，后续告警最多每
 `warning_interval` 秒一次，包含串口、异常、连续失败次数、缓存年龄和回退状态；
 恢复有效采样时输出一次 info（需调用方启用 INFO 日志）。
+
+完整且 CRC 正确的手套帧若通道数与配置不匹配，会作为不可恢复错误退出，不使用缓存掩盖维度错误。
 
 有缓存后的持续丢帧会无限期回退，因此数采继续并不表示手套信号已恢复。
 原有遥操作基准和映射保持不变，恢复后的新数据可能相对于旧基准产生目标变化。

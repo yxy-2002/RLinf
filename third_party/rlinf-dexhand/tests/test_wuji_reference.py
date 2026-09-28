@@ -5,6 +5,7 @@
 
 import ast
 import importlib.util
+import os
 import sys
 import time
 from pathlib import Path
@@ -16,7 +17,12 @@ from rlinf_dexhand.retargeting.kinematics import ASSETS
 from rlinf_dexhand.retargeting.wuji import WujiTier2
 from rlinf_dexhand.types import GloveSample
 
-BASE = Path("/home/cys/yxy/psi-glove-air2wuji-hand")
+BASE = Path(
+    os.environ.get(
+        "WUJI_REFERENCE_PATH",
+        Path(__file__).resolve().parents[3] / "psi-glove-air2wuji-hand",
+    )
+)
 pytestmark = pytest.mark.skipif(
     not BASE.exists(), reason="Original reference workspace required"
 )

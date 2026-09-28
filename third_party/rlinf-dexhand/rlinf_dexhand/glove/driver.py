@@ -65,12 +65,14 @@ class PSIGloveDriver:
 
     def parse_frame(self, data):
         n = len(self.names)
-        if len(data) != 5 + 2 * n or data[:3] != bytes((1, 3, 2 * n)):
-            raise GloveFrameError(
-                f"{self.glove_type} requires {n} channels; incompatible or truncated frame"
-            )
+        if len(data) < 5 or data[:2] != bytes((1, 3)) or len(data) != 5 + data[2]:
+            raise GloveFrameError("Invalid or truncated glove frame")
         if crc16(data[:-2]) != int.from_bytes(data[-2:], "little"):
             raise GloveFrameError("Glove CRC mismatch")
+        if data[2] != 2 * n:
+            raise ValueError(
+                f"{self.glove_type} requires {n} channels, got {data[2]} payload bytes"
+            )
         adc = struct.unpack(">" + "H" * n, data[3:-2])
         self.sequence += 1
         return GloveSample(
@@ -86,7 +88,7 @@ class PSIGloveDriver:
             header = self.serial.read(3)
             if len(header) != 3:
                 raise TimeoutError("No complete glove header")
-            if header != bytes((1, 3, 2 * len(self.names))):
+            if header[:2] != bytes((1, 3)):
                 raise GloveFrameError(f"Unexpected glove header: {header.hex(' ')}")
             return self.parse_frame(header + self.serial.read(header[2] + 2))
         except (TimeoutError, GloveFrameError):

@@ -114,15 +114,18 @@ class FrankaController(Worker):
 
         self._ros = ROSController()
         self._init_ros_channels()
-        self._init_end_effector(end_effector_config or {}, gripper_connection)
-
         self._impedance: psutil.Process | None = None
         self._joint: psutil.Process | None = None
+        try:
+            self._init_end_effector(end_effector_config or {}, gripper_connection)
 
-        self.start_impedance()
-        self._reconf_client = self._ReconfClient(
-            "cartesian_impedance_controllerdynamic_reconfigure_compliance_param_node"
-        )
+            self.start_impedance()
+            self._reconf_client = self._ReconfClient(
+                "cartesian_impedance_controllerdynamic_reconfigure_compliance_param_node"
+            )
+        except BaseException:
+            self.shutdown()
+            raise
 
     def _resolve_robot_ip_from_node(self) -> Optional[str]:
         """Return the first ``robot_ip`` in this node's hardware infos, if any.
@@ -167,6 +170,7 @@ class FrankaController(Worker):
 
         self._end_effector = create_end_effector(
             self._end_effector_type,
+            ros=self._ros,
             **end_effector_config,
         )
         self._end_effector.initialize()
@@ -267,6 +271,7 @@ class FrankaController(Worker):
                 "robot_ip:=" + self._robot_ip,
                 f"load_gripper:={load_gripper}",
             ],
+            start_new_session=True,
             stdout=sys.stdout,
             stderr=sys.stdout,
         )
@@ -309,6 +314,7 @@ class FrankaController(Worker):
                 "robot_ip:=" + self._robot_ip,
                 f"load_gripper:={load_gripper}",
             ],
+            start_new_session=True,
             stdout=sys.stdout,
         )
         self._wait_robot()
@@ -435,3 +441,29 @@ class FrankaController(Worker):
             return ["gripper"]
         assert self._end_effector is not None
         return self._end_effector.finger_names
+
+    def clear_hand_trajectory(self) -> None:
+        if self._end_effector_type == EndEffectorType.WUJI_HAND:
+            self._end_effector.clear_trajectory()
+
+    def shutdown(self) -> None:
+        """Release only hardware processes owned by this controller."""
+        import signal
+
+        try:
+            if self._end_effector is not None:
+                self._end_effector.shutdown()
+                self._end_effector = None
+        finally:
+            for name in ("_impedance", "_joint"):
+                process = getattr(self, name, None)
+                if process is not None and process.is_running():
+                    import os
+
+                    os.killpg(process.pid, signal.SIGINT)
+                    try:
+                        process.wait(timeout=5)
+                    except psutil.TimeoutExpired:
+                        os.killpg(process.pid, signal.SIGKILL)
+                        process.wait()
+                setattr(self, name, None)

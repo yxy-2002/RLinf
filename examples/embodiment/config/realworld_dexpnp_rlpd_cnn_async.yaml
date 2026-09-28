@@ -118,7 +118,7 @@ env:
     no_gripper: False
     use_spacemouse: True
     glove_config:
-      left_port: "/dev/ttyACM0"
+      pipeline_config: ??? # Explicit PSI1 + Ruiyan pipeline YAML
       frequency: 30
     override_cfg:
       # Optional per-camera overrides keyed by RealSense serial number.

@@ -1,74 +1,87 @@
 # 灵巧手工具
 
-本目录提供手套重定向实时 RViz 可视化，以及离线 reward 数据审核、reward/demo 图像裁剪工具。正式遥操作与数采沿用 `examples/embodiment/collect_real_data.py` 和现有 RealWorld 环境；Wuji 的完整 RealWorld 集成尚未完成。
+正式 Wuji/Ruiyan 遥操作、reward 和 demo 采集复用 RealWorld 环境。Wuji 控制使用 ROS1 Noetic 和 `wujihandcpp 1.5.1`；显示已迁移至 ROS1，旧 ROS2/ZMQ 显示入口已移除。
 
 ## 离线数据工具
 
-- [review_classifier_data.py](review_classifier_data.py)：逐帧查看相机图像，标记保留/丢弃，保存审核后的 reward 数据。
-- [crop_classifier_data.py](crop_classifier_data.py)：按相机配置批量裁剪 reward 和 demo 图像。
+- [review_classifier_data.py](review_classifier_data.py)：审核 reward 图像。
+- [crop_classifier_data.py](crop_classifier_data.py)：裁剪 reward/demo 图像。
+- 命令见 [DATASET_TOOLS.md](DATASET_TOOLS.md)。
 
-启动命令、按键和裁剪坐标说明见 [DATASET_TOOLS.md](DATASET_TOOLS.md)。以下章节介绍实时 RViz 可视化。
+## 手套配置要求
 
-## 安装与标定
+`GloveExpert` 必须传入完整的 `pipeline_config`，不再自动使用 PSI1/Ruiyan 默认构造。仅支持 `psiglove_1 + channel_linear + ruiyanhand` 和 `psiglove_2 + wuji_tier2 + wuji1hand`，左右手必须一致；错误配置在启动读取线程前报错。
 
-在仓库根目录，计算环境安装 Wuji 依赖和显示通信依赖：
+Ruiyan 可复制 `third_party/rlinf-dexhand/configs/psiglove_1_ruiyan_left.yaml` 并修改 `glove.port`，再将路径填入 `glove_config.pipeline_config`。原来的 `left_port`/`right_port`/`config_file` 参数已移除。Wuji 按下文配置 PSI2 pipeline。手套运行中的丢帧缓存回退行为不变。
 
-```bash
-bash requirements/install.sh dexhand wuji
-python -m pip install pyzmq
-```
+## 安装和标定
 
-安装脚本会向选定 Python 环境安装 Pinocchio、NLopt 和 Torch。已有策略环境存在原生依赖冲突时，可使用独立计算环境。ROS 2 Humble 显示侧使用 Ubuntu 22.04 的 Python 3.10，需要 `ros-humble-robot-state-publisher`、`ros-humble-rviz2`、本包 core 和 `pyzmq`。只在显示侧加载 ROS setup。
-
-复制 `third_party/rlinf-dexhand/configs/psiglove_2_wuji_left.yaml` 到自己的配置位置，调整串口及 mapping/scale 路径；相对路径以配置文件目录为基准。随包标定是本地快照，不是通用出厂参数。需要标定时直接运行以下交互命令：
+在 Ubuntu 20.04 / ROS1 Noetic 控制容器中激活现有 Franka 虚拟环境，进入仓库根目录：
 
 ```bash
-python -m rlinf_dexhand.calibrate --config path/to/config.yaml \
-  --output path/to/new_scale.yaml
+bash requirements/sys_deps.sh wuji-ros1
+export WUJIHANDCPP_DEB=/absolute/path/wujihandcpp-1.5.1-amd64.deb
+bash requirements/install.sh dexhand wuji-ros1
+# 按安装输出重新加载 catkin 工作区，再激活原虚拟环境。
+source "$VIRTUAL_ENV/franka_catkin_ws/devel/setup.bash"
 ```
 
-保持手掌平展、手指伸直，按回车采集 30 帧。也可添加 `--import-scale path/to/existing_scale.yml` 导入已有标定；输出不会覆盖现有文件。将 `retargeting.scale_file` 指向结果文件。
+安装器验证包名、1.5.1 版本、amd64 架构及 SHA256，不把 SDK 二进制加入仓库。控制容器需有设备 USB 访问权限。设置 `ROS_CATKIN_PATH` 时使用对应工作区的 `devel/setup.bash`。
 
-## 实时显示
-
-两个终端都进入仓库根目录，分别使用显示和计算解释器。
-
-终端 A，ROS 显示环境：
+复制 `third_party/rlinf-dexhand/configs/psiglove_2_wuji_left.yaml`，为自己的手套填写串口、mapping 和 scale 的路径。相对路径相对于配置文件；不要直接沿用随包的个人标定。
 
 ```bash
-source /opt/ros/humble/setup.bash
-export PYTHONPATH="$PWD:${PYTHONPATH:-}"
-export ROS_DOMAIN_ID=87
-/usr/bin/python3.10 -m toolkits.dexhand.rviz_adapter \
-  --side left --bind tcp://127.0.0.1:5557
+python -m rlinf_dexhand.calibrate --config /absolute/path/glove.yaml \
+  --output /absolute/path/my_scale.yaml
 ```
 
-无桌面时可以添加 `--no-rviz`，仅运行关节状态与 TF 发布。容器需要可用的显示 socket、正确的 `DISPLAY` 和 X11 授权。
+平展手掌后按回车采集 30 帧。输出不会覆盖已有文件。将结果写入配置的 `retargeting.scale_file`，退出标定再启动采集，串口只允许一个读取者。正式流程不在 Ray Worker 中等待终端输入。
 
-终端 B，计算环境：
+可选镜像构建（BuildKit；此镜像路径尚未在本轮完整构建）：
 
 ```bash
-export PYTHONPATH="$PWD:${PYTHONPATH:-}"
-python -m toolkits.dexhand.test_retargeting \
-  --config path/to/config.yaml \
-  --endpoint tcp://127.0.0.1:5557 --frequency 30
+docker build -f docker/Dockerfile --build-arg BUILD_TARGET=embodied-franka-wuji \
+  --secret id=wujihandcpp_deb,src=/absolute/path/wujihandcpp-1.5.1-amd64.deb \
+  -t rlinf:franka-wuji .
 ```
 
-默认连续跟随，可添加 `--seconds 60` 限定时长。左右手由配置指定，必须与显示端 `--side` 一致。先退出终端 B 释放串口，再退出 A。显示端在收到关节目标后发布关节状态；若只显示掌部，先确认计算端正常运行。RViz 的 Views 面板可选择 Orbit 并将 Distance 调至 `0.5`，使用滚轮缩放。
+## 真机目标与反馈显示
 
-## 通信语义
+采集环境自动启动硬件驱动，显示只订阅，不连接 USB 或发送控制指令：
 
-ZMQ REQ/REP 在两个 Python 环境间传递目标。应答仅表示显示端接受目标，不表示真机执行或实测状态。客户端不实现硬件后端接口。
+```bash
+source /opt/ros/noetic/setup.bash
+python -m toolkits.dexhand.rviz_adapter --side left --namespace /wuji_hand/left
+```
 
-保留关节规格、限位、序号和 500 ms 新鲜度校验。默认应答超时为 500 ms；失败时计算端报错退出并释放连接与串口，显示停留在最后接受的姿态。没有自动重连。同一时间只接受一个显示客户端会话；原会话 500 ms 无活动后允许新会话接入。
+左侧 `SDK input target` 是插值和限幅后、SDK 低通前的输入目标；右侧 `Measured position` 是实测关节位置。它们采用独立 TF 前缀。无桌面时加 `--no-rviz`，只运行关节状态及 TF 发布。关闭显示不会关闭硬件控制。
 
-双手分别使用不同端口。跨机器使用时通过 `--bind` 和 `--endpoint` 指定地址，并同步时钟；通信不包含身份认证，应部署在可信网络内。
+默认命令插值 1000 Hz，目标延迟 70 ms，SDK 低通 10 Hz；ROS 状态发布 100 Hz。SDK 1.5.1 的缓存不提供帧时间戳，因此硬件有效性使用 10 Hz 的显式读取（50 ms 超时）；重复发布不会刷新硬件读取时间。计时参数不构成硬实时保证。
+
+## 仅重定向预览
+
+预览 topic 与硬件控制 topic 分离，不会驱动真机。先启动 `roscore`，再分别运行：
+
+```bash
+python -m toolkits.dexhand.rviz_adapter --side left --preview
+python -m toolkits.dexhand.test_retargeting --config /absolute/path/glove.yaml --frequency 30
+```
+
+退出预览并释放手套串口后才能开始正式采集。不再使用 `--endpoint`、`--bind` 或 ROS_DOMAIN_ID。
+
+## 手套丢帧与硬件故障
+
+Wuji 与 Ruiyan 共用 `GloveExpert` 的回退行为：读取超时或坏帧时继续使用最后有效目标，超过 0.5 秒会告警，但机械臂控制和采集继续，当前 episode 不会因此丢弃。新帧到来后自动更新目标，不需要恢复服务，也不会自动重建相对接管基线。首次始终收不到有效帧或读取线程遇到不可恢复异常时，仍向上报错。完整且 CRC 正确的手套帧若通道数不符，以及手部目标或反馈关节维度不符，也直接报错，不按丢帧继续使用缓存。
+
+驱动命令超时、非法命令和硬件通信故障独立处理：驱动可进入保持状态，适配器后续调用会报错，不再通过额外的采集暂停协议等待恢复。`hold`/`resume` 服务保留用于驱动级操作，恢复要求使能、有效硬件反馈且无电机错误；它们不处理手套丢帧，也不创建新 episode。USB 断连或驱动退出不能保证保持。正常退出会请求失能并清理自有子进程。
 
 ## 测试
 
 ```bash
-bash requirements/install.sh dexhand test
-PYTHONPATH=. python -m pytest -q third_party/rlinf-dexhand/tests tests/dexhand
+PYTHONPATH=.:third_party/rlinf-dexhand python -m pytest -q third_party/rlinf-dexhand/tests tests/dexhand
+# 已编译驱动、加载 ROS1 和 catkin 工作区时；仅 fake_hardware，不连接 USB：
+RLINF_TEST_WUJI_ROS1=1 PYTHONPATH=.:third_party/rlinf-dexhand \
+  python -m pytest -q tests/dexhand/test_wuji_ros1.py
 ```
 
-通信与协议测试无需 ROS 或物理设备。Wuji 边界测试需要数学依赖；原实现对照测试还需要参考工作区，缺失时跳过。Gymnasium 用于现有 RealWorld 接管回归测试。历史结果见 [验证记录](../../third_party/rlinf-dexhand/VALIDATION.md)，其中独立采集与回放结果对应已移除实现。
+SDK 未安装时可用 `catkin_make -DWUJI_WITH_SDK=OFF` 编译仅含假硬件的驱动。无 ROS 的测试检查关节契约、接管和模型资源；ROS 测试使用独立 master 验证真实 topic/service、保持、恢复和退出。历史记录见 [VALIDATION.md](../../third_party/rlinf-dexhand/VALIDATION.md)。

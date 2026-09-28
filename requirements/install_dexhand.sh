@@ -6,8 +6,11 @@ PYTHON="${PYTHON:-python3}"
 case "${1:-core}" in
   core) "$PYTHON" -m pip install -e "$ROOT/third_party/rlinf-dexhand" ;;
   wuji)
-    "$PYTHON" -m pip install -e "$ROOT/third_party/rlinf-dexhand" pin nlopt
-    "$PYTHON" -m pip install torch --index-url "${TORCH_INDEX:-https://download.pytorch.org/whl/cpu}" ;;
-  test) "$PYTHON" -m pip install -e "$ROOT/third_party/rlinf-dexhand[test]" gymnasium omegaconf pyzmq ;;
-  *) echo 'Usage: install_dexhand.sh core|wuji|test' >&2; exit 2 ;;
+    if ! "$PYTHON" -c 'import torch' >/dev/null 2>&1; then
+      "$PYTHON" -m pip install torch --index-url "${TORCH_INDEX:-https://download.pytorch.org/whl/cpu}"
+    fi
+    "$PYTHON" -m pip install -e "$ROOT/third_party/rlinf-dexhand[wuji]" ;;
+  wuji-ros1) exec bash "$ROOT/requirements/install_wuji_ros1.sh" ;;
+  test) "$PYTHON" -m pip install -e "$ROOT/third_party/rlinf-dexhand[test]" gymnasium omegaconf ;;
+  *) echo 'Usage: install_dexhand.sh core|wuji|wuji-ros1|test' >&2; exit 2 ;;
 esac

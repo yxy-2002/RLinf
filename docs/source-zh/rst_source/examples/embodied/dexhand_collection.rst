@@ -12,6 +12,12 @@ Ruiyan 灵巧手 Reward Model 数采
 
 两路视角顺序为 ``[wrist_1, global]``。保留 SpaceMouse 左键控制手套以及 12 维机械臂/灵巧手动作。
 
+必须填写 ``env.eval.glove_config.pipeline_config``，可复制
+``third_party/rlinf-dexhand/configs/psiglove_1_ruiyan_left.yaml`` 并修改其中的
+``glove.port``。不再接受旧的串口直传构造；只支持 PSI1/ChannelLinear/Ruiyan
+和 PSI2/WujiTier2/Wuji1 两种完整组合，左右手必须一致。缺失或组合错误会在
+启动手套读取线程前报错，运行中的丢帧缓存回退行为不变。
+
 采集标注帧
 ----------------------------------------
 
@@ -91,4 +97,58 @@ Ruiyan 灵巧手 Reward Model 数采
 
 此流程按配置增量启用。``dexhand_reward_model`` 设置 ``runner.label_source: spacemouse_right``；``dexhand_demo_data`` 设置 ``runner.success_source: reward_model`` 和 ``env.eval.override_cfg.reward_success_confirmation: true``。原有配置保留键盘/手动采集、奖励缩放、夹爪惩罚及动作记录行为。不配置 ``camera_keys`` 时，reward 训练和推理仍使用单相机模型。新增退出处理仅在新采集模式下启用。
 
-原有采集配置继续保留。独立手套重定向和 RViz 可视化分别见 ``third_party/rlinf-dexhand/README.md`` 与 ``toolkits/dexhand/README.md``；此流程不扩展 Wuji 集成。
+原有采集配置继续保留。独立手套重定向和 RViz 可视化分别见 ``third_party/rlinf-dexhand/README.md`` 与 ``toolkits/dexhand/README.md``。
+
+WujiHand 一代与 PSI2
+-------------------
+
+Wuji 复用现有采集器、reward 模型及 EndEffector 接口，控制器自动启动使用
+``wujihandcpp 1.5.1`` 的 ROS1 驱动。首期不包含 RLPD 训练。仍需真机验收；
+假硬件驱动测试不代表已验证固件兼容性。
+
+在控制节点激活 Franka 虚拟环境，安装并标定：
+
+.. code-block:: bash
+
+   bash requirements/sys_deps.sh wuji-ros1
+   export WUJIHANDCPP_DEB=/absolute/path/wujihandcpp-1.5.1-amd64.deb
+   bash requirements/install.sh dexhand wuji-ros1
+   source "$VIRTUAL_ENV/franka_catkin_ws/devel/setup.bash"
+   python -m rlinf_dexhand.calibrate --config /absolute/path/glove.yaml \
+     --output /absolute/path/my_scale.yaml
+
+复制 ``third_party/rlinf-dexhand/configs/psiglove_2_wuji_left.yaml``，填写串口、
+mapping 和生成的 ``retargeting.scale_file``。标定结束后才能让采集打开串口。
+缺少标定会在硬件初始化之前失败。
+
+现有 reward 采集器使用 ``wuji_reward_data`` 配置；现有 demo 采集器使用
+``wuji_demo_data``。填写 ``collection/wuji`` 中必填的现场参数：
+``glove_config.pipeline_config``、``override_cfg.end_effector_config.serial_number``、
+``override_cfg.hand_reset_state``、相机序列号及名称、机械臂目标姿态与复位关节角。
+不同手型契约使用不同输出目录；demo 还需配置 ``reward.model.model_path``。
+
+26 维动作包括原有 6 维 [-1,1] 机械臂动作，以及 20 维 [0,1] 手部目标。
+适配器逐关节映射到 URDF 限位区间。``hand_reset_state`` 为 20 维归一化目标；
+启用姿态奖励时，``hand_target_state`` 为 20 维弧度。``hand_action_scale`` 必须为 1。
+实测手部观测为 20 维弧度，经过现有欧拉角包装器后展平状态为 38 维。
+demo 动作记录驱动平滑之前接受的目标。采集器沿用原有数据格式，
+不增加末端专用元数据或目录检查。
+
+``glove_config.intervention_mode`` 默认为 ``relative``；``absolute`` 直接使用
+重定向姿态。采集采用 ``release_behavior: hold``，松开按钮后保持最后目标；
+``policy`` 在接管结束后透传策略动作。Ruiyan 保留原有 [0,1] 语义。
+
+Wuji 沿用 Ruiyan 的手套回退行为：超时或坏帧时使用最后有效目标，机械臂控制和
+采集继续；目标超过 0.5 秒只告警，不暂停采集或丢弃 episode。新帧到来后自动更新，
+无需恢复服务，也不重新建立相对接管基线。首次无有效帧或读取线程发生不可恢复异常
+仍会报错。驱动命令超时和硬件故障独立处理，可能终止采集。
+
+启动 ROS1 显示：
+
+.. code-block:: bash
+
+   python -m toolkits.dexhand.rviz_adapter --side left --namespace /wuji_hand/left
+
+RViz 使用 ROS1 并排显示 SDK 输入目标和实测姿态。旧 ROS2/ZMQ 显示已移除；
+仅预览模式及无界面测试见 ``toolkits/dexhand/README.md``。硬件失联会结束采集；
+显式退出会失能并清理自有进程，保留共享 ROS master。强杀进程不能保证保持。

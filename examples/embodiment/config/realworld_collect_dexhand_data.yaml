@@ -46,7 +46,7 @@ env:
       type: channel_linear
     glove_config:
       type: psiglove_1
-      left_port: /path/to/glove_port # (e.g. /dev/ttyACM0)
+      pipeline_config: ??? # Explicit PSI1 + Ruiyan pipeline YAML
       frequency: 30
     override_cfg:
       # Optional per-camera overrides keyed by RealSense serial number.

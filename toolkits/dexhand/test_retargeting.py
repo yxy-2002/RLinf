@@ -8,13 +8,11 @@ import time
 
 from rlinf_dexhand.pipeline import TeleopPipeline, load_config
 
-from toolkits.dexhand.transport import RvizClient
-
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", required=True)
-    parser.add_argument("--endpoint", default="tcp://127.0.0.1:5557")
+
     parser.add_argument("--frequency", type=float, default=30)
     parser.add_argument("--seconds", type=float)
     args = parser.parse_args()
@@ -24,16 +22,25 @@ def main():
     if cfg["hand"]["type"] != "wuji1hand":
         parser.error("此 RViz 测试仅用于 wuji1hand")
     pipeline = TeleopPipeline(cfg)
-    client = RvizClient(pipeline.spec, args.endpoint)
+    import rospy
+    from sensor_msgs.msg import JointState
+
+    rospy.init_node("wuji_retarget_preview", anonymous=True, disable_signals=True)
+    publisher = rospy.Publisher(
+        f"/wuji_preview/{pipeline.spec.side}/joint_targets", JointState, queue_size=1
+    )
     start = time.monotonic()
     count = 0
     try:
-        client.start()
         pipeline.start()
         while args.seconds is None or time.monotonic() - start < args.seconds:
             tick = time.monotonic()
             target = pipeline.read()
-            client.send(target)
+            msg = JointState()
+            msg.header.stamp = rospy.Time.now()
+            msg.name = list(target.spec.joint_names)
+            msg.position = list(target.values)
+            publisher.publish(msg)
             count += 1
             time.sleep(max(0, 1 / args.frequency - (time.monotonic() - tick)))
     except KeyboardInterrupt:
@@ -42,7 +49,7 @@ def main():
         try:
             pipeline.close()
         finally:
-            client.close()
+            publisher.unregister()
         elapsed = time.monotonic() - start
         print(
             f"测试结束：{count} 帧，{elapsed:.2f} 秒，{count / max(elapsed, 1e-9):.2f} Hz"

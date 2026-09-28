@@ -9,7 +9,9 @@ import time
 from types import SimpleNamespace
 
 import pytest
+import rlinf_dexhand.pipeline as pipeline
 import serial
+import yaml
 from rlinf_dexhand.glove import glove_expert as module
 from rlinf_dexhand.glove.driver import GloveFrameError, PSIGloveDriver, crc16
 from rlinf_dexhand.types import HandTarget
@@ -23,7 +25,7 @@ def wait_for(predicate):
 
 
 @pytest.fixture
-def reader(monkeypatch):
+def reader(monkeypatch, tmp_path):
     class Driver:
         port = "mock-glove"
 
@@ -49,6 +51,8 @@ def reader(monkeypatch):
             self.closed = True
 
     class Mapper:
+        spec = None
+
         def __init__(self, *args):
             self.inputs = []
 
@@ -58,11 +62,22 @@ def reader(monkeypatch):
                 raise ValueError("mapping invalid")
             return sample
 
-    monkeypatch.setattr(module, "PSIGloveDriver", Driver)
-    monkeypatch.setattr(module, "ChannelLinear", Mapper)
+    monkeypatch.setattr(pipeline, "PSIGloveDriver", Driver)
+    monkeypatch.setattr(pipeline, "make_retargeter", lambda cfg: Mapper())
+    config = tmp_path / "pipeline.yaml"
+    config.write_text(
+        yaml.safe_dump(
+            {
+                "glove": {"type": "psiglove_1", "side": "left", "port": "mock"},
+                "retargeting": {"type": "channel_linear"},
+                "hand": {"type": "ruiyanhand", "side": "left"},
+            }
+        )
+    )
     readers = []
 
     def create(**kwargs):
+        kwargs.setdefault("pipeline_config", str(config))
         kwargs.setdefault("frequency", 100)
         expert = module.GloveExpert(**kwargs)
         readers.append(expert)
@@ -159,7 +174,7 @@ def test_open_failure_wakes_waiter(reader, monkeypatch):
     def fail(self):
         raise error
 
-    monkeypatch.setattr(module.PSIGloveDriver, "start", fail)
+    monkeypatch.setattr(pipeline.PSIGloveDriver, "start", fail)
     expert = reader()
     with pytest.raises(RuntimeError) as caught:
         expert.get_target()
@@ -247,3 +262,63 @@ def test_close_interrupts_retry_delay(reader):
     assert time.monotonic() - begin < 1
     assert not expert.thread.is_alive()
     assert expert.driver.closed
+
+
+@pytest.mark.parametrize("config", [None, ""])
+def test_missing_pipeline_fails_before_reader_start(config, monkeypatch):
+    from unittest.mock import Mock
+
+    start = Mock()
+    monkeypatch.setattr(module.threading.Thread, "start", start)
+    with pytest.raises(ValueError, match="pipeline_config"):
+        module.GloveExpert(pipeline_config=config)
+    start.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "glove,hand,retarget,valid",
+    [
+        ("psiglove_1", "ruiyanhand", "channel_linear", True),
+        ("psiglove_2", "wuji1hand", "wuji_tier2", True),
+        ("psiglove_1", "wuji1hand", "wuji_tier2", False),
+        ("psiglove_2", "ruiyanhand", "channel_linear", False),
+        ("psiglove_1", "ruiyanhand", "wuji_tier2", False),
+        ("unknown", "ruiyanhand", "channel_linear", False),
+    ],
+)
+def test_only_supported_pipeline_combinations(
+    reader, tmp_path, glove, hand, retarget, valid
+):
+    config = tmp_path / "combination.yaml"
+    config.write_text(
+        yaml.safe_dump(
+            {
+                "glove": {"type": glove, "side": "left", "port": "mock"},
+                "retargeting": {"type": retarget},
+                "hand": {"type": hand, "side": "left"},
+            }
+        )
+    )
+    if valid:
+        expert = reader(pipeline_config=str(config))
+        assert expert.side == "left"
+    else:
+        with pytest.raises(ValueError, match="Unsupported combination"):
+            reader(pipeline_config=str(config))
+
+
+@pytest.mark.parametrize("glove,count", [("psiglove_1", 22), ("psiglove_2", 21)])
+def test_complete_wrong_channel_count_is_fatal(reader, glove, count):
+    body = bytes((1, 3, 2 * count)) + struct.pack(">" + "H" * count, *range(count))
+    packet = body + crc16(body).to_bytes(2, "little")
+    driver = PSIGloveDriver(glove, "left", "mock")
+    with pytest.raises(ValueError, match="requires") as caught:
+        driver.parse_frame(packet)
+    assert not isinstance(caught.value, GloveFrameError)
+    expert = reader()
+    expert.driver.items.put(target(1))
+    expert.get_target()
+    expert.driver.items.put(caught.value)
+    wait_for(lambda: expert.error is not None)
+    with pytest.raises(RuntimeError, match="Glove acquisition failed"):
+        expert.get_target()

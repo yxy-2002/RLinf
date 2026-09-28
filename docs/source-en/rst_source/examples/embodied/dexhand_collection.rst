@@ -10,6 +10,13 @@ Run the commands from the repository root. Complete the hardware setup in :doc:`
 
 The shared configuration is ``examples/embodiment/config/collection/ruiyan.yaml``. Check its robot IP, camera serials, serial ports, hand reset state, motion limits and reset pose against your installation. Both collection modes reuse these settings. Keep the camera crops unchanged between labeling and demo collection.
 
+Set ``env.eval.glove_config.pipeline_config`` explicitly. Copy
+``third_party/rlinf-dexhand/configs/psiglove_1_ruiyan_left.yaml`` and edit
+``glove.port`` for the device. The old direct-port constructor is no longer
+supported. Only PSI1/ChannelLinear/Ruiyan and PSI2/WujiTier2/Wuji1 combinations
+are accepted, with matching sides. Missing or incompatible configuration fails
+before starting the glove reader; runtime frame-loss fallback is unchanged.
+
 The two views are ordered as ``[wrist_1, global]``. SpaceMouse left-button glove control and the 12-dimensional arm/hand action remain unchanged.
 
 Collect Labeled Frames
@@ -91,4 +98,68 @@ Before collecting a production dataset, check that the arm can reach the target 
 
 This workflow is opt-in. ``dexhand_reward_model`` enables ``runner.label_source: spacemouse_right``; ``dexhand_demo_data`` enables ``runner.success_source: reward_model`` and ``env.eval.override_cfg.reward_success_confirmation: true``. Existing configurations keep their keyboard/manual collection, reward scaling, gripper penalties and action recording behavior. Without ``camera_keys``, reward training and inference retain the single-camera model. New shutdown handling is enabled only for the new collection modes.
 
-The old collection configurations remain available. Standalone glove retargeting and RViz visualization are described in ``third_party/rlinf-dexhand/README.md`` and ``toolkits/dexhand/README.md``; Wuji integration is outside this workflow.
+The old collection configurations remain available. Standalone glove retargeting and RViz visualization are described in ``third_party/rlinf-dexhand/README.md`` and ``toolkits/dexhand/README.md``.
+
+WujiHand 1 with PSI2
+-------------------
+
+Wuji uses the same collectors, reward model and EndEffector interface. The
+controller automatically starts a ROS1 driver using ``wujihandcpp 1.5.1``.
+RLPD training is outside this first integration. Physical hardware acceptance
+is still required; simulated driver tests do not certify firmware compatibility.
+
+Install and calibrate on the control node, with the Franka virtual environment active:
+
+.. code-block:: bash
+
+   bash requirements/sys_deps.sh wuji-ros1
+   export WUJIHANDCPP_DEB=/absolute/path/wujihandcpp-1.5.1-amd64.deb
+   bash requirements/install.sh dexhand wuji-ros1
+   source "$VIRTUAL_ENV/franka_catkin_ws/devel/setup.bash"
+   python -m rlinf_dexhand.calibrate --config /absolute/path/glove.yaml \
+     --output /absolute/path/my_scale.yaml
+
+Use a copy of ``third_party/rlinf-dexhand/configs/psiglove_2_wuji_left.yaml``;
+set its serial port, mapping and generated ``retargeting.scale_file``. Calibration
+must finish before collection opens the serial port. Missing calibration fails
+before hardware initialization.
+
+Use ``wuji_reward_data`` in the existing reward collector, or ``wuji_demo_data``
+in the existing demo collector. Fill the mandatory fields in ``collection/wuji``:
+``glove_config.pipeline_config``, ``override_cfg.end_effector_config.serial_number``,
+``override_cfg.hand_reset_state``, camera serials/names, arm target pose and joint
+reset pose. These are site-specific values. Supply a separate output directory
+for each hand contract. Demo collection also requires ``reward.model.model_path``.
+
+The 26-D action contains six existing arm actions in [-1,1] and twenty hand
+targets in [0,1]. The adapter maps each hand value to its URDF joint interval.
+``hand_reset_state`` contains twenty normalized targets;
+``hand_target_state`` contains twenty radians when pose reward is enabled.
+``hand_action_scale`` must be 1. Measured hand observations are twenty radians;
+the existing Euler wrapper gives 38 flattened state values. Actions saved in
+demos are the accepted targets before driver smoothing. The collectors use the
+existing data formats without end-effector-specific metadata or directory checks.
+
+``glove_config.intervention_mode`` defaults to ``relative``; ``absolute`` uses
+the retargeted pose directly. ``release_behavior: hold`` keeps the last target
+when releasing the button during collection. ``policy`` passes through policy
+actions outside intervention. Ruiyan retains its existing [0,1] semantics.
+
+Wuji uses the same glove fallback as Ruiyan: timeouts or malformed frames
+reuse the last valid target while arm control and collection continue. A target
+older than 0.5 seconds causes a warning, not a collection pause or episode discard.
+New frames update the target automatically without a resume service or rebasing.
+Failure to obtain an initial sample or a fatal reader error still raises an error.
+Driver command timeouts and hardware faults remain separate and can stop collection.
+
+Start the ROS1 display with:
+
+.. code-block:: bash
+
+   python -m toolkits.dexhand.rviz_adapter --side left --namespace /wuji_hand/left
+
+RViz shows SDK input targets and measured positions side by side using ROS1.
+The old ROS2/ZMQ display was removed; see ``toolkits/dexhand/README.md`` for
+preview-only operation and headless testing. Hardware loss ends collection;
+explicit shutdown disables the hand and releases owned processes, preserving
+the shared ROS master. Forced process termination cannot guarantee holding.

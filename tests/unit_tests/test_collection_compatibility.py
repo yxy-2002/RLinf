@@ -139,9 +139,9 @@ def test_collection_thread_only_for_new_modes(new_mode, kind):
     if kind == "demo":
         path, cls = "examples/embodiment/collect_real_data.py", "DataCollector"
         collector = SimpleNamespace(
-            cfg=OmegaConf.create({
-                "runner": {"success_source": "reward_model" if new_mode else "legacy"}
-            }),
+            cfg=OmegaConf.create(
+                {"runner": {"success_source": "reward_model" if new_mode else "legacy"}}
+            ),
             _collect=collect,
             buffer=Mock(),
             env=Mock(),
@@ -164,13 +164,15 @@ def test_collection_thread_only_for_new_modes(new_mode, kind):
 
 
 def test_legacy_reward_injection_accepts_original_model_config():
-    cfg = OmegaConf.create({
-        "reward": {
-            "use_reward_model": True,
-            "standalone_realworld": True,
-            "model": {"reward_threshold": 0.5},
+    cfg = OmegaConf.create(
+        {
+            "reward": {
+                "use_reward_model": True,
+                "standalone_realworld": True,
+                "model": {"reward_threshold": 0.5},
+            }
         }
-    })
+    )
     placement = Mock()
     placement.get_hardware_ranks.return_value = [0]
     placement.get_strategy.return_value.get_placement.return_value = [
@@ -249,6 +251,10 @@ def test_right_button_legacy_intervention_is_preserved(labels_only):
     )
     wrapper = SimpleNamespace(
         _right_button_labels_only=labels_only,
+        _wuji=False,
+        _hand_dim=6,
+        _mode="relative",
+        _release="hold",
         _spacemouse=SimpleNamespace(get_action=lambda: (np.zeros(6), [1, 0])),
         _glove=SimpleNamespace(get_target=lambda: SimpleNamespace(values=np.ones(6))),
         _last_intervene=0.0,

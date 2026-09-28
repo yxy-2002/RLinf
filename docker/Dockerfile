@@ -54,6 +54,7 @@ FROM base-image-platform-${PLATFORM} AS base-image-embodied-polaris
 # Franka depends on ros-noetic (Ubuntu 20.04) and is GPU-agnostic, so it
 # bypasses the platform switch and always uses a plain Ubuntu base.
 FROM ubuntu:20.04 AS base-image-embodied-franka
+FROM base-image-embodied-franka AS base-image-embodied-franka-wuji
 
 
 ##################################################################################################
@@ -370,6 +371,13 @@ RUN echo "source ${UV_PATH}/openvla-oft/bin/activate" >> ~/.bashrc
 ##################################################################################################
 # Embodied: FrankaSim
 ##################################################################################################
+# Optional Wuji SDK comes from a BuildKit secret, never from the source tree.
+FROM embodied-franka-image AS embodied-franka-wuji-image
+COPY ./third_party/rlinf-dexhand ${UV_PATH}/third_party/rlinf-dexhand
+RUN bash requirements/sys_deps.sh wuji-ros1
+RUN --mount=type=secret,id=wujihandcpp_deb,required=true \
+    bash -c 'source ${UV_PATH}/franka-0.15.0/bin/activate && WUJIHANDCPP_DEB=/run/secrets/wujihandcpp_deb bash requirements/install.sh dexhand wuji-ros1'
+
 FROM embodied-common-image AS embodied-frankasim-image
 
 # Install openvla env

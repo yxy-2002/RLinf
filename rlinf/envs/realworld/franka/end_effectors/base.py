@@ -26,6 +26,7 @@ class EndEffectorType(str, Enum):
     FRANKA_GRIPPER = "franka_gripper"
     ROBOTIQ_GRIPPER = "robotiq_gripper"
     RUIYAN_HAND = "ruiyan_hand"
+    WUJI_HAND = "wuji_hand"
 
     @property
     def is_gripper(self) -> bool:
@@ -36,7 +37,7 @@ class EndEffectorType(str, Enum):
 
     @property
     def is_hand(self) -> bool:
-        return self == type(self).RUIYAN_HAND
+        return self in (type(self).RUIYAN_HAND, type(self).WUJI_HAND)
 
     @property
     def gripper_backend(self) -> str:

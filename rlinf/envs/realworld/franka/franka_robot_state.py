@@ -25,7 +25,7 @@ class FrankaRobotState:
     The state covers the arm kinematics (pose, velocity, force/torque)
     as well as the end-effector.  For the built-in Franka gripper the
     scalar ``gripper_position`` / ``gripper_open`` fields are used.  For
-    dexterous hands such as Ruiyan, the 6-D ``hand_position`` array is
+    dexterous hands such as Ruiyan, the ``hand_position`` array is
     used instead.
     """
 
@@ -55,7 +55,9 @@ class FrankaRobotState:
     gripper_open: bool = False
 
     # -- Dexterous hand --------------------------------------------------
-    hand_position: Optional[np.ndarray] = None  # 6-D normalised [0, 1]
+    hand_position: Optional[np.ndarray] = (
+        None  # Ruiyan: 6 normalized; Wuji: 20 measured radians
+    )
 
     def to_dict(self):
         """Convert the dataclass to a serializable dictionary."""

@@ -43,6 +43,12 @@ def create_end_effector(
     if isinstance(end_effector_type, str):
         end_effector_type = EndEffectorType(end_effector_type)
 
+    if end_effector_type == EndEffectorType.WUJI_HAND:
+        from rlinf.envs.realworld.common.hand.wuji_hand import WujiHand
+
+        return WujiHand(**kwargs)
+
+    kwargs.pop("ros", None)
     if end_effector_type == EndEffectorType.RUIYAN_HAND:
         from .ruiyan_hand import RuiyanHand
 
@@ -50,5 +56,5 @@ def create_end_effector(
 
     raise ValueError(
         f"Unsupported end-effector type: {end_effector_type}. "
-        "Supported types: ['ruiyan_hand']"
+        "Supported types: ['ruiyan_hand', 'wuji_hand']"
     )

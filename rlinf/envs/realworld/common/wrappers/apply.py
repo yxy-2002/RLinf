@@ -112,20 +112,24 @@ def apply_single_arm_wrappers(env: gym.Env, cfg: Mapping[str, Any]) -> gym.Env:
     if not env.config.is_dummy and use_spacemouse:
         if is_dex_hand:
             glove_cfg = cfg.get("glove_config", {})
-            if glove_cfg.get("type", "psiglove_1") != "psiglove_1":
-                raise ValueError(
-                    "Franka dexhand wrapper supports psiglove_1; use the standalone Wuji collector for psiglove_2"
-                )
             retarget_cfg = cfg.get("retargeting", {})
-            if retarget_cfg.get("type", "channel_linear") != "channel_linear":
-                raise ValueError("Ruiyan requires channel_linear")
+            expected = (
+                ("psiglove_2", "wuji_tier2")
+                if end_effector_type == "wuji_hand"
+                else ("psiglove_1", "channel_linear")
+            )
+            if (
+                glove_cfg.get("type", "psiglove_1"),
+                retarget_cfg.get("type", "channel_linear"),
+            ) != expected:
+                raise ValueError(f"{end_effector_type} requires {expected}")
             DexHandIntervention = _load_dexhand_intervention()
             env = DexHandIntervention(
                 env,
-                left_port=glove_cfg.get("left_port", "/dev/ttyACM0"),
-                right_port=glove_cfg.get("right_port", None),
                 glove_frequency=glove_cfg.get("frequency", 60),
-                glove_config_file=glove_cfg.get("config_file", None),
+                pipeline_config=glove_cfg.get("pipeline_config"),
+                intervention_mode=glove_cfg.get("intervention_mode", "relative"),
+                release_behavior=glove_cfg.get("release_behavior", "hold"),
                 right_button_labels_only=cfg.get("right_button_labels_only", False),
             )
         else:

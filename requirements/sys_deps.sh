@@ -18,6 +18,20 @@ detect_pkg_manager() {
     fi
 }
 
+# Optional hardware/display dependencies for the existing Ubuntu 20.04 image.
+if [ "${1:-}" = "wuji-ros1" ]; then
+    [ "$(detect_pkg_manager)" = apt ] && [ -f /opt/ros/noetic/setup.bash ] || {
+        echo "Wuji ROS1 requires the Ubuntu 20.04 / Noetic Franka image" >&2; exit 1;
+    }
+    wuji_sudo=()
+    if [ "$EUID" -ne 0 ]; then wuji_sudo=(sudo); fi
+    "${wuji_sudo[@]}" apt-get update
+    "${wuji_sudo[@]}" apt-get install -y --no-install-recommends libusb-1.0-0-dev build-essential \
+        ros-noetic-roscpp ros-noetic-sensor-msgs ros-noetic-std-srvs ros-noetic-diagnostic-msgs \
+        ros-noetic-robot-state-publisher ros-noetic-rviz ros-noetic-tf2-ros
+    exit 0
+fi
+
 PKG_MANAGER=$(detect_pkg_manager)
 
 # Hardware platform (nvidia | amd). Passed by install.sh; defaults to nvidia

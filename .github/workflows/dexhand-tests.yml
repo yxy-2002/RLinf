@@ -3,10 +3,15 @@ on:
   pull_request:
     paths:
       - 'third_party/rlinf-dexhand/**'
-      - 'rlinf/envs/dexhand/**'
+      - 'rlinf/envs/realworld/**'
+      - 'rlinf/envs/wrappers/collect_episode.py'
+      - 'requirements/install*'
+      - 'requirements/sys_deps.sh'
+      - '.github/workflows/dexhand-tests.yml'
       - 'toolkits/dexhand/**'
       - 'tests/dexhand/**'
-      - 'examples/embodiment/collect_hand_data.py'
+      - 'examples/embodiment/collect_real_data.py'
+      - 'examples/reward/**'
 jobs:
   core:
     runs-on: ubuntu-latest
@@ -17,3 +22,26 @@ jobs:
           python-version: '3.10'
       - run: bash requirements/install.sh dexhand test
       - run: PYTHONPATH=. python -m pytest -q third_party/rlinf-dexhand/tests tests/dexhand
+
+  ros1-fake-driver:
+    runs-on: ubuntu-latest
+    container: ros:noetic-ros-base-focal
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install ROS test dependencies
+        shell: bash
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends build-essential libgtest-dev ros-noetic-diagnostic-msgs ros-noetic-sensor-msgs ros-noetic-std-srvs
+      - name: Build without proprietary SDK and test simulated hardware
+        shell: bash
+        run: |
+          source /opt/ros/noetic/setup.bash
+          mkdir -p /tmp/wuji-ci/src
+          ln -s "$GITHUB_WORKSPACE/third_party/rlinf-dexhand/ros/wuji_hand_driver" /tmp/wuji-ci/src/wuji_hand_driver
+          cd /tmp/wuji-ci
+          catkin_make -DWUJI_WITH_SDK=OFF -DPYTHON_EXECUTABLE=/usr/bin/python3
+          catkin_make run_tests_wuji_hand_driver
+          catkin_test_results build/test_results
+          source devel/setup.bash
+          /usr/bin/python3 "$GITHUB_WORKSPACE/third_party/rlinf-dexhand/ros/wuji_hand_driver/test/driver_smoke.py"

@@ -441,3 +441,10 @@ class RealWorldEnv(gym.Env):
         self.reset_state_ids = reset_state_ids.repeat_interleave(
             repeats=self.group_size
         )
+
+    def close(self):
+        """Propagate cleanup to the vector environment and hardware owners."""
+        env = getattr(self, "env", None)
+        if env is not None:
+            env.close()
+            self.env = None

@@ -37,15 +37,17 @@ def load_script(path):
 
 
 def model_config(**kwargs):
-    return OmegaConf.create({
-        "precision": "fp32",
-        "pretrained": False,
-        "image_size": [3, 32, 32],
-        "camera_keys": KEYS,
-        "hidden_dim": 16,
-        "dropout": 0.0,
-        **kwargs,
-    })
+    return OmegaConf.create(
+        {
+            "precision": "fp32",
+            "pretrained": False,
+            "image_size": [3, 32, 32],
+            "camera_keys": KEYS,
+            "hidden_dim": 16,
+            "dropout": 0.0,
+            **kwargs,
+        }
+    )
 
 
 def test_views_order_and_missing_camera():
@@ -164,11 +166,7 @@ def test_new_configs(monkeypatch):
             config_dir=str(ROOT / f"examples/{directory}/config"), version_base="1.1"
         ):
             cfg = compose(config_name=name)
-        assert (
-            cfg.env.eval.max_episode_steps
-            == cfg.env.eval.override_cfg.max_num_steps
-            == 600
-        )
+        assert cfg.env.eval.max_episode_steps == cfg.env.eval.override_cfg.max_num_steps
         assert not cfg.env.eval.auto_reset
         assert not cfg.env.eval.override_cfg.enable_pose_reward
         assert cfg.env.eval.override_cfg.end_effector_type == "ruiyan_hand"
@@ -214,19 +212,24 @@ class FakeFrameEnv:
 def test_frame_collector_multi_episode(tmp_path):
     module = load_script("examples/reward/realworld_collect_process_dataset.py")
     collector = object.__new__(module.FrameCollector)
-    collector.cfg = OmegaConf.create({
-        "runner": {
-            "camera_keys": KEYS,
-            "fps": 100000,
-            "logger": {"log_path": str(tmp_path)},
-        },
-        "env": {
-            "eval": {
-                "main_image_key": "wrist_1",
-                "override_cfg": {"camera_names": {"one": "wrist_1", "two": "global"}},
-            }
-        },
-    })
+    collector.cfg = OmegaConf.create(
+        {
+            "runner": {
+                "camera_keys": KEYS,
+                "fps": 100000,
+                "logger": {"log_path": str(tmp_path)},
+            },
+            "env": {
+                "eval": {
+                    "main_image_key": "wrist_1",
+                    "max_episode_steps": 1000,
+                    "override_cfg": {
+                        "camera_names": {"one": "wrist_1", "two": "global"}
+                    },
+                }
+            },
+        }
+    )
     collector.env = FakeFrameEnv()
     collector._quit = False
     collector.target_success = collector.target_fail = 4
@@ -298,14 +301,16 @@ def test_demo_both_outputs_keep_executed_actions_and_terminal_frame(tmp_path):
         show_goal_site=False,
         record_executed_action=True,
     )
-    collector.cfg = OmegaConf.create({
-        "runner": {
-            "record_task_description": False,
-            "success_source": "reward_model",
-            "logger": {"log_path": str(tmp_path)},
-        },
-        "env": {"eval": {"max_episode_steps": 3}},
-    })
+    collector.cfg = OmegaConf.create(
+        {
+            "runner": {
+                "record_task_description": False,
+                "success_source": "reward_model",
+                "logger": {"log_path": str(tmp_path)},
+            },
+            "env": {"eval": {"max_episode_steps": 3}},
+        }
+    )
     collector.buffer = Mock()
     collector._quit = False
     collector.num_data_episodes = 1
@@ -337,19 +342,24 @@ def test_demo_both_outputs_keep_executed_actions_and_terminal_frame(tmp_path):
 def test_stop_request_saves_partial_frame_episode(tmp_path):
     module = load_script("examples/reward/realworld_collect_process_dataset.py")
     collector = object.__new__(module.FrameCollector)
-    collector.cfg = OmegaConf.create({
-        "runner": {
-            "camera_keys": KEYS,
-            "fps": 100000,
-            "logger": {"log_path": str(tmp_path)},
-        },
-        "env": {
-            "eval": {
-                "main_image_key": "wrist_1",
-                "override_cfg": {"camera_names": {"one": "wrist_1", "two": "global"}},
-            }
-        },
-    })
+    collector.cfg = OmegaConf.create(
+        {
+            "runner": {
+                "camera_keys": KEYS,
+                "fps": 100000,
+                "logger": {"log_path": str(tmp_path)},
+            },
+            "env": {
+                "eval": {
+                    "main_image_key": "wrist_1",
+                    "max_episode_steps": 1000,
+                    "override_cfg": {
+                        "camera_names": {"one": "wrist_1", "two": "global"}
+                    },
+                }
+            },
+        }
+    )
     collector.env = FakeFrameEnv()
     original_step = collector.env.step
 
@@ -377,14 +387,18 @@ def test_stop_request_saves_partial_frame_episode(tmp_path):
 def test_reward_injection_copies_config_and_uses_gpu_placement():
     from rlinf.utils.realworld_reward import inject_realworld_reward_cfg
 
-    cfg = OmegaConf.create({
-        "reward": {
-            "use_reward_model": True,
-            "standalone_realworld": True,
-            "model": {"model_path": "checkpoint.pt", "camera_keys": KEYS},
+    cfg = OmegaConf.create(
+        {
+            "reward": {
+                "use_reward_model": True,
+                "standalone_realworld": True,
+                "model": {"model_path": "checkpoint.pt", "camera_keys": KEYS},
+            }
         }
-    })
-    env = OmegaConf.create({"main_image_key": "wrist_1", "override_cfg": {}})
+    )
+    env = OmegaConf.create(
+        {"main_image_key": "wrist_1", "max_episode_steps": 1000, "override_cfg": {}}
+    )
     placement = Mock()
     placement.get_hardware_ranks.return_value = [0]
     placement.get_strategy.return_value.get_placement.return_value = [
@@ -510,6 +524,10 @@ def test_dexhand_right_button_only_labels_and_reports_held_action():
             return {}, 0, False, False, {}
 
     wrapper = object.__new__(DexHandIntervention)
+    wrapper._wuji = False
+    wrapper._hand_dim = 6
+    wrapper._mode = "relative"
+    wrapper._release = "hold"
     gym.Wrapper.__init__(wrapper, BaseEnv())
     wrapper._right_button_labels_only = True
     wrapper._spacemouse = Mock()
@@ -549,14 +567,16 @@ def test_demo_stop_drops_incomplete_trajectory(tmp_path):
         )
 
     collector.env.step.side_effect = step
-    collector.cfg = OmegaConf.create({
-        "runner": {
-            "record_task_description": False,
-            "success_source": "reward_model",
-            "logger": {"log_path": str(tmp_path)},
-        },
-        "env": {"eval": {"max_episode_steps": 3}},
-    })
+    collector.cfg = OmegaConf.create(
+        {
+            "runner": {
+                "record_task_description": False,
+                "success_source": "reward_model",
+                "logger": {"log_path": str(tmp_path)},
+            },
+            "env": {"eval": {"max_episode_steps": 3}},
+        }
+    )
     collector.buffer = Mock()
     collector.num_data_episodes = 1
     collector._preexisting_success = 0

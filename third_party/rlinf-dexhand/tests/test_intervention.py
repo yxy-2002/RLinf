@@ -37,6 +37,9 @@ class Mouse:
     def get_action(self):
         return np.zeros(6), self.buttons
 
+    def close(self):
+        self.closed = True
+
 
 class Env(gym.Env):
     action_space = gym.spaces.Box(-1, 1, (12,), dtype=np.float64)
@@ -71,7 +74,12 @@ def test_relative_press_release_and_policy_fallback():
         ),
         ns,
     )
-    w = ns["DexHandIntervention"](Env())
+    w = ns["DexHandIntervention"](
+        Env(),
+        pipeline_config=str(
+            ROOT / "third_party/rlinf-dexhand/configs/psiglove_1_ruiyan_left.yaml"
+        ),
+    )
     w.reset()
     w._spacemouse.buttons = [0, 1]
     first, replaced = w.action(np.ones(12))

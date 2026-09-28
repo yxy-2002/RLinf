@@ -176,10 +176,7 @@ class DataCollector(Worker):
                 if kb_event:
                     self.log_info(f"[keyboard] {kb_event}")
 
-                if (
-                    self.cfg.runner.get("success_source") == "reward_model"
-                    and "executed_action" in info
-                ):
+                if "executed_action" in info:
                     action = info["executed_action"]
                 elif "intervene_action" in info:
                     action = info["intervene_action"]

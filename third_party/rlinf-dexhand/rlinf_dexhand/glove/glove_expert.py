@@ -1,7 +1,7 @@
 # Copyright 2026 The RLinf Authors.
 # SPDX-License-Identifier: Apache-2.0
 
-"""PSI1 acquisition with last-valid-target fallback for transient read failures."""
+"""Configured PSI acquisition with cached targets on transient read failures."""
 
 import logging
 import math
@@ -10,9 +10,8 @@ import time
 
 import numpy as np
 
-from ..retargeting.channel_linear import ChannelLinear
 from ..types import HandTarget
-from .driver import GloveFrameError, PSIGloveDriver
+from .driver import GloveFrameError
 
 logger = logging.getLogger(__name__)
 
@@ -20,17 +19,14 @@ logger = logging.getLogger(__name__)
 class GloveExpert:
     def __init__(
         self,
-        left_port="/dev/ttyACM0",
-        right_port=None,
-        frequency=60,
-        config_file=None,
         *,
+        pipeline_config=None,
+        frequency=60,
         startup_timeout=3.0,
         warning_interval=5.0,
     ):
-        self.side = "left" if left_port else "right"
-        if not (left_port or right_port):
-            raise ValueError("A glove port is required")
+        if not pipeline_config:
+            raise ValueError("GloveExpert requires an explicit pipeline_config")
         for name, value in (
             ("frequency", frequency),
             ("startup_timeout", startup_timeout),
@@ -38,8 +34,12 @@ class GloveExpert:
         ):
             if not math.isfinite(value) or value <= 0:
                 raise ValueError(f"{name} must be finite and positive")
-        self.driver = PSIGloveDriver("psiglove_1", self.side, left_port or right_port)
-        self.retargeter = ChannelLinear(self.side, config_file)
+        from ..pipeline import TeleopPipeline, load_config
+
+        cfg = load_config(pipeline_config)
+        pipeline = TeleopPipeline(cfg)
+        self.side = cfg["glove"]["side"]
+        self.driver, self.retargeter = pipeline.driver, pipeline.retargeter
         self.stop = threading.Event()
         self.lock = threading.Lock()
         self.condition = threading.Condition(self.lock)

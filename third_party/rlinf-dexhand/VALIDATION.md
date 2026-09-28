@@ -1,3 +1,60 @@
+# Review 更新：移除 RealWorldEnv 预检查
+
+删除 RealWorldEnv 中的 pipeline/末端预检查和提前构造 retargeter；该文件相对基线仅保留 close 转发。底层遇到完整且 CRC 正确但通道数不符的手套帧、错误手部目标维度或 Wuji 反馈关节顺序/维度时，向调用者抛错，不使用缓存或广播掩盖错误。ROS 回调记录错误，由初始化/状态读取调用抛出；仅在回调线程抛异常不会终止采集，因此错误需传到调用方。
+
+新增维度错误测试并补齐旧测试 mock 的维度字段。Python 回归：173 passed、5 skipped、4 subtests passed；修改文件 Ruff 和差异检查通过。沿用导入期进程枚举 mock，未操作硬件，本轮未重跑四项 opt-in ROS 测试。
+
+---
+
+# Review 更新：移除采集入口的末端专用校验
+
+两个采集入口删除 Wuji 专用规格写入和目录兼容性检查，不再生成或要求 `hand_contract.json`。删除无调用者的元数据工具函数及对应测试。reward 帧采集入口恢复基线实现，demo 入口仅保留通用 `executed_action` 优先记录改动。
+
+本轮相关回归：74 passed、1 skipped；修改文件 Ruff 和 `git diff --check` 通过。测试继续在预加载 RealWorld 时 mock 进程枚举，避免默认导入清理影响已有 ROS 服务。未重跑完整测试集或操作硬件；以下整套测试数量属于此前版本。
+
+---
+
+# Review 更新：GloveExpert 配置必填与组合校验
+
+删除旧串口直传构造和未传配置时的 PSI1/Ruiyan 默认分支。`pipeline_config` 缺失直接报错；复用 `pipeline.py` 校验 PSI1/ChannelLinear/Ruiyan 和 PSI2/WujiTier2/Wuji1，拒绝交叉组合和错误算法。环境初始化前也检查 pipeline 手型与实际末端一致。
+
+新增缺失配置、合法组合及非法组合测试；完整 Python 回归为 168 passed、5 skipped、4 subtests passed。仍使用下节说明的导入期进程枚举 mock，不操作真实设备。运行期手套超时/坏帧的缓存回退保持不变。本轮未重复运行 ROS 驱动测试，其结果来自上一轮。
+
+---
+
+# Review 更新：手套丢帧沿用 Ruiyan 回退
+
+Wuji 共用 `GloveExpert` 的最后有效目标缓存，删除采集暂停/恢复标志、episode 丢弃逻辑和 `input_ready` 链路。新增测试覆盖相对/绝对模式的持续缓存回退、新帧自动更新、致命手套异常传播，以及连续 episode 保存重载。
+
+- Python 回归：160 passed、5 skipped、4 subtests passed。
+- ROS1 假硬件：4 passed；SDK 1.5.1 后端重新编译通过。
+- SDK-free 构建、catkin 插值测试和驱动 smoke test 通过。
+- 修改的 Python 文件 Ruff 检查/格式、`git diff --check` 通过。
+- Python 测试入口仅在预加载 RealWorld 时 mock `psutil.process_iter()` 返回空列表，再恢复原函数运行测试，避免仓库默认导入清理影响已有 ROS 服务；未验证该清理行为。没有修改生产初始化逻辑或操作真机。
+
+以下为此前实现阶段的记录；其中手套暂停/显式恢复的描述已被本节取代，安装、真机和 Docker 验收限制仍适用。
+
+---
+
+# 2026-09-28：ROS1 Wuji 接入验证
+
+本轮代码使用旧版 `wujihandcpp 1.5.1`。SDK `.deb` SHA256：
+`d3cfeac37ea2dddfd5b7c9ca78e605c2ab98227781784fa0b18a6b1896872c12`。
+
+- 本机 Ubuntu 20.04/glibc 2.31、GCC 9.4、ROS1 Noetic：SDK 动态库加载、真实 SDK 后端编译链接通过。
+- 隔离 Python 3.11 验证环境及独立 catkin 工作区：`install.sh dexhand wuji-ros1` 全流程通过；没有替换现有 Franka 环境依赖。
+- 数学依赖采用 Pinocchio 2.7.0、NLopt 2.7.1，与当前 NumPy 1.26.4 兼容；参考实现数值对照通过。
+- Python 契约、包装器、reward、采集及保存重载：159 passed，5 skipped，4 subtests passed。四项 ROS 测试默认跳过，另有一项可选依赖测试跳过。
+- 显式开启 ROS 测试后：假硬件目标控制、超时保持、恢复、复位、驱动退出、命名空间冲突保护、共享 master 保留及无界面双模型 TF 发布通过（4 passed）。
+- SDK-free 构建、catkin 插值测试和系统 Python ROS topic/service smoke test 通过；新增 CI 采用此路径，不需要专有 SDK 或硬件。
+- 安装检查脚本前后均报告 37 项已有候选问题，没有增加候选；shell 语法和 Ruff 检查通过。
+
+TODO(agent)：目标控制节点 SSH 认证未通过，尚未完成目标容器、USB/固件、真机运动与数据采集验收。未验证 RViz 桌面渲染或构建完整 Docker 镜像。后续任何测试结果更新以实际运行记录为准。
+
+以下为历史实现的记录；其中 ROS2/ZMQ 显示和独立采集路径已移除，不应作为当前使用说明。
+
+---
+
 # PSI1 手套丢帧回退验证 — 2026-09-21
 
 运行命令（RLinf 根目录）：

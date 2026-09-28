@@ -82,7 +82,8 @@ class DexpnpEnv(FrankaEnv):
     def go_to_rest(self, joint_reset=False):
         """Move directly to the configured rest pose without a clearance lift."""
         if self._is_hand:
-            self._end_effector_action(self.config.hand_reset_state)
+            if getattr(self, "_hand_spec", None) is None:
+                self._end_effector_action(self.config.hand_reset_state)
         else:
             self._end_effector_action(np.array([1.0]))
         self._franka_state = self._controller.get_state().wait()[0]

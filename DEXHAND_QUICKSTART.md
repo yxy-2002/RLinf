@@ -6,7 +6,7 @@
 
 | 配置文件 | 常用修改项 |
 | --- | --- |
-| [共享硬件配置](examples/embodiment/config/collection/ruiyan.yaml) | `cluster.node_groups` 中的 `robot_ip`；`env.eval.glove_config.left_port`；`env.eval.override_cfg` 下的 `end_effector_config.port`、`camera_serials`、`camera_names`、`target_ee_pose`、`ee_pose_limit_*_offset`、`action_scale`、`hand_reset_state`、`joint_reset_qpos` |
+| [共享硬件配置](examples/embodiment/config/collection/ruiyan.yaml) | `cluster.node_groups` 中的 `robot_ip`；`env.eval.glove_config.pipeline_config`（必填，串口在该 YAML 的 `glove.port` 中指定）；`env.eval.override_cfg` 下的 `end_effector_config.port`、`camera_serials`、`camera_names`、`target_ee_pose`、`ee_pose_limit_*_offset`、`action_scale`、`hand_reset_state`、`joint_reset_qpos` |
 | [正负帧采集](examples/reward/config/dexhand_reward_model.yaml) | `runner.num_success_frames`、`runner.fps`；两个回合步数上限 |
 | [模型训练](examples/reward/config/dexhand_reward_training.yaml) | 可覆盖 `data.train_data_paths`、`data.val_data_paths`、`runner.max_epochs`、`actor.optim.lr`、`actor.micro_batch_size`、`actor.global_batch_size`；默认值继承自 [reward_training.yaml](examples/reward/config/reward_training.yaml) |
 | [Demo 采集](examples/embodiment/config/dexhand_demo_data.yaml) | `reward.model.model_path`、`reward.reward_threshold`、`runner.num_data_episodes`、`env.eval.override_cfg.success_hold_steps`；`cluster.node_groups` 与 reward placement |
@@ -108,3 +108,8 @@ bash examples/embodiment/collect_data.sh realworld_collect_ruiyan_dexhand_data
 
 洗reward数据： /workspace/RLinf/toolkits/dexhand/review_classifier_data.py
 看相机crop范围： /workspace/RLinf/toolkits/dexhand/crop_classifier_data.py
+## WujiHand 一代 / PSI2
+
+Wuji 复用以上流程：reward 采集配置改为 `wuji_reward_data`，demo 采集改为 `wuji_demo_data`，reward 模型训练仍使用原有训练入口。先按 [ROS1 安装与标定](toolkits/dexhand/README.md) 配置旧版 SDK，在 `collection/wuji` 中填写必填的现场参数。手部动作和复位目标为 20 维 `[0,1]`，实测手部状态为弧度；不同手型使用不同数据目录。
+
+环境自动管理 Wuji 驱动，输入超时暂停后使用 `rosservice call /wuji_hand/left/resume '{}'` 恢复。ROS1 RViz 显示目标和实测姿态，旧 ROS2 显示入口已移除。真机验收进度见 [迁移状态](WUJI_HAND_MIGRATION_STATUS.md)。

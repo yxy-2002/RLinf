@@ -174,10 +174,12 @@ class FrankaEnv(gym.Env):
 
         self._franka_state = FrankaRobotState()
         if not self.config.is_dummy:
-            self._reset_pose = np.concatenate([
-                self.config.reset_ee_pose[:3],
-                R.from_euler("xyz", self.config.reset_ee_pose[3:].copy()).as_quat(),
-            ]).copy()
+            self._reset_pose = np.concatenate(
+                [
+                    self.config.reset_ee_pose[:3],
+                    R.from_euler("xyz", self.config.reset_ee_pose[3:].copy()).as_quat(),
+                ]
+            ).copy()
         else:
             self._reset_pose = np.zeros(7)
         self._num_steps = 0
@@ -188,39 +190,58 @@ class FrankaEnv(gym.Env):
         self._success_hold_counter = 0  # Initialize the success hold counter
         self._last_hand_command: np.ndarray | None = None
         self._reward_worker = None
+        self._hand_spec = None
+        if self._ee_type == EndEffectorType.WUJI_HAND:
+            from rlinf_dexhand.wuji_spec import to_radians, wuji_spec
 
-        if not self.config.is_dummy:
-            self._setup_hardware()
-            self._setup_reward_worker()
+            self._hand_spec = wuji_spec(
+                self.config.end_effector_config.get("side", "left")
+            )
+            if self.config.hand_action_scale != 1.0:
+                raise ValueError("Wuji hand_action_scale must be 1")
+            to_radians(self._hand_spec, self.config.hand_reset_state)
+            if (
+                np.asarray(self.config.hand_target_state).shape != (20,)
+                or not np.isfinite(self.config.hand_target_state).all()
+            ):
+                raise ValueError("Wuji hand_target_state must contain 20 radians")
 
-        self._camera_infos = self._build_camera_infos()
+        try:
+            if not self.config.is_dummy:
+                self._setup_hardware()
+                self._setup_reward_worker()
 
-        # Init action and observation spaces
-        assert self._camera_infos, (
-            "At least one camera serial must be provided for FrankaEnv."
-        )
-        self._init_action_obs_spaces()
+            self._camera_infos = self._build_camera_infos()
 
-        if self.config.is_dummy:
-            return
+            # Init action and observation spaces
+            assert self._camera_infos, (
+                "At least one camera serial must be provided for FrankaEnv."
+            )
+            self._init_action_obs_spaces()
 
-        # Wait for the robot to be ready
-        start_time = time.time()
-        while not self._controller.is_robot_up().wait()[0]:
-            time.sleep(0.5)
-            if time.time() - start_time > 30:
-                self._logger.warning(
-                    f"Waited {time.time() - start_time} seconds for Franka robot to be ready."
-                )
+            if self.config.is_dummy:
+                return
 
-        self._interpolate_move(self._reset_pose)
-        time.sleep(1.0)
-        self._franka_state = self._controller.get_state().wait()[0]
+            # Wait for the robot to be ready
+            start_time = time.time()
+            while not self._controller.is_robot_up().wait()[0]:
+                time.sleep(0.5)
+                if time.time() - start_time > 30:
+                    self._logger.warning(
+                        f"Waited {time.time() - start_time} seconds for Franka robot to be ready."
+                    )
 
-        # Init cameras
-        self._open_cameras()
-        # Video player for displaying camera frames
-        self.camera_player = VideoPlayer(self.config.enable_camera_player)
+            self._interpolate_move(self._reset_pose)
+            time.sleep(1.0)
+            self._franka_state = self._controller.get_state().wait()[0]
+
+            # Init cameras
+            self._open_cameras()
+            # Video player for displaying camera frames
+            self.camera_player = VideoPlayer(self.config.enable_camera_player)
+        except BaseException:
+            self.close()
+            raise
 
     @property
     def task_description(self):
@@ -334,6 +355,9 @@ class FrankaEnv(gym.Env):
         """
         start_time = time.time()
 
+        action = np.asarray(action, dtype=float)
+        if action.shape != self.action_space.shape or not np.isfinite(action).all():
+            raise ValueError("Invalid robot action shape or nonfinite values")
         action = np.clip(action, self.action_space.low, self.action_space.high)
         xyz_delta = action[:3]
 
@@ -353,7 +377,19 @@ class FrankaEnv(gym.Env):
             ee_action = action[6:]
             is_ee_action_effective = self._end_effector_action(ee_action)
 
-            self._move_action(self._clip_position_to_safety_box(self.next_position))
+            safe_position = self._clip_position_to_safety_box(self.next_position)
+            if getattr(self, "_hand_spec", None) is not None:
+                xyz_scale, rot_scale = self.config.action_scale[:2]
+                if xyz_scale:
+                    action[:3] = (
+                        safe_position[:3] - self._franka_state.tcp_pose[:3]
+                    ) / xyz_scale
+                if rot_scale:
+                    action[3:6] = (
+                        R.from_quat(safe_position[3:])
+                        * R.from_quat(self._franka_state.tcp_pose[3:]).inv()
+                    ).as_euler("xyz") / rot_scale
+            self._move_action(safe_position)
 
         self._num_steps += 1
         step_time = time.time() - start_time
@@ -389,6 +425,11 @@ class FrankaEnv(gym.Env):
             }
             # A confirmed success takes precedence over a simultaneous timeout.
             truncated = truncated and not terminated
+        if getattr(self, "_hand_spec", None) is not None:
+            executed = action.copy()
+            if self._last_hand_command is not None:
+                executed[6:] = self._last_hand_command
+            info["executed_action"] = executed
         return observation, reward, terminated, truncated, info
 
     @property
@@ -522,6 +563,8 @@ class FrankaEnv(gym.Env):
         return float(reward_array[0])
 
     def reset(self, joint_reset=False, seed=None, options=None):
+        if getattr(self, "_hand_spec", None) is not None and not self.config.is_dummy:
+            self._controller.clear_hand_trajectory().wait()
         if self.config.is_dummy:
             observation = self._get_observation()
             return observation, {}
@@ -616,39 +659,59 @@ class FrankaEnv(gym.Env):
         )
 
         # Arm DOF (xyz + rpy) = 6; end-effector DOF depends on type
-        ee_action_dim = 6 if self._is_hand else 1
+        spec = getattr(self, "_hand_spec", None)
+        ee_action_dim = (
+            spec.action_dim if spec is not None else (6 if self._is_hand else 1)
+        )
         total_action_dim = 6 + ee_action_dim
         self.action_space = gym.spaces.Box(
             np.ones((total_action_dim,), dtype=np.float32) * -1,
             np.ones((total_action_dim,), dtype=np.float32),
         )
 
+        if spec is not None:
+            self.action_space.low[6:] = 0
+
         obs_tcp_pose_dim = 7
         # End-effector state key and dimension
         if self._is_hand:
             ee_state_key = "hand_position"
-            ee_state_dim = 6
-            ee_low, ee_high = 0.0, 1.0
+            ee_state_dim = ee_action_dim
+            ee_low, ee_high = (
+                (np.array(spec.lower), np.array(spec.upper))
+                if spec is not None
+                else (0.0, 1.0)
+            )
         else:
             ee_state_key = "gripper_position"
             ee_state_dim = 1
             ee_low, ee_high = -1.0, 1.0
 
-        self.observation_space = gym.spaces.Dict({
-            "state": gym.spaces.Dict({
-                "tcp_pose": gym.spaces.Box(-np.inf, np.inf, shape=(obs_tcp_pose_dim,)),
-                "tcp_vel": gym.spaces.Box(-np.inf, np.inf, shape=(6,)),
-                ee_state_key: gym.spaces.Box(ee_low, ee_high, shape=(ee_state_dim,)),
-                "tcp_force": gym.spaces.Box(-np.inf, np.inf, shape=(3,)),
-                "tcp_torque": gym.spaces.Box(-np.inf, np.inf, shape=(3,)),
-            }),
-            "frames": gym.spaces.Dict({
-                camera_info.name: gym.spaces.Box(
-                    0, 255, shape=(128, 128, 3), dtype=np.uint8
-                )
-                for camera_info in self._camera_infos
-            }),
-        })
+        self.observation_space = gym.spaces.Dict(
+            {
+                "state": gym.spaces.Dict(
+                    {
+                        "tcp_pose": gym.spaces.Box(
+                            -np.inf, np.inf, shape=(obs_tcp_pose_dim,)
+                        ),
+                        "tcp_vel": gym.spaces.Box(-np.inf, np.inf, shape=(6,)),
+                        ee_state_key: gym.spaces.Box(
+                            ee_low, ee_high, shape=(ee_state_dim,)
+                        ),
+                        "tcp_force": gym.spaces.Box(-np.inf, np.inf, shape=(3,)),
+                        "tcp_torque": gym.spaces.Box(-np.inf, np.inf, shape=(3,)),
+                    }
+                ),
+                "frames": gym.spaces.Dict(
+                    {
+                        camera_info.name: gym.spaces.Box(
+                            0, 255, shape=(128, 128, 3), dtype=np.uint8
+                        )
+                        for camera_info in self._camera_infos
+                    }
+                ),
+            }
+        )
         self._base_observation_space = copy.deepcopy(self.observation_space)
 
     @staticmethod
@@ -748,11 +811,23 @@ class FrankaEnv(gym.Env):
                     self._reward_worker._close()
                 self._reward_worker = None
         finally:
-            if hasattr(self, "camera_player"):
-                self.camera_player.stop()
-            if not self.config.is_dummy and hasattr(self, "_cameras"):
-                self._close_cameras()
-            super().close()
+            try:
+                self.close_controller()
+            finally:
+                if hasattr(self, "camera_player"):
+                    self.camera_player.stop()
+                if not self.config.is_dummy and hasattr(self, "_cameras"):
+                    self._close_cameras()
+                super().close()
+
+    def close_controller(self) -> None:
+        controller = getattr(self, "_controller", None)
+        if controller is not None:
+            try:
+                controller.shutdown().wait()
+            finally:
+                controller._close()
+                self._controller = None
 
     def _close_cameras(self):
         for camera in self._cameras:
@@ -938,12 +1013,14 @@ class FrankaEnv(gym.Env):
             if self._is_hand:
                 hand_pos = self._franka_state.hand_position
                 if hand_pos is None:
+                    if getattr(self, "_hand_spec", None) is not None:
+                        raise RuntimeError("Wuji measured hand state is missing")
                     hand_pos = np.zeros(6)
                 state["hand_position"] = hand_pos
             else:
-                state["gripper_position"] = np.array([
-                    self._franka_state.gripper_position
-                ])
+                state["gripper_position"] = np.array(
+                    [self._franka_state.gripper_position]
+                )
             state = {
                 key: np.asarray(value, dtype=np.float32) for key, value in state.items()
             }
@@ -973,8 +1050,10 @@ class FrankaEnv(gym.Env):
 
     @property
     def target_ee_pose(self):
-        tgt = np.concatenate([
-            self.config.target_ee_pose[:3],
-            R.from_euler("xyz", self.config.target_ee_pose[3:].copy()).as_quat(),
-        ]).copy()
+        tgt = np.concatenate(
+            [
+                self.config.target_ee_pose[:3],
+                R.from_euler("xyz", self.config.target_ee_pose[3:].copy()).as_quat(),
+            ]
+        ).copy()
         return tgt
