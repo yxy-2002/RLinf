@@ -35,6 +35,7 @@ class DexHandIntervention(gym.ActionWrapper):
         glove_frequency: int = 60,
         timeout: float = 0.5,
         pipeline_config: Optional[str] = None,
+        scale_file: Optional[str] = None,
         intervention_mode: str = "relative",
         release_behavior: str = "hold",
         right_button_labels_only: bool = False,
@@ -47,7 +48,7 @@ class DexHandIntervention(gym.ActionWrapper):
 
         if not pipeline_config:
             raise ValueError("DexHandIntervention requires pipeline_config")
-        cfg = load_config(pipeline_config)
+        cfg = load_config(pipeline_config, scale_file=scale_file)
         expected_hand = "wuji1hand" if self._wuji else "ruiyanhand"
         if cfg["hand"]["type"] != expected_hand:
             raise ValueError("Pipeline hand type does not match robot end effector")
@@ -74,6 +75,7 @@ class DexHandIntervention(gym.ActionWrapper):
         self._glove = GloveExpert(
             frequency=glove_frequency,
             pipeline_config=pipeline_config,
+            scale_file=scale_file,
         )
 
         self._right_button_labels_only = right_button_labels_only

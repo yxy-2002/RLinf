@@ -21,6 +21,7 @@ class GloveExpert:
         self,
         *,
         pipeline_config=None,
+        scale_file=None,
         frequency=60,
         startup_timeout=3.0,
         warning_interval=5.0,
@@ -36,7 +37,7 @@ class GloveExpert:
                 raise ValueError(f"{name} must be finite and positive")
         from ..pipeline import TeleopPipeline, load_config
 
-        cfg = load_config(pipeline_config)
+        cfg = load_config(pipeline_config, scale_file=scale_file)
         pipeline = TeleopPipeline(cfg)
         self.side = cfg["glove"]["side"]
         self.driver, self.retargeter = pipeline.driver, pipeline.retargeter

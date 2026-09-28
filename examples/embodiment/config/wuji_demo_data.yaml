@@ -1,6 +1,6 @@
 defaults:
   - env/realworld_dex_pnp@env.eval
-  - collection/wuji
+  - env/dexhand/wuji
   - override hydra/job_logging: stdout
   - _self_
 

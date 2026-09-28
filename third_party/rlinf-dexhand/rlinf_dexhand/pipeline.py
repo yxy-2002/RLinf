@@ -15,12 +15,18 @@ COMBINATIONS = {
 }
 
 
-def load_config(path):
+def load_config(path, *, scale_file=None):
+    """Load a pipeline, resolving an optional scale override relative to its YAML."""
     path = Path(path).resolve()
     cfg = yaml.safe_load(path.read_text())
     for section in ("glove", "retargeting", "hand"):
         if section not in cfg:
             raise ValueError(f"Missing {section}")
+    if scale_file is not None:
+        if not scale_file or cfg["retargeting"]["type"] != "wuji_tier2":
+            raise ValueError("scale_file override requires a nonempty WujiTier2 path")
+        cfg["retargeting"]["scale_file"] = scale_file
+    for section in ("glove", "retargeting", "hand"):
         for key, value in cfg[section].items():
             if (key.endswith("_file") or key.endswith("_urdf")) and value:
                 cfg[section][key] = str((path.parent / value).resolve())

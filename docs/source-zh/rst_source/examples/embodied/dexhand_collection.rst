@@ -8,7 +8,7 @@ Ruiyan 灵巧手 Reward Model 数采
 
 从仓库根目录执行以下命令。先完成 :doc:`franka_dexhand` 中的硬件准备。在控制机使用现有真机环境，在 GPU 机器使用 reward 训练环境。
 
-共享配置位于 ``examples/embodiment/config/collection/ruiyan.yaml``。请按现场设备核对机器人 IP、相机序列号、串口、手部复位状态、运动边界和复位姿态。两个采集阶段复用这些设置。标注和 demo 采集期间保持相机裁剪设置一致。
+共享配置位于 ``examples/embodiment/config/env/dexhand/ruiyan.yaml``。请按现场设备核对机器人 IP、相机序列号、串口、手部复位状态、运动边界和复位姿态。两个采集阶段复用这些设置。标注和 demo 采集期间保持相机裁剪设置一致。
 
 两路视角顺序为 ``[wrist_1, global]``。保留 SpaceMouse 左键控制手套以及 12 维机械臂/灵巧手动作。
 
@@ -122,7 +122,7 @@ mapping 和生成的 ``retargeting.scale_file``。标定结束后才能让采集
 缺少标定会在硬件初始化之前失败。
 
 现有 reward 采集器使用 ``wuji_reward_data`` 配置；现有 demo 采集器使用
-``wuji_demo_data``。填写 ``collection/wuji`` 中必填的现场参数：
+``wuji_demo_data``。填写 ``env/dexhand/wuji`` 中必填的现场参数：
 ``glove_config.pipeline_config``、``override_cfg.end_effector_config.serial_number``、
 ``override_cfg.hand_reset_state``、相机序列号及名称、机械臂目标姿态与复位关节角。
 不同手型契约使用不同输出目录；demo 还需配置 ``reward.model.model_path``。
@@ -133,6 +133,11 @@ mapping 和生成的 ``retargeting.scale_file``。标定结束后才能让采集
 实测手部观测为 20 维弧度，经过现有欧拉角包装器后展平状态为 38 维。
 demo 动作记录驱动平滑之前接受的目标。采集器沿用原有数据格式，
 不增加末端专用元数据或目录检查。
+
+通过 ``env.eval.glove_config.scale_file=/absolute/path/operator_scale.yaml``
+可按操作员覆盖 pipeline 的 scale 路径；``null`` 使用 pipeline 原值。相对路径
+以 pipeline YAML 所在目录为基准，建议使用控制节点可读的绝对路径。覆盖文件
+必须有效且左右手匹配，错误时直接报错。切换后重启采集，原 pipeline 不会被改写。
 
 ``glove_config.intervention_mode`` 默认为 ``relative``；``absolute`` 直接使用
 重定向姿态。采集采用 ``release_behavior: hold``，松开按钮后保持最后目标；

@@ -8,7 +8,7 @@ Installation and Configuration
 
 Run the commands from the repository root. Complete the hardware setup in :doc:`franka_dexhand`. Use the existing real-world environment on the control machine and the reward-training environment on the GPU machine.
 
-The shared configuration is ``examples/embodiment/config/collection/ruiyan.yaml``. Check its robot IP, camera serials, serial ports, hand reset state, motion limits and reset pose against your installation. Both collection modes reuse these settings. Keep the camera crops unchanged between labeling and demo collection.
+The shared configuration is ``examples/embodiment/config/env/dexhand/ruiyan.yaml``. Check its robot IP, camera serials, serial ports, hand reset state, motion limits and reset pose against your installation. Both collection modes reuse these settings. Keep the camera crops unchanged between labeling and demo collection.
 
 Set ``env.eval.glove_config.pipeline_config`` explicitly. Copy
 ``third_party/rlinf-dexhand/configs/psiglove_1_ruiyan_left.yaml`` and edit
@@ -125,7 +125,7 @@ must finish before collection opens the serial port. Missing calibration fails
 before hardware initialization.
 
 Use ``wuji_reward_data`` in the existing reward collector, or ``wuji_demo_data``
-in the existing demo collector. Fill the mandatory fields in ``collection/wuji``:
+in the existing demo collector. Fill the mandatory fields in ``env/dexhand/wuji``:
 ``glove_config.pipeline_config``, ``override_cfg.end_effector_config.serial_number``,
 ``override_cfg.hand_reset_state``, camera serials/names, arm target pose and joint
 reset pose. These are site-specific values. Supply a separate output directory
@@ -139,6 +139,13 @@ targets in [0,1]. The adapter maps each hand value to its URDF joint interval.
 the existing Euler wrapper gives 38 flattened state values. Actions saved in
 demos are the accepted targets before driver smoothing. The collectors use the
 existing data formats without end-effector-specific metadata or directory checks.
+
+Use ``env.eval.glove_config.scale_file=/absolute/path/operator_scale.yaml``
+to select an operator's scale file; ``null`` keeps the pipeline value. Relative
+paths are resolved against the pipeline YAML directory. Prefer an absolute path
+readable on the control node. The selected file must be valid and match the hand
+side; invalid overrides fail. Restart collection after switching operators;
+the pipeline file is not modified.
 
 ``glove_config.intervention_mode`` defaults to ``relative``; ``absolute`` uses
 the retargeted pose directly. ``release_behavior: hold`` keeps the last target

@@ -128,6 +128,7 @@ def apply_single_arm_wrappers(env: gym.Env, cfg: Mapping[str, Any]) -> gym.Env:
                 env,
                 glove_frequency=glove_cfg.get("frequency", 60),
                 pipeline_config=glove_cfg.get("pipeline_config"),
+                scale_file=glove_cfg.get("scale_file"),
                 intervention_mode=glove_cfg.get("intervention_mode", "relative"),
                 release_behavior=glove_cfg.get("release_behavior", "hold"),
                 right_button_labels_only=cfg.get("right_button_labels_only", False),

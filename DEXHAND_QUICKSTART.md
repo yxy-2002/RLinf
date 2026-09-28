@@ -1,12 +1,12 @@
-# Ruiyan 灵巧手数采速查
+# 灵巧手数采 Quickstart：Ruiyan / WujiHand
 
-按“采正负帧 → 训练 reward model → 采成功 demo”执行。以下命令均在仓库根目录、已安装对应依赖的 Python 环境中运行；先完成机器人服务、相机、手套和串口连接。
+按“采正负帧 → 训练 reward model → 采成功 demo”执行。前半部分为 Ruiyan 流程；Wuji 一代左手 + PSI2 首次使用请从文末的 [首次启动流程](#wuji-first-start) 开始。以下命令均在仓库根目录、已安装对应依赖的 Python 环境中运行。
 
 ## 先改哪些配置
 
 | 配置文件 | 常用修改项 |
 | --- | --- |
-| [共享硬件配置](examples/embodiment/config/collection/ruiyan.yaml) | `cluster.node_groups` 中的 `robot_ip`；`env.eval.glove_config.pipeline_config`（必填，串口在该 YAML 的 `glove.port` 中指定）；`env.eval.override_cfg` 下的 `end_effector_config.port`、`camera_serials`、`camera_names`、`target_ee_pose`、`ee_pose_limit_*_offset`、`action_scale`、`hand_reset_state`、`joint_reset_qpos` |
+| [共享硬件配置](examples/embodiment/config/env/dexhand/ruiyan.yaml) | `cluster.node_groups` 中的 `robot_ip`；`env.eval.glove_config.pipeline_config`（必填，串口在该 YAML 的 `glove.port` 中指定）；`env.eval.override_cfg` 下的 `end_effector_config.port`、`camera_serials`、`camera_names`、`target_ee_pose`、`ee_pose_limit_*_offset`、`action_scale`、`hand_reset_state`、`joint_reset_qpos` |
 | [正负帧采集](examples/reward/config/dexhand_reward_model.yaml) | `runner.num_success_frames`、`runner.fps`；两个回合步数上限 |
 | [模型训练](examples/reward/config/dexhand_reward_training.yaml) | 可覆盖 `data.train_data_paths`、`data.val_data_paths`、`runner.max_epochs`、`actor.optim.lr`、`actor.micro_batch_size`、`actor.global_batch_size`；默认值继承自 [reward_training.yaml](examples/reward/config/reward_training.yaml) |
 | [Demo 采集](examples/embodiment/config/dexhand_demo_data.yaml) | `reward.model.model_path`、`reward.reward_threshold`、`runner.num_data_episodes`、`env.eval.override_cfg.success_hold_steps`；`cluster.node_groups` 与 reward placement |
@@ -108,8 +108,180 @@ bash examples/embodiment/collect_data.sh realworld_collect_ruiyan_dexhand_data
 
 洗reward数据： /workspace/RLinf/toolkits/dexhand/review_classifier_data.py
 看相机crop范围： /workspace/RLinf/toolkits/dexhand/crop_classifier_data.py
-## WujiHand 一代 / PSI2
+<a id="wuji-first-start"></a>
 
-Wuji 复用以上流程：reward 采集配置改为 `wuji_reward_data`，demo 采集改为 `wuji_demo_data`，reward 模型训练仍使用原有训练入口。先按 [ROS1 安装与标定](toolkits/dexhand/README.md) 配置旧版 SDK，在 `collection/wuji` 中填写必填的现场参数。手部动作和复位目标为 20 维 `[0,1]`，实测手部状态为弧度；不同手型使用不同数据目录。
+## WujiHand 一代左手 + PSI2：首次启动流程
 
-环境自动管理 Wuji 驱动，输入超时暂停后使用 `rosservice call /wuji_hand/left/resume '{}'` 恢复。ROS1 RViz 显示目标和实测姿态，旧 ROS2 显示入口已移除。真机验收进度见 [迁移状态](WUJI_HAND_MIGRATION_STATUS.md)。
+顺序为：**安装 → 填写手套 pipeline → 标定 → 填写机器人配置 → 启动正负帧采集 → 检查反馈/遥操作 → 训练 reward → 采成功 demo**。使用 ROS1 Noetic 和 `wujihandcpp 1.5.1`，环境自动启动 Wuji 驱动。
+
+下面步骤按当前实现整理；本机编译及假硬件测试已通过，完整真机首次启动仍需现场验收。
+
+### W1. 在控制容器安装 Wuji 依赖
+
+使用已有 Ubuntu 20.04 / ROS1 Noetic Franka 控制环境，连接 Wuji USB、PSI2 串口、SpaceMouse 和相机，并确认控制容器具有设备访问权限。先激活现有 Franka 虚拟环境，再执行：
+
+```bash
+cd /workspace/RLinf
+source /opt/ros/noetic/setup.bash
+# VIRTUAL_ENV 应指向已激活的 Franka 虚拟环境。
+export PYTHON="$VIRTUAL_ENV/bin/python"
+export WUJIHANDCPP_DEB=/workspace/RLinf/third_party/rlinf-dexhand/wujihandcpp-1.5.1-amd64.deb
+bash requirements/sys_deps.sh wuji-ros1
+bash requirements/install.sh dexhand wuji-ros1
+source "${ROS_CATKIN_PATH:-$VIRTUAL_ENV/franka_catkin_ws}/devel/setup.bash"
+
+# 检查 ROS 能找到驱动包，Python 能找到当前仓库的 dexhand 包。
+rospack find wuji_hand_driver
+python -c 'import rlinf_dexhand; print(rlinf_dexhand.__file__)'
+```
+
+把 deb 路径替换为实际文件。安装器固定校验 SDK 版本、amd64 架构和 SHA256；Python 包安装自本仓库。安装和 catkin 构建统一使用 `$VIRTUAL_ENV/bin/python`，并显式更新该解释器对应的 `EMPY_SCRIPT`，避免系统 Python 3.8 与虚拟环境依赖混用。若 Franka 使用自定义 catkin 工作区，安装前设置 `ROS_CATKIN_PATH` 为该路径。后续控制节点启动 Ray 前也必须加载这个工作区。
+
+### W2. 准备 PSI2 + Wuji 左手 pipeline
+
+参考 [PSI2 配置模板](third_party/rlinf-dexhand/configs/psiglove_2_wuji_left.yaml)，在控制节点保存自己的配置，例如 `/workspace/RLinf/local/wuji/glove.yaml`。先创建目录：
+
+```bash
+mkdir -p /workspace/RLinf/local/wuji
+ls -l /dev/serial/by-id/
+```
+
+配置内容示例；替换串口和 mapping 路径：
+
+```yaml
+schema_version: 1
+glove:
+  type: psiglove_2
+  side: left
+  port: /dev/serial/by-id/替换为实际PSI2设备
+  baudrate: 115200
+retargeting:
+  type: wuji_tier2
+  mapping_file: /absolute/path/psi2_left_mapping.yaml
+  scale_file: /workspace/RLinf/local/wuji/scale.yaml
+hand:
+  type: wuji1hand
+  side: left
+```
+
+- `mapping_file` 必须是适用于当前 PSI2 左手的已有映射文件。模板引用的文件位于 [calibrations](third_party/rlinf-dexhand/configs/calibrations)；使用前核对其适用性。
+- 下一步生成 `scale_file`。标定命令允许该文件尚不存在；正式运行要求它已经存在。
+- 路径建议写绝对路径。相对路径以 pipeline 文件所在目录为基准，复制模板到其他目录后需要重新调整。
+- `pipeline_config` 必须显式传入；Wuji 仅接受 `psiglove_2 + wuji_tier2 + wuji1hand`，左右手一致。手套端口在这里配置，不再使用 `glove_config.left_port`。
+
+### W3. 在终端完成 scale 标定
+
+先关闭其他读取该手套串口的程序，在控制节点终端执行：
+
+```bash
+python -m rlinf_dexhand.calibrate \
+  --config /workspace/RLinf/local/wuji/glove.yaml \
+  --output /workspace/RLinf/local/wuji/scale.yaml
+```
+
+按照提示平展手掌并保持稳定，按回车采集 30 帧。看到 `Calibration saved` 后命令退出并释放串口。输出文件不会覆盖已有文件；重新标定时使用新文件名，并同步修改 `scale_file`。该命令生成手型 scale，不生成 PSI2 的 ADC mapping，也不控制 Wuji 硬件。
+
+可选：先做仅手套重定向预览，命令见 [仅重定向预览](toolkits/dexhand/README.md#仅重定向预览)。预览结束后关闭读取手套的进程，再开始采集。
+
+### 按操作员切换 scale 文件
+
+保持同一份 pipeline，通过顶层 `glove_config.scale_file` 指定操作员的标定结果：
+
+```yaml
+env:
+  eval:
+    glove_config:
+      scale_file: /workspace/RLinf/third_party/rlinf-dexhand/configs/calibrations/wuji_left_scale_yxy.yaml
+```
+
+也可以直接覆盖启动参数，无需修改共享 YAML：
+
+```bash
+bash examples/reward/realworld_collect_process_dataset.sh wuji_reward_data \
+  env.eval.glove_config.scale_file=/absolute/path/wuji_left_scale_yxy.yaml \
+  runner.logger.log_path=/workspace/RLinf/logs/wuji_frames_yxy_001
+```
+
+`wuji_demo_data` 使用同样的 `env.eval.glove_config.scale_file` 参数。覆盖路径优先于 pipeline 中的 `retargeting.scale_file`；为 `null` 时使用 pipeline 原值。建议传绝对路径，若使用相对路径，则相对于 **pipeline YAML 所在目录**。文件由控制节点读取，必须存在且左右手匹配；错误时直接报错，不回退到其他操作员的文件。切换操作员后重新启动采集，运行中不热加载；pipeline 原文件不会被改写。
+
+### W4. 填写 Wuji 共享硬件配置
+
+[env/dexhand/wuji.yaml](examples/embodiment/config/env/dexhand/wuji.yaml) 已沿用 Ruiyan 的机械臂 IP、相机、目标位姿、运动范围和关节复位配置，并填写当前 Wuji USB 序列号 `365C356C3333`。启动前按当前工位核对这些参数：
+
+| 配置项 | 填写内容 |
+| --- | --- |
+| `cluster.node_groups` 中的 `robot_ip` | 当前 Franka 地址 |
+| `env.eval.glove_config.pipeline_config` | 当前指向仓库内的 `third_party/rlinf-dexhand/configs/psiglove_2_wuji_left.yaml`；若使用 W2 的自定义文件，改为对应绝对路径 |
+| `env.eval.override_cfg.end_effector_config.serial_number` | Wuji 硬件的 SDK USB 序列号，不是 PSI2 串口路径 |
+| `end_effector_config.side` / `namespace` | 首期使用 `left` / `/wuji_hand/left` |
+| `env.eval.override_cfg.camera_serials` / `camera_names` | 实际相机序列号及映射；与采集配置的 `[wrist_1, global]` 对齐 |
+| `target_ee_pose` / `joint_reset_qpos` / `ee_pose_limit_*_offset` | 核对当前工位的机械臂目标、复位关节姿态和运动范围 |
+| `hand_reset_state` | 20 个 `[0,1]` 目标，顺序为五指依次排列、每指四关节 |
+| `hand_action_scale` | 保持 `1.0` |
+
+表中缩写的字段均位于 `env.eval.override_cfg` 下。手部动作 `0` 对应各关节下限，`1` 对应上限，不要把零向量当作通用安全复位姿态。`hand_target_state` 若用于姿态奖励，单位是弧度；当前两个采集配置关闭了姿态奖励。
+
+当前 `hand_reset_state` 由 20 个零弧度目标按左手模型限位裁剪后归一化得到；拇指第一关节为下限 `0.0475 rad`，其余关节为 `0 rad`。这是待真机核对的初始配置。操作员 scale 仍由 `env.eval.glove_config.scale_file` 指向 `env/dexhand/wuji_left_scale_yxy.yaml`，切换操作员时覆盖此路径。
+
+默认相对接管 `intervention_mode: relative`、松键保持 `release_behavior: hold`。20 维手部动作与原有 6 维机械臂动作组成 26 维动作；手部反馈为弧度，欧拉角展平状态为 38 维。
+
+### W5. 首次启动：先采 reward 正负帧
+
+在控制节点使用单节点 Ray 集群，无需先准备 reward 权重。加载好 W1 的 Python/ROS 环境后启动 Ray；若已有集群，先确认它使用正确环境且对应本次单节点配置。
+
+```bash
+export RLINF_NODE_RANK=0
+ray start --head --port=6379
+
+bash examples/reward/realworld_collect_process_dataset.sh wuji_reward_data \
+  runner.logger.log_path=/workspace/RLinf/logs/wuji_frames_001
+```
+
+**这条命令会启动真实控制和复位动作。** 启动前确认机械臂复位路径、手部复位姿态及周围空间；首次检查以小幅动作进行。软件不会停在“只读反馈”阶段等待确认。
+
+启动后程序会创建 FrankaController、自动启动指定命名空间的 Wuji 驱动、等待反馈并请求使能；采集流程随后执行环境 reset。不要另行启动第二个连接同一只手的驱动。当前仓库仍保留导入 RealWorld 时清理本机 ROS 进程的默认行为，建议控制容器专用于本次运行，RViz 在采集启动后再打开。
+
+### W6. 确认反馈、显示和接管
+
+在控制容器的另一个终端激活相同环境并加载 catkin 工作区，查看默认命名空间：
+
+```bash
+rostopic echo -n 1 /wuji_hand/left/joint_states
+rostopic echo -n 1 /wuji_hand/left/diagnostics
+python -m toolkits.dexhand.rviz_adapter --side left --namespace /wuji_hand/left
+```
+
+- `joint_states` 应包含完整的 20 个关节名和位置，位置单位为弧度。诊断应显示正常使能、没有致命故障或电机错误；真实反馈与模型限位仍需现场核对。
+- RViz 左侧是 `SDK input target`，即插值和限幅后、SDK 低通前的目标；右侧是实测姿态。无桌面时可加 `--no-rviz` 检查 TF 发布。
+- 按住 SpaceMouse 左键后，小幅改变手套姿态；默认以按键时的实测手姿态建立相对基线。松键后保持最后手部目标。
+- 右键按住标正帧，松开标负帧，不负责结束回合。输出为 `raw_reward_episodes/`、`train.pt`、`val.pt`，处理规则与前文 Ruiyan 流程一致。
+
+手套短时超时或坏帧会复用最后有效目标，采集继续；新帧到来后自动更新，**无需调用 resume**。完整合法帧的通道数不符、手部维度错误或不可恢复通信异常会报错。驱动命令超时、USB 故障属于独立的硬件控制故障，不能按普通手套丢帧处理。
+
+### W7. 训练 reward，再采成功 demo
+
+正负帧采集结束后，沿用现有训练入口，在 GPU 训练环境执行；数据路径必须在 GPU 节点可读：
+
+```bash
+bash examples/reward/run_reward_training.sh dexhand_reward_training \
+  data.train_data_paths=/path/on/gpu/wuji_frames_001/train.pt \
+  data.val_data_paths=/path/on/gpu/wuji_frames_001/val.pt
+```
+
+准备好 `full_weights.pt` 后，按前文第 3 节组建两节点 Ray 集群：控制节点 rank 0、GPU 节点 rank 1。控制节点必须在加载 Wuji catkin 工作区及虚拟环境后启动 Ray。两台机器使用一致的仓库代码；PSI2 pipeline、mapping、scale 和硬件依赖放在控制节点。
+
+检查 [wuji_demo_data.yaml](examples/embodiment/config/wuji_demo_data.yaml) 中独立定义的 `cluster.node_groups`，同步填写 Franka IP 和节点分配。按当前入口约定，在 GPU 节点启动采集：
+
+```bash
+bash examples/embodiment/collect_data.sh wuji_demo_data \
+  reward.model.model_path=/path/on/gpu/full_weights.pt \
+  runner.logger.log_path=/workspace/RLinf/logs/wuji_demos_001
+```
+
+权重路径由 GPU 节点读取；日志/数据目录需要在控制节点可写。成功 demo 保存到 `demos/`，pickle 导出到 `collected_data/`。每次采集使用新目录，采集器不做末端专用的目录兼容性检查。
+
+### W8. 正常退出
+
+在采集入口终端按 Ctrl+C，等待进程清理结束；手部关闭流程会请求失能，再结束自有驱动。随后关闭 RViz。reward 采集和 demo 采集对未完成 episode 的保存规则见前文，强杀进程不能保证执行正常清理。
+
+更多参数和驱动接口见 [工具说明](toolkits/dexhand/README.md)，已完成的测试及未完成的真机验收见 [验证记录](third_party/rlinf-dexhand/VALIDATION.md)。

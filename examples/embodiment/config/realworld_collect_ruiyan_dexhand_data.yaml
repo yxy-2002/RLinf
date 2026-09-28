@@ -1,6 +1,6 @@
 defaults:
   - env/realworld_dex_pnp@env.eval
-  - collection/ruiyan
+  - env/dexhand/ruiyan
   - override hydra/job_logging: stdout
   - _self_
 

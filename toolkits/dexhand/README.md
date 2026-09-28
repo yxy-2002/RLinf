@@ -26,7 +26,7 @@ bash requirements/install.sh dexhand wuji-ros1
 source "$VIRTUAL_ENV/franka_catkin_ws/devel/setup.bash"
 ```
 
-安装器验证包名、1.5.1 版本、amd64 架构及 SHA256，不把 SDK 二进制加入仓库。控制容器需有设备 USB 访问权限。设置 `ROS_CATKIN_PATH` 时使用对应工作区的 `devel/setup.bash`。
+安装器验证包名、1.5.1 版本、amd64 架构及 SHA256，不把 SDK 二进制加入仓库。SDK 加载检查、Python 包安装和 catkin 构建统一使用 `$VIRTUAL_ENV/bin/python`；构建时同步更新 `EMPY_SCRIPT`，覆盖旧工作区缓存的解释器和模板工具路径。控制容器需有设备 USB 访问权限。设置 `ROS_CATKIN_PATH` 时使用对应工作区的 `devel/setup.bash`。
 
 复制 `third_party/rlinf-dexhand/configs/psiglove_2_wuji_left.yaml`，为自己的手套填写串口、mapping 和 scale 的路径。相对路径相对于配置文件；不要直接沿用随包的个人标定。
 
@@ -44,6 +44,16 @@ docker build -f docker/Dockerfile --build-arg BUILD_TARGET=embodied-franka-wuji 
   --secret id=wujihandcpp_deb,src=/absolute/path/wujihandcpp-1.5.1-amd64.deb \
   -t rlinf:franka-wuji .
 ```
+
+## 按操作员覆盖 scale
+
+在采集配置中设置 `env.eval.glove_config.scale_file`，或在启动命令末尾追加：
+
+```bash
+env.eval.glove_config.scale_file=/absolute/path/wuji_left_scale_yxy.yaml
+```
+
+该值覆盖 pipeline 中的 `retargeting.scale_file`，`null` 使用原值。相对路径仍按 pipeline YAML 所在目录解析，建议使用控制节点可读的绝对路径。覆盖在文件校验前应用，原默认 scale 不存在也可使用有效覆盖；覆盖文件错误会直接报错。操作员切换后重启采集，不修改 pipeline 文件。
 
 ## 真机目标与反馈显示
 

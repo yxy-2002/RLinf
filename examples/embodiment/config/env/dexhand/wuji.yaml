@@ -26,16 +26,27 @@ env:
       type: wuji_tier2
     glove_config:
       type: psiglove_2
-      pipeline_config: ???
+      scale_file: /workspace/RLinf/examples/embodiment/config/env/dexhand/wuji_left_scale_yxy.yaml # Optional operator scale override; null uses pipeline YAML.
+      pipeline_config: /workspace/RLinf/third_party/rlinf-dexhand/configs/psiglove_2_wuji_left.yaml
       frequency: 30
       intervention_mode: relative
       release_behavior: hold
     override_cfg:
       enable_camera_player: false
       enable_random_reset: false
-      camera_serials: ???
-      camera_names: ???
-      target_ee_pose: ???
+      camera_serials:
+      - '323622272844'
+      - '105322251046'
+      camera_names:
+        '323622272844': wrist_1
+        '105322251046': global
+      target_ee_pose:
+      - 0.70416806
+      - 0.11882583
+      - 0.39912649
+      - 1.65310945
+      - 0.73057801
+      - 0.99932396
       ee_pose_limit_min_offset:
       - -0.2
       - -0.2
@@ -57,7 +68,7 @@ env:
       end_effector_type: wuji_hand
       end_effector_config:
         side: left
-        serial_number: ???
+        serial_number: "365C356C3333" # WUJIHAND USB serial; not the glove port.
         namespace: /wuji_hand/left
         feedback_timeout: 0.5
         reset_duration: 1.0
@@ -86,9 +97,37 @@ env:
       - 0.0
       - 0.0
       - 0.0
-      hand_reset_state: ???
+      # Near-zero radians clipped to URDF limits; verify on hardware before use.
+      hand_reset_state:
+      - 0.0
+      - 0.12949304453365698
+      - 0.22906489020478657
+      - 0.23185473923126265
+      - 0.09221013438827157
+      - 0.5
+      - 0.23576152403513964
+      - 0.2291544333529066
+      - 0.09580419580419579
+      - 0.5
+      - 0.23401313515381955
+      - 0.22928190317685643
+      - 0.09067040084018906
+      - 0.5
+      - 0.23528540391072486
+      - 0.2340404683748959
+      - 0.09447446400557782
+      - 0.5
+      - 0.23536380689110478
+      - 0.22935645019100795
       hand_action_scale: 1.0
-      joint_reset_qpos: ???
+      joint_reset_qpos:
+      - 0
+      - 0
+      - 0
+      - -1.9
+      - 0
+      - 2
+      - 0
       success_hold_steps: 1
       step_frequency: 100.0
     data_collection:

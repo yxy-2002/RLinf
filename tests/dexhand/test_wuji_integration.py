@@ -101,7 +101,7 @@ class Env(gym.Env):
         return {}, 0, False, False, {"executed_action": action.copy()}
 
 
-def setup_wrapper(monkeypatch, mode="relative", release="hold"):
+def setup_wrapper(monkeypatch, mode="relative", release="hold", scale_file=None):
     import time
 
     import rlinf_dexhand.pipeline
@@ -113,17 +113,18 @@ def setup_wrapper(monkeypatch, mode="relative", release="hold"):
     )
     mouse = Mock()
     mouse.get_action.return_value = (np.zeros(6), [0, 1])
-    monkeypatch.setattr(module, "GloveExpert", lambda **kwargs: glove)
+    monkeypatch.setattr(module, "GloveExpert", Mock(return_value=glove))
     monkeypatch.setattr(module, "SpaceMouseExpert", lambda: mouse)
     monkeypatch.setattr(
         rlinf_dexhand.pipeline,
         "load_config",
-        lambda _: {"hand": {"side": "left", "type": "wuji1hand"}},
+        lambda _, **kwargs: {"hand": {"side": "left", "type": "wuji1hand"}},
     )
     env = Env()
     wrapper = module.DexHandIntervention(
         env,
         pipeline_config="fake.yaml",
+        scale_file=scale_file,
         intervention_mode=mode,
         release_behavior=release,
     )
@@ -260,3 +261,8 @@ def test_wrong_feedback_dimension_is_not_silently_cached():
     hand._on_state(SimpleNamespace(name=hand.spec.joint_names, position=[0.0] * 19))
     with pytest.raises(ValueError, match="joint order/dimension mismatch"):
         hand.get_state()
+
+
+def test_wrapper_forwards_operator_scale(monkeypatch):
+    setup_wrapper(monkeypatch, scale_file="/operator/scale.yaml")
+    assert module.GloveExpert.call_args.kwargs["scale_file"] == "/operator/scale.yaml"
