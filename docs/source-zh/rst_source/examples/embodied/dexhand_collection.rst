@@ -18,6 +18,15 @@ Ruiyan 灵巧手 Reward Model 数采
 和 PSI2/WujiTier2/Wuji1 两种完整组合，左右手必须一致。缺失或组合错误会在
 启动手套读取线程前报错，运行中的丢帧缓存回退行为不变。
 
+Wuji 和 Ruiyan 的采集配置均使用
+``env.eval.glove_config.frequency: 60`` 进行手套采集与重定向，
+并以 ``env.eval.override_cfg.step_frequency: 100.0`` 作为环境循环频率上限。
+旧入口 ``realworld_collect_dexhand_data`` 也使用相同频率。这些是目标频率；
+串口读取、重定向、相机采集和采集器处理耗时可能降低实际频率。
+Wuji 驱动另以 ``output_rate_hz: 1000.0`` 输出插值目标，
+以 ``state_rate_hz: 100.0`` 发布状态。其 ``lag_sec: 0.07`` 和
+``filter_cutoff_hz: 10.0`` 保持不变，因此更新频率一致不代表端到端延迟一致。
+
 采集标注帧
 ----------------------------------------
 
@@ -157,3 +166,52 @@ Wuji 沿用 Ruiyan 的手套回退行为：超时或坏帧时使用最后有效�
 RViz 使用 ROS1 并排显示 SDK 输入目标和实测姿态。旧 ROS2/ZMQ 显示已移除；
 仅预览模式及无界面测试见 ``toolkits/dexhand/README.md``。硬件失联会结束采集；
 显式退出会失能并清理自有进程，保留共享 ROS master。强杀进程不能保证保持。
+
+输入轮询、相机采集与硬件反馈
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+SpaceMouse 轮询上限为 250 Hz，更新缓存后等待 4 ms 周期的剩余时间；退出可立即唤醒。
+
+通过 ``env.eval.override_cfg.camera_fps`` 配置相机采集频率。
+Franka 默认为 15 FPS；``wuji_reward_data`` 使用 30 FPS 相机采集，以 10 FPS 记录图像和标签。
+等待相机帧会影响数采 step；手部遥操在独立子进程中运行。
+
+Wuji 驱动使用单个后台线程，以 10 Hz 读取硬件反馈。
+等待 SDK 时不持有控制状态锁，完成后通过短锁提交完整反馈快照。
+慢读取不会积压新任务；退出时先等待线程结束，再销毁 SDK。
+电机错误与读取失败仍会锁存，反馈过期会停止提交新目标。
+enable/reset 服务仍执行同步硬件操作。
+
+两条遥操路径中的开发阶段频率和延迟统计日志已移除，正常报错及硬件诊断保留。
+重新构建 ROS1 驱动并重启数采后生效；参考 ROS2 工作空间也需要重新构建
+``psi_glove_ros2`` 和 ``wujihand_driver``，再重启遥操。
+
+Reward 数采的独立手部遥操
+~~~~~~~~~~~~~~~~~~~~~~~~
+
+``DexHandIntervention`` 对 Wuji 和 Ruiyan 都固定使用独立遥操子进程，
+不再保留单独的 Wuji wrapper 或进程模式开关。
+通过 spawn 启动的独立进程持有手套、重定向算法和空间鼠标，按
+``env.eval.hand_teleop_frequency: 60`` Hz 的上限下发手部目标，独立于
+``runner.fps: 10``。新目标生成率仍取决于求解耗时。
+数采读取一个有界共享快照，不会积压手部命令。机械臂控制仍跟随数采 step 频率。
+
+Wuji 驱动在 ``set_teleop(true)`` 后只接收 ``teleop_commands``，忽略
+普通 ``joint_commands``。保存 episode 或 reset 前数采等待暂停确认，将驱动切回普通命令；
+reset 后恢复子进程。此时需要松开再按下左键，重新接管手部。
+读取失败、手套或 IPC 数据过期会明确报错。子进程退出时尽可能保持手部，
+驱动仍保留命令超时处理。父进程关闭驱动之前会等待子进程退出。
+
+两种手都使用 ``release_behavior: hold``，不支持 policy 回退。
+``right_button_labels_only`` 保留按钮标签语义。Ruiyan 通过原有 Franka controller
+的 ``get_hand_state`` 和 ``command_end_effector`` RPC 工作，串口驱动仍由原
+controller 进程持有，不增加 ROS 接口。暂停确认前会等待在途 RPC 完成。
+Ruiyan 下发仍可能受同一 controller 上其他操作耗时影响。
+重新构建驱动后，启动数采仍使用原命令。
+
+原始 reward episode 的 metadata 中新增 ``teleop_snapshots``，每帧一行：
+step 起止墙钟时间、step 前后遥操快照墙钟时间、手套序号、20 维（Wuji）或 6 维（Ruiyan）归一化手部目标
+（step 后快照）。右键标签也取 step 后快照。
+相机接口没有曝光时间戳，且 step 内目标可能变化，因此这只是近似关联，
+不能当作精确同步的动作示范数据。现有 reward 划分仍使用图像和标签，
+诊断时间行保留在原始 episode 中。

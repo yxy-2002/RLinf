@@ -186,8 +186,22 @@ class FrameCollector(Worker):
                 ),
             },
         }
+        metadata["teleop_snapshot_fields"] = [
+            "step_start_unix_s",
+            "step_end_unix_s",
+            "teleop_before_unix_s",
+            "teleop_after_unix_s",
+            "glove_sequence",
+            *[
+                f"hand_target_normalized_{i}"
+                for i in range(self.env.action_space.shape[-1] - 6)
+            ],
+        ]
+        metadata["teleop_alignment"] = "step_boundary_snapshot_not_camera_exposure"
         raw_dir = os.path.join(cfg.runner.logger.log_path, "raw_reward_episodes")
         images, labels, steps = [], [], []
+        teleop_snapshots = []
+        pause_teleop = getattr(self.env, "pause_hand_teleop", lambda: None)
         episode_id = 0
         success_count = fail_count = 0
         step = 0
@@ -214,6 +228,10 @@ class FrameCollector(Worker):
                     )
                     labels.append(label)
                     steps.append(step)
+                    if "teleop_snapshot" in info:
+                        teleop_snapshots.append(
+                            np.asarray(info["teleop_snapshot"]).reshape(-1).tolist()
+                        )
                     success_count += label
                     fail_count += 1 - label
                     ended = bool(terminated.any() or truncated.any())
@@ -235,10 +253,17 @@ class FrameCollector(Worker):
                     if target_met:
                         break
                     if ended:
+                        pause_teleop()
                         save_reward_episode(
-                            raw_dir, episode_id, images, labels, steps, metadata
+                            raw_dir,
+                            episode_id,
+                            images,
+                            labels,
+                            steps,
+                            {**metadata, "teleop_snapshots": teleop_snapshots},
                         )
                         images, labels, steps = [], [], []
+                        teleop_snapshots = []
                         episode_id += 1
                         step = 0
                         self.log_info(
@@ -247,9 +272,25 @@ class FrameCollector(Worker):
                         self.env.reset()
                     time.sleep(max(0, period - (time.monotonic() - started)))
             finally:
-                save_reward_episode(
-                    raw_dir, episode_id, images, labels, steps, metadata
-                )
+                # Cleanup must not replace the original acquisition failure.
+                import sys
+
+                acquisition_failed = sys.exc_info()[0] is not None
+                try:
+                    pause_teleop()
+                except Exception as exc:
+                    if not acquisition_failed:
+                        raise
+                    self.log_warning(f"Teleop pause during error cleanup failed: {exc}")
+                finally:
+                    save_reward_episode(
+                        raw_dir,
+                        episode_id,
+                        images,
+                        labels,
+                        steps,
+                        {**metadata, "teleop_snapshots": teleop_snapshots},
+                    )
         split_reward_episodes(
             raw_dir,
             cfg.runner.logger.log_path,

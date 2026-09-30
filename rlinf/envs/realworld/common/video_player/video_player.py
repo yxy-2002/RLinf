@@ -25,6 +25,7 @@ class VideoPlayer:
     def __init__(self, enable: bool = True):
         self.queue = queue.Queue()
         self.is_running = False
+        self._stop = threading.Event()
         if not enable:
             return
         self._run_thread = threading.Thread(target=self._play, daemon=True)
@@ -34,6 +35,15 @@ class VideoPlayer:
         if self.is_running:
             self.queue.put(frame)
 
+    def stop(self) -> None:
+        """Wake and stop the display thread; safe for disabled or repeated calls."""
+        self._stop.set()
+        self.is_running = False
+        self.queue.put(None)
+        thread = getattr(self, "_run_thread", None)
+        if thread is not None and thread is not threading.current_thread():
+            thread.join(timeout=2)
+
     def _play(self):
         if os.environ.get("DISPLAY") is None:
             warnings.warn(
@@ -41,8 +51,10 @@ class VideoPlayer:
             )
             return
 
+        if self._stop.is_set():
+            return
         self.is_running = True
-        while True:
+        while not self._stop.is_set():
             img_array = self.queue.get()  # retrieve an image from the queue
             if img_array is None:  # None is our signal to exit
                 break
@@ -53,3 +65,5 @@ class VideoPlayer:
 
             cv2.imshow("Cameras", frame)
             cv2.waitKey(1)
+
+        self.is_running = False

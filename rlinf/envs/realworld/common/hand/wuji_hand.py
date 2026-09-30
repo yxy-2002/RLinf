@@ -56,6 +56,7 @@ class WujiHand(EndEffector):
                 raise ValueError("Wuji timing parameters must be positive and finite")
         self._ros = ros
         self.namespace = namespace.rstrip("/")
+        self._command_topic = self.namespace + "/joint_commands"
         self._params = {
             "serial_number": serial_number,
             "side": side,
@@ -71,6 +72,7 @@ class WujiHand(EndEffector):
         self._startup_timeout, self._timeout = startup_timeout, feedback_timeout
         self._reset_duration = reset_duration
         self._process = None
+        self._attached = False
         self._position = None
         self._feedback_error = None
         self._feedback_received = self._diagnostic_received = 0.0
@@ -80,6 +82,7 @@ class WujiHand(EndEffector):
         self._last_target = None
         self._ownership = None
         self._namespace_ownership = None
+        self._teleop_ownership = None
 
     @property
     def action_dim(self) -> int:
@@ -188,7 +191,53 @@ class WujiHand(EndEffector):
             self.shutdown()
             raise
 
+    def attach(self) -> None:
+        """Connect a teleop client to an existing driver without taking ownership.
+
+        The caller must coordinate exclusive command ownership with the process
+        that created the driver. This client never enables or destroys it.
+        """
+        import hashlib
+
+        import rospy
+        from diagnostic_msgs.msg import DiagnosticArray
+        from filelock import FileLock
+        from sensor_msgs.msg import JointState
+        from std_srvs.srv import SetBool, Trigger
+
+        key = hashlib.sha256(self.namespace.encode()).hexdigest()[:16]
+        self._teleop_ownership = FileLock(f"/tmp/rlinf-wuji-teleop-{key}.lock")
+        self._teleop_ownership.acquire(timeout=0)
+        self._attached = True
+        self._command_topic = self.namespace + "/teleop_commands"
+        self._rospy, self._JointState = rospy, JointState
+        self._ros.create_ros_channel(self._command_topic, JointState, queue_size=1)
+        self._ros.connect_ros_channel(
+            self.namespace + "/joint_states", JointState, self._on_state
+        )
+        self._ros.connect_ros_channel(
+            self.namespace + "/diagnostics", DiagnosticArray, self._on_diagnostics
+        )
+        deadline = time.monotonic() + self._startup_timeout
+        for service in ("hold", "resume", "clear_trajectory", "set_teleop"):
+            rospy.wait_for_service(
+                self.namespace + "/" + service,
+                timeout=max(0.01, deadline - time.monotonic()),
+            )
+            self._services[service] = rospy.ServiceProxy(
+                self.namespace + "/" + service,
+                SetBool if service == "set_teleop" else Trigger,
+            )
+        while not self.get_detailed_state()["feedback_valid"]:
+            if time.monotonic() >= deadline:
+                raise TimeoutError("No fresh feedback from existing Wuji driver")
+            time.sleep(0.02)
+
     def _check_process(self) -> None:
+        if self._attached:
+            if self._rospy.is_shutdown():
+                raise RuntimeError("Teleop ROS client shut down")
+            return
         if self._process is None or self._process.poll() is not None:
             raise RuntimeError("Wuji driver exited; hardware control unavailable")
 
@@ -270,7 +319,7 @@ class WujiHand(EndEffector):
         msg = self._JointState()
         msg.header.stamp = self._rospy.Time.now()
         msg.name, msg.position = self.finger_names, q.tolist()
-        self._ros.put_channel(self.namespace + "/joint_commands", msg)
+        self._ros.put_channel(self._command_topic, msg)
         self._last_target = q
         return True
 
@@ -323,6 +372,9 @@ class WujiHand(EndEffector):
         finally:
             self._process = None
             self._services.clear()
+            if self._teleop_ownership is not None:
+                self._teleop_ownership.release()
+                self._teleop_ownership = None
             if self._namespace_ownership is not None:
                 self._namespace_ownership.release()
                 self._namespace_ownership = None

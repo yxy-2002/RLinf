@@ -524,25 +524,16 @@ def test_dexhand_right_button_only_labels_and_reports_held_action():
             return {}, 0, False, False, {}
 
     wrapper = object.__new__(DexHandIntervention)
-    wrapper._wuji = False
-    wrapper._hand_dim = 6
-    wrapper._mode = "relative"
-    wrapper._release = "hold"
     gym.Wrapper.__init__(wrapper, BaseEnv())
-    wrapper._right_button_labels_only = True
-    wrapper._spacemouse = Mock()
-    wrapper._spacemouse.get_action.return_value = (np.zeros(6), [1, 0])
-    wrapper._glove = Mock()
-    wrapper._glove.get_target.return_value = SimpleNamespace(values=np.ones(6))
-    wrapper._last_intervene = 0.0
-    wrapper._timeout = 0.5
-    wrapper._hand_current = np.full(6, 0.4)
-    wrapper._prev_left = False
+    wrapper._teleop = Mock()
+    wrapper._teleop.snapshot.return_value = np.array(
+        [1, 1, 1, 0, 1, 0] + [0] * 6 + [0.4] * 6
+    )
     _, _, _, _, info = wrapper.step(np.zeros(12))
     assert info["right"] and not info["left"]
     assert "intervene_action" not in info
     np.testing.assert_allclose(info["executed_action"][6:], 0.4)
-    wrapper._spacemouse.get_action.return_value = (np.zeros(6), [0, 1])
+    wrapper._teleop.snapshot.return_value[3:6] = [1, 0, 1]
     _, _, _, _, info = wrapper.step(np.zeros(12))
     assert info["left"] and not info["right"]
     assert "intervene_action" in info

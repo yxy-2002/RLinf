@@ -12,6 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import multiprocessing
+
 from .dosw1 import DOSW1Config, DOSW1Env
 from .dosw1 import tasks as dosw1_tasks
 from .franka import FrankaEnv, FrankaRobotConfig, FrankaRobotState
@@ -31,7 +33,10 @@ from .realworld_env import RealWorldEnv
 from .xsquare import Turtle2Env, Turtle2RobotConfig, Turtle2RobotState
 from .xsquare import tasks as xsquare_tasks
 
-RealWorldEnv.realworld_setup()
+# A spawned teleop child attaches to the existing driver and ROS master.
+# Its fresh interpreter must not repeat the parent's destructive ROS cleanup.
+if multiprocessing.current_process().name != "dexhand-teleop":
+    RealWorldEnv.realworld_setup()
 
 __all__ = [
     "DualFrankaEnv",

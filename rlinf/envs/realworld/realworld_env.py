@@ -442,6 +442,15 @@ class RealWorldEnv(gym.Env):
             repeats=self.group_size
         )
 
+    def pause_hand_teleop(self) -> None:
+        """Wait for independent hand output to stop before saving/resetting."""
+        for env in self.env.envs:
+            try:
+                pause = env.get_wrapper_attr("pause_hand_teleop")
+            except AttributeError:
+                continue
+            pause()
+
     def close(self):
         """Propagate cleanup to the vector environment and hardware owners."""
         env = getattr(self, "env", None)

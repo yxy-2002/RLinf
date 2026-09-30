@@ -13,6 +13,7 @@
 # limitations under the License.
 
 import threading
+import time
 
 import numpy as np
 
@@ -23,6 +24,9 @@ class SpaceMouseExpert:
     It continuously reads the SpaceMouse state and provide
     a "get_action" method to get the latest action and button state.
     """
+
+    # Bound nonblocking HID polling without coupling it to the 10 Hz collector.
+    POLL_INTERVAL_S = 1.0 / 250.0
 
     def __init__(self, device_index: int = 0) -> None:
         import pyspacemouse
@@ -37,12 +41,18 @@ class SpaceMouseExpert:
 
     def _read_spacemouse(self) -> None:
         while not self._stop.is_set():
+            iteration_start = time.monotonic()
             state = self._device.read()
             with self.state_lock:
                 self.latest_data["action"] = np.array(
                     [-state.y, state.x, state.z, -state.roll, -state.pitch, -state.yaw]
                 )  # spacemouse axis matched with robot base frame
                 self.latest_data["buttons"] = state.buttons
+            # Event.wait releases the GIL and wakes immediately on close.
+            # Include read/copy time in the period; never catch up with a burst.
+            self._stop.wait(
+                max(0.0, self.POLL_INTERVAL_S - (time.monotonic() - iteration_start))
+            )
 
     def get_action(self) -> tuple[np.ndarray, list]:
         """Returns the latest action and button state of the SpaceMouse."""
@@ -57,7 +67,6 @@ class SpaceMouseExpert:
 
 
 if __name__ == "__main__":
-    import time
 
     def test_spacemouse():
         """Test the SpaceMouseExpert class.

@@ -28,7 +28,7 @@ env:
       type: psiglove_2
       scale_file: /workspace/RLinf/examples/embodiment/config/env/dexhand/wuji_left_scale_yxy.yaml # Optional operator scale override; null uses pipeline YAML.
       pipeline_config: /workspace/RLinf/third_party/rlinf-dexhand/configs/psiglove_2_wuji_left.yaml
-      frequency: 30
+      frequency: 60
       intervention_mode: relative
       release_behavior: hold
     override_cfg:
@@ -74,7 +74,7 @@ env:
         reset_duration: 1.0
         output_rate_hz: 1000.0
         state_rate_hz: 100.0
-        lag_sec: 0.07
+        lag_sec: 0.05
         filter_cutoff_hz: 10.0
       hand_target_state:
       - 0.0

@@ -78,3 +78,24 @@ def test_reconnect_releases_all_devices_before_reopening(monkeypatch, failed_nam
     finally:
         env._close_cameras()
     assert not occupied
+
+
+@pytest.mark.parametrize("fps", [15, 30])
+def test_camera_frame_rate_reaches_capture_descriptors(fps):
+    """All cameras receive the configured rate used by SDK and capture thread."""
+    env = object.__new__(franka_env.FrankaEnv)
+    env.config = franka_env.FrankaRobotConfig(
+        camera_serials=["one", "two"],
+        camera_names={"one": "wrist", "two": "global"},
+        camera_fps=fps,
+    )
+    infos = env._build_camera_infos()
+    assert [info.fps for info in infos] == [fps, fps]
+    assert [info.name for info in infos] == ["wrist", "global"]
+    assert franka_env.FrankaRobotConfig().camera_fps == 15
+
+
+@pytest.mark.parametrize("fps", [0, -1, 29.5, True])
+def test_invalid_camera_rate_rejected_before_opening_hardware(fps):
+    with pytest.raises(ValueError, match="camera_fps"):
+        franka_env.FrankaRobotConfig(camera_fps=fps)

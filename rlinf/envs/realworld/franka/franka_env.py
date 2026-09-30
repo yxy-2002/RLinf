@@ -48,6 +48,7 @@ class FrankaRobotConfig:
     camera_serials: Optional[list[str]] = None
     camera_names: Optional[dict[str, str]] = None
     camera_type: Optional[str] = None
+    camera_fps: int = 15  # Capture rate; observation reads wait for a new frame.
     gripper_type: Optional[str] = None
     gripper_connection: Optional[str] = None
     enable_camera_player: bool = True
@@ -124,6 +125,12 @@ class FrankaRobotConfig:
 
     def __post_init__(self):
         """Convert list fields from YAML/Hydra to numpy arrays."""
+        if (
+            isinstance(self.camera_fps, bool)
+            or not isinstance(self.camera_fps, int)
+            or self.camera_fps <= 0
+        ):
+            raise ValueError("camera_fps must be a positive integer")
         if self.camera_names is not None:
             self.camera_names = {
                 str(serial): str(camera_name)
@@ -784,6 +791,7 @@ class FrankaEnv(gym.Env):
                     name=name,
                     serial_number=serial,
                     camera_type=default_camera_type,
+                    fps=self.config.camera_fps,
                     crop_region=crop_region,
                 )
             )
@@ -814,11 +822,13 @@ class FrankaEnv(gym.Env):
             try:
                 self.close_controller()
             finally:
-                if hasattr(self, "camera_player"):
-                    self.camera_player.stop()
-                if not self.config.is_dummy and hasattr(self, "_cameras"):
-                    self._close_cameras()
-                super().close()
+                try:
+                    if hasattr(self, "camera_player"):
+                        self.camera_player.stop()
+                finally:
+                    if not self.config.is_dummy and hasattr(self, "_cameras"):
+                        self._close_cameras()
+                    super().close()
 
     def close_controller(self) -> None:
         controller = getattr(self, "_controller", None)
@@ -960,6 +970,10 @@ class FrankaEnv(gym.Env):
         Returns:
             ``True`` if the action caused a meaningful state change.
         """
+        if getattr(self, "_external_hand_control", False):
+            # Snapshot for observation metadata only; the teleop process owns output.
+            self._last_hand_command = np.asarray(ee_action, dtype=np.float64).copy()
+            return True
         if self._ee_type.is_gripper:
             # Binary gripper logic (backward compatible)
             position = float(ee_action[0]) * self.config.action_scale[2]

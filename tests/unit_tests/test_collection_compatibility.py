@@ -241,30 +241,20 @@ def test_outer_timeout_priority_is_opt_in(confirm):
 
 
 @pytest.mark.parametrize("labels_only", [False, True])
-def test_right_button_legacy_intervention_is_preserved(labels_only):
+def test_right_button_process_snapshot_controls_intervention(labels_only):
     methods = load_methods(
         "rlinf/envs/realworld/common/wrappers/dexhand_intervention.py",
         "DexHandIntervention",
-        {"action", "step"},
+        {"step"},
         np=np,
         time=SimpleNamespace(time=lambda: 10.0),
     )
+    sample = np.array([10, 10, 1, 0, 1, not labels_only] + [0] * 6 + [0.4] * 6)
     wrapper = SimpleNamespace(
-        _right_button_labels_only=labels_only,
-        _wuji=False,
-        _hand_dim=6,
-        _mode="relative",
-        _release="hold",
-        _spacemouse=SimpleNamespace(get_action=lambda: (np.zeros(6), [1, 0])),
-        _glove=SimpleNamespace(get_target=lambda: SimpleNamespace(values=np.ones(6))),
-        _last_intervene=0.0,
-        _timeout=0.5,
-        _hand_current=np.full(6, 0.4),
-        _prev_left=False,
+        _teleop=SimpleNamespace(snapshot=lambda: sample),
         env=SimpleNamespace(step=lambda _: ({}, 0, False, False, {})),
     )
-    wrapper.action = lambda action: methods["action"](wrapper, action)
     *_, info = methods["step"](wrapper, np.zeros(12))
     assert info["right"] and not info["left"]
     assert ("intervene_action" in info) != labels_only
-    assert ("executed_action" in info) == labels_only
+    np.testing.assert_allclose(info["executed_action"][6:], 0.4)

@@ -126,6 +126,7 @@ def apply_single_arm_wrappers(env: gym.Env, cfg: Mapping[str, Any]) -> gym.Env:
             DexHandIntervention = _load_dexhand_intervention()
             env = DexHandIntervention(
                 env,
+                teleop_frequency=cfg.get("hand_teleop_frequency", 60),
                 glove_frequency=glove_cfg.get("frequency", 60),
                 pipeline_config=glove_cfg.get("pipeline_config"),
                 scale_file=glove_cfg.get("scale_file"),

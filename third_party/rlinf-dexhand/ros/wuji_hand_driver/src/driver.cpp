@@ -17,11 +17,13 @@
 #include <string>
 #include <vector>
 
+#include "background_worker.hpp"
 #include "spline.hpp"
 #ifdef WUJI_WITH_SDK
 #include <wujihandcpp/device/hand.hpp>
 #include <wujihandcpp/filter/low_pass.hpp>
 #endif
+
 
 static double now() { return ros::SteadyTime::now().toSec(); }
 class Driver {
@@ -65,7 +67,10 @@ class Driver {
         throw std::runtime_error("Hardware side mismatch");
       controller_ = hand_->realtime_controller<true>(
           wujihandcpp::filter::LowPass(cutoff));
-      read_hardware();
+      const auto feedback = read_hardware();
+      actual_ = feedback.actual;
+      error_codes_ = feedback.errors;
+      motor_error_ = feedback.motor_error;
 #else
       throw std::runtime_error(
           "Built without SDK: only fake_hardware:=true is available");
@@ -79,6 +84,8 @@ class Driver {
     diag_pub_ =
         nh_.advertise<diagnostic_msgs::DiagnosticArray>("diagnostics", 1, true);
     command_sub_ = nh_.subscribe("joint_commands", 1, &Driver::command, this);
+    teleop_sub_ = nh_.subscribe("teleop_commands", 1, &Driver::teleop_command, this);
+    teleop_srv_ = nh_.advertiseService("set_teleop", &Driver::set_teleop, this);
     enabled_srv_ = nh_.advertiseService("set_enabled", &Driver::enable, this);
     hold_srv_ = nh_.advertiseService("hold", &Driver::hold, this);
     resume_srv_ = nh_.advertiseService("resume", &Driver::resume, this);
@@ -89,12 +96,15 @@ class Driver {
         nh_.createWallTimer(ros::WallDuration(1 / rate), &Driver::tick, this);
     state_timer_ = nh_.createWallTimer(ros::WallDuration(1 / state_rate),
                                        &Driver::publish, this);
-    health_timer_ =
-        nh_.createWallTimer(ros::WallDuration(0.1), &Driver::health, this);
     ROS_INFO("Wuji driver ready; side=%s fake=%d (motors disabled)",
              side_.c_str(), fake_);
+    // Start last: all callback state is initialized before the worker runs.
+    health_worker_.start(std::chrono::milliseconds(100), [this]() { health(); });
   }
   ~Driver() {
+    control_timer_.stop();
+    state_timer_.stop();
+    health_worker_.stop();  // Join before disabling motors or destroying SDK state.
 #ifdef WUJI_WITH_SDK
     if (hand_) {
       try {
@@ -108,7 +118,15 @@ class Driver {
   }
 
  private:
-  void read_hardware() {
+  struct HardwareState {
+    Joints actual{};
+    std::array<uint32_t, 20> errors{};
+    bool motor_error = false;
+  };
+  HardwareState read_hardware() {
+    HardwareState feedback;
+    // Serialize explicit SDK requests with enable/reset services, never tick.
+    std::lock_guard<std::mutex> hardware_lock(hardware_mutex_);
 #ifdef WUJI_WITH_SDK
     if (hand_) {
       // A bounded explicit read validates USB/all-joint feedback. Cached TPDO
@@ -119,21 +137,21 @@ class Driver {
       hand_->read_async<wujihandcpp::data::joint::ErrorCode>(
           completion, std::chrono::milliseconds(50));
       completion.wait();
-      motor_error_ = false;
       for (int i = 0; i < 20; ++i) {
         double value = hand_->finger(i / 4)
                            .joint(i % 4)
                            .get<wujihandcpp::data::joint::ActualPosition>();
         if (!std::isfinite(value))
           throw std::runtime_error("Nonfinite hardware position");
-        actual_[i] = value;
-        error_codes_[i] = hand_->finger(i / 4)
+        feedback.actual[i] = value;
+        feedback.errors[i] = hand_->finger(i / 4)
                               .joint(i % 4)
                               .get<wujihandcpp::data::joint::ErrorCode>();
-        motor_error_ = motor_error_ || error_codes_[i] != 0;
+        feedback.motor_error = feedback.motor_error || feedback.errors[i] != 0;
       }
     }
 #endif
+    return feedback;
   }
   void latch(const std::string& reason) {
     held_ = true;
@@ -147,9 +165,31 @@ class Driver {
     res.message = message;
     return true;
   }
-  void command(const sensor_msgs::JointState::ConstPtr& msg) {
+  bool set_teleop(std_srvs::SetBool::Request& req,
+                  std_srvs::SetBool::Response& res) {
     std::lock_guard<std::mutex> lock(mutex_);
-    if (!enabled_ || held_ || fatal_) return;
+    if (req.data && (fatal_ || held_ || !enabled_ ||
+                     now() - last_health_ > timeout_)) {
+      res.success = false;
+      res.message = "Fresh enabled feedback and explicit fault recovery required";
+      return true;
+    }
+    teleop_mode_ = req.data;
+    target_ = actual_;
+    spline_.reset(target_);
+    armed_ = false;
+    res.success = true;
+    return true;
+  }
+  void command(const sensor_msgs::JointState::ConstPtr& msg) {
+    accept_command(msg, false);
+  }
+  void teleop_command(const sensor_msgs::JointState::ConstPtr& msg) {
+    accept_command(msg, true);
+  }
+  void accept_command(const sensor_msgs::JointState::ConstPtr& msg, bool teleop) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (teleop != teleop_mode_ || !enabled_ || held_ || fatal_) return;
     if (msg->name != names_ || msg->position.size() != 20) {
       latch("Invalid joint order/dimension");
       return;
@@ -181,6 +221,7 @@ class Driver {
         throw std::runtime_error("Feedback unavailable");
 #ifdef WUJI_WITH_SDK
       if (hand_) {
+        std::lock_guard<std::mutex> hardware_lock(hardware_mutex_);
         if (req.data) send(actual_);
         hand_->write<wujihandcpp::data::joint::Enabled>(req.data);
       }
@@ -229,7 +270,10 @@ class Driver {
     std::lock_guard<std::mutex> lock(mutex_);
     try {
 #ifdef WUJI_WITH_SDK
-      if (hand_) hand_->write<wujihandcpp::data::joint::ResetError>(1);
+      if (hand_) {
+        std::lock_guard<std::mutex> hardware_lock(hardware_mutex_);
+        hand_->write<wujihandcpp::data::joint::ResetError>(1);
+      }
 #endif
       res.success = true;  // Does not resume or clear a USB fault.
     } catch (const std::exception& e) {
@@ -250,8 +294,16 @@ class Driver {
   void tick(const ros::WallTimerEvent&) {
     std::lock_guard<std::mutex> lock(mutex_);
     if (!enabled_ || fatal_) return;
+    if (now() - last_health_ > timeout_) {
+      fatal_ = true;
+      latch("Hardware feedback timeout");
+      return;
+    }
     if (armed_ && now() - last_command_ > timeout_) latch("Command timeout");
-    if (!held_) target_ = spline_.sample(now() - lag_);
+    const double play_time = now() - lag_;
+    if (!held_) {
+      target_ = spline_.sample(play_time);
+    }
     for (int i = 0; i < 20; ++i)
       target_[i] = std::clamp(target_[i], lower_[i], upper_[i]);
     try {
@@ -262,16 +314,35 @@ class Driver {
       latch(e.what());
     }
   }
-  void health(const ros::WallTimerEvent&) {
-    std::lock_guard<std::mutex> lock(mutex_);
+  void health() {
+    HardwareState feedback;
+    std::string error;
+    bool succeeded = false;
     try {
-      read_hardware();
-      last_health_ = now();
-      if (motor_error_)
-        latch("Motor error; reset_error and explicit resume required");
+      // No control-state lock while requesting or waiting for hardware.
+      feedback = read_hardware();
+      succeeded = true;
     } catch (const std::exception& e) {
-      fatal_ = true;
-      latch(e.what());
+      error = e.what();
+    } catch (...) {
+      error = "Unknown hardware read failure";
+    }
+    const double completed = now();
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      if (!succeeded) {
+        fatal_ = true;
+        latch(error);
+      } else {
+        if (!fake_) {
+          actual_ = feedback.actual;
+          error_codes_ = feedback.errors;
+          motor_error_ = feedback.motor_error;
+        }
+        last_health_ = completed;
+        if (motor_error_)
+          latch("Motor error; reset_error and explicit resume required");
+      }
     }
   }
   void publish(const ros::WallTimerEvent&) {
@@ -299,6 +370,7 @@ class Driver {
     for (const auto& pair : std::vector<std::pair<std::string, std::string>>{
              {"enabled", enabled_ ? "true" : "false"},
              {"held", held_ ? "true" : "false"},
+             {"teleop_mode", teleop_mode_ ? "true" : "false"},
              {"fatal", fatal_ ? "true" : "false"},
              {"side", side_},
              {"feedback_age_s", std::to_string(now() - last_health_)},
@@ -319,14 +391,17 @@ class Driver {
   }
   ros::NodeHandle nh_;
   ros::Publisher state_pub_, target_pub_, diag_pub_;
-  ros::Subscriber command_sub_;
+  ros::Subscriber command_sub_, teleop_sub_;
   ros::ServiceServer enabled_srv_, hold_srv_, resume_srv_, clear_srv_,
-      error_srv_;
-  ros::WallTimer control_timer_, state_timer_, health_timer_;
+      error_srv_, teleop_srv_;
+  ros::WallTimer control_timer_, state_timer_;
+  BackgroundWorker health_worker_;
+  std::mutex hardware_mutex_;
   std::mutex mutex_;
   bool fake_ = false, enabled_ = false, held_ = false, fatal_ = false,
        armed_ = false;
   bool motor_error_ = false;
+  bool teleop_mode_ = false;
   std::array<uint32_t, 20> error_codes_{};
   double timeout_, lag_, last_health_ = 0, last_command_ = 0;
   std::string side_, serial_, reason_;

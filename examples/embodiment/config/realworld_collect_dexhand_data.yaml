@@ -47,8 +47,9 @@ env:
     glove_config:
       type: psiglove_1
       pipeline_config: ??? # Explicit PSI1 + Ruiyan pipeline YAML
-      frequency: 30
+      frequency: 60
     override_cfg:
+      step_frequency: 100.0
       # Optional per-camera overrides keyed by RealSense serial number.
       # camera_names:
       #   "SERIAL1": global

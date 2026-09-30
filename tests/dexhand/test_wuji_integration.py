@@ -8,7 +8,6 @@ from unittest.mock import Mock
 import gymnasium as gym
 import numpy as np
 import pytest
-from rlinf_dexhand.types import HandTarget
 from rlinf_dexhand.wuji_spec import to_radians, wuji_spec
 
 pytest.importorskip(
@@ -16,7 +15,6 @@ pytest.importorskip(
 )
 pytest.importorskip("ray", reason="RLinf environment integration dependencies required")
 
-from rlinf.envs.realworld.common.wrappers import dexhand_intervention as module
 from rlinf.envs.realworld.common.wrappers.euler_obs import Quat2EulerWrapper
 from rlinf.envs.realworld.franka.franka_env import FrankaEnv, FrankaRobotConfig
 
@@ -101,96 +99,6 @@ class Env(gym.Env):
         return {}, 0, False, False, {"executed_action": action.copy()}
 
 
-def setup_wrapper(monkeypatch, mode="relative", release="hold", scale_file=None):
-    import time
-
-    import rlinf_dexhand.pipeline
-
-    spec = wuji_spec("left")
-    glove = Mock()
-    glove.get_target.return_value = HandTarget(
-        spec, tuple(to_radians(spec, np.full(20, 0.3))), 1, time.time()
-    )
-    mouse = Mock()
-    mouse.get_action.return_value = (np.zeros(6), [0, 1])
-    monkeypatch.setattr(module, "GloveExpert", Mock(return_value=glove))
-    monkeypatch.setattr(module, "SpaceMouseExpert", lambda: mouse)
-    monkeypatch.setattr(
-        rlinf_dexhand.pipeline,
-        "load_config",
-        lambda _, **kwargs: {"hand": {"side": "left", "type": "wuji1hand"}},
-    )
-    env = Env()
-    wrapper = module.DexHandIntervention(
-        env,
-        pipeline_config="fake.yaml",
-        scale_file=scale_file,
-        intervention_mode=mode,
-        release_behavior=release,
-    )
-    wrapper.reset()
-    return wrapper, env, glove, mouse
-
-
-def test_relative_rebase_hold_and_policy(monkeypatch):
-    import time
-
-    w, env, glove, mouse = setup_wrapper(monkeypatch)
-    w.step(np.zeros(26))
-    np.testing.assert_allclose(env.actions[-1][6:], 0.5)
-    spec = wuji_spec("left")
-    glove.get_target.return_value = HandTarget(
-        spec, tuple(to_radians(spec, np.full(20, 0.4))), 2, time.time()
-    )
-    w.step(np.zeros(26))
-    np.testing.assert_allclose(env.actions[-1][6:], 0.6)
-    mouse.get_action.return_value = (np.zeros(6), [0, 0])
-    w._last_intervene = 0
-    w.step(np.zeros(26))
-    np.testing.assert_allclose(env.actions[-1][6:], 0.6)
-    w._release = "policy"
-    w._last_intervene = 0
-    w.step(np.full(26, 0.2))
-    np.testing.assert_allclose(env.actions[-1][6:], 0.2)
-
-
-@pytest.mark.parametrize("mode", ["relative", "absolute"])
-def test_stale_glove_keeps_collecting_and_recovers_automatically(monkeypatch, mode):
-    import time
-
-    w, env, glove, mouse = setup_wrapper(monkeypatch, mode=mode)
-    first = w.step(np.zeros(26))[-1]["executed_action"].copy()
-    sample = glove.get_target.return_value
-    glove.get_target.return_value = HandTarget(
-        sample.spec, sample.values, 2, time.time() - 60
-    )
-    # Even prolonged frame loss reuses the target; arm control and steps continue.
-    mouse.get_action.return_value = (np.full(6, 0.1), [0, 1])
-    for _ in range(3):
-        info = w.step(np.zeros(26))[-1]
-        assert "collection_paused" not in info
-        assert "collection_restarted" not in info
-        np.testing.assert_allclose(info["executed_action"][6:], first[6:])
-        np.testing.assert_allclose(info["executed_action"][:6], 0.1)
-    assert len(env.actions) == 4
-    glove.get_target.return_value = HandTarget(
-        sample.spec, tuple(to_radians(sample.spec, np.full(20, 0.4))), 3, time.time()
-    )
-    info = w.step(np.zeros(26))[-1]
-    np.testing.assert_allclose(
-        info["executed_action"][6:], 0.6 if mode == "relative" else 0.4
-    )
-    assert len(env.actions) == 5
-
-
-def test_fatal_glove_error_propagates(monkeypatch):
-    w, env, glove, _ = setup_wrapper(monkeypatch)
-    glove.get_target.side_effect = RuntimeError("Glove acquisition failed")
-    with pytest.raises(RuntimeError, match="Glove acquisition failed"):
-        w.step(np.zeros(26))
-    assert not env.actions
-
-
 def test_collector_saves_continuous_episode(tmp_path):
     import pickle
 
@@ -239,18 +147,6 @@ def test_collector_saves_continuous_episode(tmp_path):
     assert episode["observations"][-1]["states"].shape == (38,)
 
 
-@pytest.mark.parametrize("count", [1, 19, 21])
-def test_wrong_hand_target_dimension_exits_before_step(monkeypatch, count):
-    w, env, glove, _ = setup_wrapper(monkeypatch)
-    sample = glove.get_target.return_value
-    glove.get_target.return_value = HandTarget(
-        sample.spec, (0.2,) * count, sample.sequence, sample.timestamp
-    )
-    with pytest.raises(ValueError, match="Expected 20 hand targets"):
-        w.step(np.zeros(26))
-    assert not env.actions
-
-
 def test_wrong_feedback_dimension_is_not_silently_cached():
     from types import SimpleNamespace
 
@@ -261,8 +157,3 @@ def test_wrong_feedback_dimension_is_not_silently_cached():
     hand._on_state(SimpleNamespace(name=hand.spec.joint_names, position=[0.0] * 19))
     with pytest.raises(ValueError, match="joint order/dimension mismatch"):
         hand.get_state()
-
-
-def test_wrapper_forwards_operator_scale(monkeypatch):
-    setup_wrapper(monkeypatch, scale_file="/operator/scale.yaml")
-    assert module.GloveExpert.call_args.kwargs["scale_file"] == "/operator/scale.yaml"

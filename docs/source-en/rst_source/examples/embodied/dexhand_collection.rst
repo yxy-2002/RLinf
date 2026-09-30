@@ -17,6 +17,17 @@ supported. Only PSI1/ChannelLinear/Ruiyan and PSI2/WujiTier2/Wuji1 combinations
 are accepted, with matching sides. Missing or incompatible configuration fails
 before starting the glove reader; runtime frame-loss fallback is unchanged.
 
+The Wuji and Ruiyan collection configurations both use
+``env.eval.glove_config.frequency: 60`` for glove acquisition and retargeting,
+and ``env.eval.override_cfg.step_frequency: 100.0`` as the environment step
+rate limit. The legacy ``realworld_collect_dexhand_data`` entry uses the same
+rates. These are target rates; serial reads, retargeting, camera acquisition
+and collector work can reduce the achieved rate. Wuji's driver separately
+outputs interpolated targets at ``output_rate_hz: 1000.0`` and publishes state
+at ``state_rate_hz: 100.0``. Its ``lag_sec: 0.07`` and
+``filter_cutoff_hz: 10.0`` remain unchanged, so matching the update rates does
+not imply matching end-to-end latency.
+
 The two views are ordered as ``[wrist_1, global]``. SpaceMouse left-button glove control and the 12-dimensional arm/hand action remain unchanged.
 
 Collect Labeled Frames
@@ -170,3 +181,62 @@ The old ROS2/ZMQ display was removed; see ``toolkits/dexhand/README.md`` for
 preview-only operation and headless testing. Hardware loss ends collection;
 explicit shutdown disables the hand and releases owned processes, preserving
 the shared ROS master. Forced process termination cannot guarantee holding.
+
+Polling, camera capture and hardware feedback
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+SpaceMouse polling is limited to 250 Hz. The reader waits for the remaining
+4 ms period after updating its cache; shutdown interrupts the wait.
+
+Set ``env.eval.override_cfg.camera_fps`` to control camera capture frequency.
+The Franka default is 15 FPS; ``wuji_reward_data`` uses 30 FPS camera capture
+and records images/labels at 10 FPS. Camera waits affect collection steps;
+hand teleoperation runs independently in its child process.
+
+The Wuji driver reads hardware feedback on one background thread at 10 Hz.
+It waits for the SDK without holding the control-state mutex, then commits a
+complete snapshot under a short lock. Slow reads do not queue more work.
+Shutdown joins the worker before destroying the SDK. Motor errors and read
+failures remain latched; stale feedback stops new target submissions.
+Enable/reset services still perform synchronous hardware operations.
+
+Development frequency and latency logging has been removed from both
+teleoperation paths. Normal error reporting and hardware diagnostics remain.
+Rebuild the ROS1 driver and restart collection to use the cleaned code.
+The reference ROS2 workspace also needs its ``psi_glove_ros2`` and
+``wujihand_driver`` packages rebuilt before restarting teleoperation.
+
+Independent hand teleoperation for reward capture
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+``DexHandIntervention`` always runs hand teleoperation in a child process for
+both Wuji and Ruiyan; there is no separate Wuji wrapper or opt-in switch.
+A spawned process owns the glove, retargeter and SpaceMouse. It submits hand
+targets at up to ``env.eval.hand_teleop_frequency: 60`` Hz, independently of
+``runner.fps: 10``. Retargeting throughput still depends on solver time.
+The collector reads one bounded shared snapshot; it cannot queue hand commands.
+Arm control continues at the collection step rate.
+
+The Wuji driver accepts ``teleop_commands`` only after ``set_teleop(true)``.
+Normal ``joint_commands`` are ignored in this mode. Before episode saving or reset, the collector
+waits for a pause acknowledgment that switches the driver back to normal commands.
+After reset it resumes the child; release and press the left button to reacquire
+hand control. Read failures or stale glove/IPC data fail explicitly. Child exit
+holds the hand when possible, and the driver retains its command timeout.
+The child is joined before the parent shuts down the driver.
+
+Both hands use ``release_behavior: hold``; policy fallback is unsupported.
+``right_button_labels_only`` retains its button-label meaning. Ruiyan uses the
+existing Franka controller RPCs (``get_hand_state`` and ``command_end_effector``).
+Its serial driver stays in the original controller process; no additional ROS
+interface is created. Pausing waits for in-flight RPCs before acknowledging reset.
+Ruiyan target submission can still be delayed by other work on that controller.
+Use the same collection launch command after rebuilding the driver.
+
+Raw reward episode metadata includes ``teleop_snapshots`` with one row per frame:
+step start/end wall times, pre/post-step teleop wall times, glove sequence, and
+20 (Wuji) or 6 (Ruiyan) normalized post-step hand targets. The right-button label is sampled from
+the post-step snapshot. These are approximate associations: the camera API does
+not expose exposure timestamps, and targets may change during a collection step.
+They are not synchronized action-demonstration data. Existing reward splitting
+uses images and labels; these diagnostic rows remain in the raw episodes.

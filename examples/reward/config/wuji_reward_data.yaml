@@ -24,19 +24,21 @@ runner:
   val_split: 0.2
   fail_success_ratio: 3.0
   random_seed: 42
-  fps: 10
+  fps: 10 # Image/label capture and arm step frequency; hand teleop is independent.
 
 env:
   eval:
-    max_episode_steps: 1000 # Keep same as env.eval.override_cfg.max_num_steps
+    max_episode_steps: 10000 # Keep same as env.eval.override_cfg.max_num_steps
     preserve_env_truncations: true
     auto_reset: false
     ignore_terminations: false
     keyboard_reward_wrapper: null
     right_button_labels_only: true
+    hand_teleop_frequency: 60 # Maximum target submission rate; fresh targets depend on solver speed.
     override_cfg:
+      camera_fps: 30 # Camera capture rate, independent of the 10 FPS recording rate.
       enable_pose_reward: false
       use_reward_model: false
-      max_num_steps: 1000 # Keep same as env.eval.max_episode_steps
+      max_num_steps: 10000 # Keep same as env.eval.max_episode_steps
     data_collection:
       enabled: false
