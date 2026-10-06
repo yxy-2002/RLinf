@@ -1,0 +1,13 @@
+defaults:
+  - realworld_lamp_il
+  - _self_
+algorithm:
+  stage: dp
+actor:
+  model:
+    hand_prior:
+      type: mlp
+      artifact_path: null
+runner:
+  logger:
+    experiment_name: realworld_lamp_dp_mlp

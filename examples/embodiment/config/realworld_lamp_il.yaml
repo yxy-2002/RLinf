@@ -1,0 +1,27 @@
+# Offline-only: no robot environment or SDK is instantiated.
+defaults:
+  - dexjoco_lamp_il_base
+  - robot/wuji_lamp@actor.model.robot_spec
+  - _self_
+data:
+  dataset_type: realworld_lamp
+  source_factory: rlinf.data.datasets.lamp.realworld:create_source
+  dataset_root: ???
+  task_name: wuji_stack_cube
+  history_contract: primitive_v1
+  history_length: 16
+  horizon: 16
+  train_ratio: 0.9
+  split_seed: 42
+actor:
+  model:
+    action_horizon: 16
+    execution_horizon: 8
+    num_action_chunks: 8
+    action_dim: 26
+    hand_prior:
+      history_length: 16
+  torch_compile: false
+runner:
+  logger:
+    experiment_name: realworld_lamp_il

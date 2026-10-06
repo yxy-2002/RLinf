@@ -1,0 +1,29 @@
+data:
+  source: realworld_trajectory
+  task_name: wuji_stack_cube
+  dataset_root: /path/to/demos
+  action_dim: 20
+  history_length: 16
+  horizon: 16
+  train_ratio: 0.9
+  split_seed: 42
+  source_factory: rlinf.data.datasets.lamp.realworld:create_source
+  history_dim: 20
+model:
+  latent_dim: 2
+  action_hidden_dim: 256
+  condition_hidden_dim: 256
+  encoder_condition_mode: film
+  decoder_condition_mode: film
+  num_lstm_layers: 1
+  condition_drop_prob: 0.1
+loss:
+  beta: 0.0005
+  beta_warmup_steps: 0
+training:
+  batch_size: 64
+  epochs: 100
+  learning_rate: 5.0e-05
+  weight_decay: 0.0
+  num_workers: 0
+  seed: 42
