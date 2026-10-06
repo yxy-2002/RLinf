@@ -175,6 +175,7 @@
    :hidden:
    :maxdepth: 2
 
+   Dexjoco <embodied/dexjoco>
    ManiSkill <embodied/maniskill>
    LIBERO <embodied/libero>
    Behavior <embodied/behavior>

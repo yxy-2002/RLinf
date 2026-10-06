@@ -1355,3 +1355,25 @@ jobs:
         run: |
           rm -rf .venv
           uv cache prune
+
+  embodied-lamp-portable-test:
+    runs-on: embodied
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install LAMP GPU dependencies
+        run: |
+          export UV_PATH=/workspace/dataset/.uv
+          export UV_LINK_MODE=symlink
+          export UV_CACHE_DIR=/workspace/dataset/.uv_cache
+          export UV_PYTHON_INSTALL_DIR=/workspace/dataset/.uv_python
+          bash requirements/install.sh embodied --model lamp --env dummy
+      - name: Hardware-free portable integration and FSDP
+        timeout-minutes: 20
+        run: |
+          source .venv/bin/activate
+          PYTHONPATH=. OMP_NUM_THREADS=1 python -m pytest -q tests/unit_tests/test_lamp_portable.py tests/unit_tests/test_lamp_realworld.py tests/unit_tests/test_lamp_fsdp_frozen_base.py
+      - name: Clean up
+        if: always()
+        run: |
+          rm -rf .venv
+          uv cache prune

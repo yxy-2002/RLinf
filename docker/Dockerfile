@@ -31,6 +31,8 @@ ENV ASCEND_VISIBLE_DEVICES=all
 ##################################################################################################
 # Base images for different build targets — all derive from the platform base
 ##################################################################################################
+FROM base-image-platform-${PLATFORM} AS base-image-embodied-lamp
+FROM base-image-platform-${PLATFORM} AS base-image-embodied-lamp-dexjoco
 FROM base-image-platform-${PLATFORM} AS base-image-reason
 FROM base-image-platform-${PLATFORM} AS base-image-embodied-maniskill_libero
 FROM base-image-platform-${PLATFORM} AS base-image-embodied-behavior-openvlaoft
@@ -459,6 +461,15 @@ RUN echo "source ${UV_PATH}/openpi/bin/activate" >> ~/.bashrc
 ##################################################################################################
 # Final image selection
 ##################################################################################################
+# LAMP GPU workers: offline training or RealWorld rollout without hardware SDKs.
+FROM embodied-common-image AS embodied-lamp-image
+RUN bash requirements/install.sh embodied --venv lamp --model lamp --env dummy
+RUN echo "source ${UV_PATH}/lamp/bin/activate" >> ~/.bashrc
+
+FROM embodied-common-image AS embodied-lamp-dexjoco-image
+RUN DEXJOCO_SKIP_EGL_SMOKE=1 bash requirements/install.sh embodied --venv lamp --model lamp --env dexjoco
+RUN echo "source ${UV_PATH}/lamp/bin/activate" >> ~/.bashrc
+
 FROM ${BUILD_TARGET}-image AS final-image
 
 

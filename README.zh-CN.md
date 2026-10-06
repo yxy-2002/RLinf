@@ -29,6 +29,8 @@ RLinf 是一个灵活且可扩展的开源框架，专为具身智能和智能�
 </div>
 
 ## 最新动态
+
+- [2026/10] LAMP 接入 Dexjoco、真机离线数据与原生 RLPD，无硬件验收说明见 [Dexjoco 与 LAMP](docs/source-zh/rst_source/examples/embodied/dexjoco.rst)。
 - [2026/06] 🔥 RLinf 现在已经支持强化学习微调 [GR00T-N1.7](https://github.com/NVIDIA/Isaac-GR00T)！文档：[RL on GR00T-N1.7](https://rlinf.readthedocs.io/zh-cn/latest/rst_source/examples/embodied/gr00t.html)。
 - [2026/06] 🔥 RLinf 支持基于 Polaris 模拟器的强化学习微调。文档：[Polaris 强化学习训练](https://rlinf.readthedocs.io/zh-cn/latest/rst_source/examples/embodied/polaris.html)。
 - [2026/06] 🔥 RLinf 现在已经支持强化学习微调 [GR00T-N1.6](https://github.com/NVIDIA/Isaac-GR00T)！文档：[RL on GR00T-N1.6](https://rlinf.readthedocs.io/zh-cn/latest/rst_source/examples/embodied/gr00t.html)。
@@ -118,6 +120,7 @@ RLinf 支持 World Action Model（WAM）和 Vision-Language-Action Model（VLA�
     <tr>
       <td style="text-align: left; padding-left: 8px;">
         <ul style="margin-left: 0; padding-left: 16px;">
+          <li><a href="https://rlinf.readthedocs.io/zh-cn/latest/rst_source/examples/embodied/dexjoco.html">Dexjoco</a> ✅</li>
           <li><a href="https://rlinf.readthedocs.io/zh-cn/latest/rst_source/examples/embodied/maniskill.html">ManiSkill</a> ✅</li>
           <li><a href="https://rlinf.readthedocs.io/zh-cn/latest/rst_source/examples/embodied/libero.html">LIBERO</a> ✅</li>
           <li><a href="https://rlinf.readthedocs.io/zh-cn/latest/rst_source/examples/embodied/libero.html#zh-liberopro-plus-benchmark">LIBERO-Pro & LIBERO-Plus</a> ✅</li>

@@ -14,6 +14,9 @@ The table below lists benchmarks that have example configs under ``evaluations/`
    * - Benchmark
      - Task / env preset
      - Example config
+   * - :doc:`Dexjoco <../examples/embodied/dexjoco>`
+     - ``water_plant``
+     - ``dexjoco/dexjoco_lamp_dp_50seed_water_plant_eval.yaml``
    * - RealWorld
      - ``realworld_franka_sft_env``, ``realworld_bin_relocation``
      - ``realworld/realworld_eval.yaml``, ``realworld/realworld_pnp_eval.yaml``, ``realworld/realworld_pnp_eval_dreamzero.yaml``

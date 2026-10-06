@@ -175,6 +175,7 @@ If you are starting from "I want to train on benchmark *X*", this is the right e
    :hidden:
    :maxdepth: 2
 
+   Dexjoco <embodied/dexjoco>
    ManiSkill <embodied/maniskill>
    LIBERO <embodied/libero>
    Behavior <embodied/behavior>

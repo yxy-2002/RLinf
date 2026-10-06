@@ -1,0 +1,117 @@
+LAMP 离线数据与 RLPD
+================================================================
+
+从采集轨迹训练 LAMP，再将同一冻结策略和 residual 网络用于 Dexjoco 或 RealWorld 适配器。
+集成以 ``realenv-lamp@392fb8ca`` 为基线，保留该分支的 SAC 更新、replay buffer、
+demo 混合采样和异步运行层。
+
+数据契约
+--------
+
+给 ``realworld_lamp_il`` 配置包含完整 ``trajectory_*.pt`` 的目录。
+reader 不构造环境、不导入机器人 SDK，原样保留动作标签和采样时间，不重标或重采样。
+
+.. list-table::
+   :header-rows: 1
+   :widths: 35 65
+
+   * - 字段
+     - 本次 Wuji 采集映射
+   * - 命令
+     - 26 维：6 维机械臂增量，随后为 20 维归一化手部命令
+   * - 腕部状态
+     - ``states[20:38]``，18 个测量值
+   * - 手部历史
+     - ``states[:20]``，单位 rad，包含 reset 初始测量
+   * - 全局图像
+     - ``extra_view_images[:, 0]``
+   * - 腕部图像
+     - ``main_images``
+
+``config/robot/wuji_lamp.yaml`` 描述此次采集的 RelativeFrame 命令边界、单位及关节顺序。
+使用其他控制器前先核对映射。指纹包含源文件字节、规格、快照标签约定、约 10 Hz
+采集周期以及转换版本。
+
+按 episode、seed 42 和 90/10 比例划分。本次 20 条轨迹、6119 个 transition
+划分为 18 条训练和 2 条验证。prior 与 DP 共用划分，统计量只从训练集计算。
+历史使用 primitive 实测状态，未来目标使用命令动作。
+
+离线训练
+--------
+
+在安装 LAMP 依赖的环境中，从仓库根目录执行：
+
+.. code-block:: bash
+
+   python examples/embodiment/train_lamp_il.py --config-name realworld_lamp_il \
+     data.dataset_root=/path/to/demos
+
+该命令训练 LSTM prior。设置 ``actor.model.hand_prior.type=vq`` 训练 VQ，
+设置为 ``pca`` 完成 PCA 拟合。MLP 不需要独立 prior 阶段。
+
+.. code-block:: bash
+
+   python examples/embodiment/train_lamp_il.py --config-name realworld_lamp_dp_lamplstm \
+     data.dataset_root=/path/to/demos \
+     actor.model.hand_prior.artifact_path=/path/to/prior/artifact \
+     actor.model.resnet_path=/path/to/resnet-18
+
+其他路径使用 ``realworld_lamp_dp_vq``、``realworld_lamp_dp_pca`` 或
+``realworld_lamp_dp_mlp``；MLP 省略 prior 产物参数。通过 ``runner.resume_dir``
+恢复相同训练契约；改变机器人规格、H、K 或数据集应启动新训练。
+
+转换示范
+--------
+
+导出 DP 后使用 ``toolkits/convert_lamp_demos.py``。提供已解析的 residual 模型 YAML：
+包含 ``model_type: lamp_residual_sac``、``contract_version: 5``、完整机器人规格、
+``action_dim: 26``、``action_horizon: 16``、``num_action_chunks: 8``、
+``precision: '32'``、``is_lora: false``，以及指向 DP 产物的 ``model_path``。
+其他 residual 参数必须与 RLPD 配置一致。
+
+.. code-block:: bash
+
+   python toolkits/convert_lamp_demos.py --source /path/to/demos \
+     --model-config /path/to/resolved-model.yaml --output /path/to/macro-demos \
+     --episodes 0 1 2 3 4 5 6 7 9 10 11 12 14 15 16 17 18 19
+
+上述 episode ID 对应本次采集的训练集；其他采集应从缓存元数据获取划分。
+转换不跨 episode，保留物理命令、terminal next observation 和 primitive rewards，
+不足 K 的尾部补无效零槽，缺失的冻结缓存标为无效。
+不反推专家 residual，也不将人类命令量化为 VQ 码表动作。
+manifest 绑定数据、base 产物、机器人规格及 H/K。
+
+RLPD 与接管
+-----------
+
+既有 ``train_async.py`` 入口使用 ``realworld_lamp_rlpd`` 配置，填写
+``actor.model.model_path``、``algorithm.demo_buffer.load_path``、
+``reward.model.model_path``。实际使用硬件前核对继承的 Wuji 设备配置与节点分配。
+控制与 GPU rollout worker 使用不同 placement；当前版本使用一个 learner rank。
+
+该配置按 50/50 混合 online/demo，保持双 Q（actor 取均值、target 取最小值），
+关闭 entropy backup，critic:actor 更新比为 4:1。
+每新增一个在线 macro transition 授予四次 critic 更新；加载或复制 demo 不增加预算。
+有效 primitive rewards 求和，每个 macro transition 只应用一次 gamma 0.97。
+温度沿用指数参数化。
+
+按住左键接管臂和手，松开后交还策略；右键保留成功标记。
+``release_behavior: policy`` 将两种命令统一经环境执行，既有 ``hold`` 采集行为保留。
+控制权切换和终止会取消剩余 chunk。每个实际 primitive 更新测量历史；无效尾部
+不发送、不计奖励。包含接管步的完整 macro 同时进入 online 和 demo buffer。
+
+兼容与验证
+----------
+
+H 至少为 4 且必须是 4 的倍数，1 <= K <= H。LSTM prior 的 H 必须与 DP 一致；
+历史长度和 DDIM 步数独立。旧 Dexjoco v4 保持 H=16、K=8、D=23；新规格使用 v5。
+单位、顺序和独立状态维度不一致时拒绝加载，不自动补齐或重塑。
+
+checkpoint 包含 online/demo replay、target Q、优化器、温度、采样状态和更新预算。
+训练模式或 demo 身份改变时拒绝恢复。恢复引用外部轨迹文件的旧 checkpoint 时，
+仍需保留对应的持久化 replay。
+
+集成验证包括真实数据离线训练和模拟在线输入的 RLPD 更新。短程训练误差只验证软件链路，
+不代表机器人成功率。硬件运动和在线任务效果需要另行验收。
+可复现检查和限制见 ``docs/lamp_unified_validation.md``，适配职责见
+``docs/lamp_code_guide.md``。

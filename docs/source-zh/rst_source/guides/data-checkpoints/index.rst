@@ -15,6 +15,8 @@
      - 在不同格式之间转换 checkpoint。
    * - :doc:`恢复训练 <../resume>`
      - Checkpoint 频率与断点续训。
+   * - :doc:`LAMP 数据与 RLPD <../lamp_unified>`
+     - 从离线机器人数据训练模型并转换 macro 示范。
 
 .. toctree::
    :hidden:
@@ -22,3 +24,4 @@
    数据采集 <../data_collection>
    Checkpoint 转换 <../convertor>
    恢复训练 <../resume>
+   LAMP 数据与 RLPD <../lamp_unified>

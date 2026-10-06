@@ -14,6 +14,9 @@ RLinf 提供统一的具身智能评测入口，支持在仿真或真机环境�
    * - Benchmark
      - 任务 / 环境配置
      - 示例配置文件
+   * - :doc:`Dexjoco <../examples/embodied/dexjoco>`
+     - ``water_plant``
+     - ``dexjoco/dexjoco_lamp_dp_50seed_water_plant_eval.yaml``
    * - RealWorld
      - ``realworld_franka_sft_env``、``realworld_bin_relocation``
      - ``realworld/realworld_eval.yaml``、``realworld/realworld_pnp_eval.yaml``、``realworld/realworld_pnp_eval_dreamzero.yaml``
