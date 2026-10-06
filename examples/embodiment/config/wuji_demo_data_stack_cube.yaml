@@ -1,0 +1,12 @@
+defaults:
+- wuji_demo_data
+- env/dexhand/wuji_stack_cube
+- _self_
+runner:
+  num_data_episodes: 20
+  logger:
+    log_path: ./logs
+    experiment_name: wuji-demo-data-stack-cube
+reward:
+  model:
+    model_path: /workspace/yxy_RLinf/RLinf/logs/20261006-072812-wuji_reward_training_stack_cube/wuji-stack-cube-resnet18/checkpoints/best_model/actor/model_state_dict/full_weights.pt

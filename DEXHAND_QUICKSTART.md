@@ -280,6 +280,102 @@ bash examples/embodiment/collect_data.sh wuji_demo_data \
 
 权重路径由 GPU 节点读取；日志/数据目录需要在控制节点可写。成功 demo 保存到 `demos/`，pickle 导出到 `collected_data/`。每次采集使用新目录，采集器不做末端专用的目录兼容性检查。
 
+#### 当前叠方块工位：两节点 Ray 启动命令
+
+以下地址和网卡于 2026-10-06 在两台机器上核对。控制节点的 `rlinf` 容器使用 host 网络，容器内可直接使用宿主机网卡。更换工位后先用 `ip -br addr` 和 `ip route get <对端IP>` 重新核对。
+
+| 节点 | Ray rank | 两机通信 IP | 通信网卡 | Python 环境 |
+| --- | --- | --- | --- | --- |
+| 控制节点（`rlinf` 容器） | 0 | `192.168.10.10` | `enp3s0` | `/opt/venv/franka-0.15.0` |
+| GPU 节点 | 1 | `192.168.10.11` | `enp5s0` | `/opt/venv/openvla` |
+
+> **注意：** `ray stop` 会停止该节点现有 Ray 任务，执行前结束正在运行的采集或训练。节点 rank、通信网卡以及控制节点的 ROS/catkin 环境必须在 `ray start` 之前设置；修改后需要重启 Ray。此工位两机通信使用 GPU 节点的 `enp5s0`，不是其 `172.16.1.51` 对应的 `enp6s0`。
+
+**1. 控制节点启动 head。** 从本机通过 SSH 进入控制容器：
+
+```bash
+ssh -t psibot@192.168.10.10 'docker exec -it rlinf bash'
+```
+
+在控制容器内执行：
+
+```bash
+cd /workspace/RLinf
+
+source /opt/venv/franka-0.15.0/bin/activate
+source /opt/ros/noetic/setup.bash
+source /opt/venv/franka-0.15.0/franka_catkin_ws/devel/setup.bash
+
+ray stop
+
+export PYTHONPATH="/workspace/RLinf:${PYTHONPATH:-}"
+export RLINF_NODE_RANK=0
+export RLINF_COMM_NET_DEVICES=enp3s0
+export GLOO_SOCKET_IFNAME=enp3s0
+export NCCL_SOCKET_IFNAME=enp3s0
+unset RAY_ADDRESS
+
+ray start --head \
+  --port=6379 \
+  --node-ip-address=192.168.10.10
+```
+
+**2. GPU 节点加入集群。** 在 GPU 节点的另一个终端执行：
+
+```bash
+cd /workspace/yxy_RLinf/RLinf
+source /opt/venv/openvla/bin/activate
+
+ray stop
+
+export PYTHONPATH="/workspace/yxy_RLinf/RLinf:${PYTHONPATH:-}"
+export RLINF_NODE_RANK=1
+export RLINF_COMM_NET_DEVICES=enp5s0
+export GLOO_SOCKET_IFNAME=enp5s0
+export NCCL_SOCKET_IFNAME=enp5s0
+unset RAY_ADDRESS
+
+ray start \
+  --address=192.168.10.10:6379 \
+  --node-ip-address=192.168.10.11
+```
+
+**3. 在 GPU 节点检查集群。** 以下命令只连接并查询集群；`ray.shutdown()` 断开查询进程，不停止集群：
+
+```bash
+ray status --address=192.168.10.10:6379
+
+python - <<'PY'
+import ray
+
+ray.init(address="192.168.10.10:6379")
+for node in ray.nodes():
+    if node["Alive"]:
+        print(node["NodeManagerAddress"], node["Resources"])
+ray.shutdown()
+PY
+```
+
+应看到两个存活节点 `192.168.10.10`、`192.168.10.11`，且 GPU 节点资源包含 GPU。
+
+**4. 启动叠方块 demo 采集。** 先同步两端仓库代码及配置，特别是 [wuji_demo_data_stack_cube.yaml](examples/embodiment/config/wuji_demo_data_stack_cube.yaml) 和 [共享任务参数](examples/embodiment/config/env/dexhand/wuji_stack_cube.yaml)。在 GPU 节点核对 `reward.model.model_path` 指向可读的 `full_weights.pt`，在控制节点核对机器人 IP、手套 pipeline 和 scale 路径，再执行：
+
+```bash
+cd /workspace/yxy_RLinf/RLinf
+bash examples/embodiment/collect_data.sh wuji_demo_data_stack_cube \
+  runner.logger.log_path=/workspace/RLinf/logs/wuji_stack_cube_demos_001
+```
+
+该命令会启动真实硬件并执行复位。输出目录属于控制节点，每次采集使用新目录。此任务默认采 20 条成功轨迹，每回合上限为 400 步；成功阈值和连续步数继承 `wuji_demo_data` 的 `0.95` 和 `1`。
+
+叠方块的 reward 正负帧采集配置 [wuji_reward_data_stack_cube.yaml](examples/reward/config/wuji_reward_data_stack_cube.yaml) 与 demo 配置共用上述任务参数，包括裁剪、目标位姿、运动范围、手部复位姿态、关节下限和回合步数。只在共享文件中修改这些参数；两种采集模式分别保留自己的节点分配、成功判定和数据保存开关。
+
+训练配置 [wuji_reward_training_stack_cube.yaml](examples/reward/config/wuji_reward_training_stack_cube.yaml) 已指定 `logs/reward_data/wuji_stack_cube_processed/train.pt` 和 `val.pt`。这一步在前述单节点训练集群运行；完成训练后再按本节切换到两节点采集集群：
+
+```bash
+bash examples/reward/run_reward_training.sh wuji_reward_training_stack_cube
+```
+
 ### W8. 正常退出
 
 在采集入口终端按 Ctrl+C，等待进程清理结束；手部关闭流程会请求失能，再结束自有驱动。随后关闭 RViz。reward 采集和 demo 采集对未完成 episode 的保存规则见前文，强杀进程不能保证执行正常清理。

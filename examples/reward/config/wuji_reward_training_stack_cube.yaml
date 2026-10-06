@@ -1,0 +1,11 @@
+defaults:
+  - dexhand_reward_training
+  - _self_
+
+runner:
+  logger:
+    experiment_name: wuji-stack-cube-resnet18
+
+data:
+  train_data_paths: ./logs/reward_data/wuji_stack_cube_processed/train.pt
+  val_data_paths: ./logs/reward_data/wuji_stack_cube_processed/val.pt
