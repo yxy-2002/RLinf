@@ -466,19 +466,21 @@ class CollectEpisode(gym.Wrapper):
             if ep_data is not None:
                 self._submit(self._write_lerobot_episode, ep_data)
         else:
-            episode_data = self._copy({
-                "rank": self.rank,
-                "env_idx": env_idx,
-                "episode_id": self._episode_ids[env_idx],
-                "step": self._global_step,
-                "success": is_success,
-                "observations": buf["observations"],
-                "actions": buf["actions"],
-                "rewards": buf["rewards"],
-                "terminated": buf["terminated"],
-                "truncated": buf["truncated"],
-                "infos": buf["infos"],
-            })
+            episode_data = self._copy(
+                {
+                    "rank": self.rank,
+                    "env_idx": env_idx,
+                    "episode_id": self._episode_ids[env_idx],
+                    "step": self._global_step,
+                    "success": is_success,
+                    "observations": buf["observations"],
+                    "actions": buf["actions"],
+                    "rewards": buf["rewards"],
+                    "terminated": buf["terminated"],
+                    "truncated": buf["truncated"],
+                    "infos": buf["infos"],
+                }
+            )
             label = "success" if is_success else "fail"
             filename = (
                 f"rank_{self.rank}_env_{env_idx}_"

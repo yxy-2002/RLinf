@@ -78,10 +78,16 @@ def test_existing_factory_and_exports(monkeypatch, kind, name, module, eval_only
     monkeypatch.setitem(vars(datasets), name, None)
     monkeypatch.delitem(vars(datasets), name)
     assert getattr(datasets, name) is FakeDataset
-    cfg = OmegaConf.create({
-        "runner": {"task_type": "reasoning_eval" if eval_only else "reasoning"},
-        "data": {"type": kind, "train_data_paths": "train", "val_data_paths": "val"},
-    })
+    cfg = OmegaConf.create(
+        {
+            "runner": {"task_type": "reasoning_eval" if eval_only else "reasoning"},
+            "data": {
+                "type": kind,
+                "train_data_paths": "train",
+                "val_data_paths": "val",
+            },
+        }
+    )
     tokenizer = object()
     train, val = datasets.create_rl_dataset(cfg, tokenizer)
     assert val.kwargs == {"data_paths": "val", "config": cfg, "tokenizer": tokenizer}
@@ -102,14 +108,16 @@ def test_vlm_factory_remains_available(monkeypatch):
     fake_module = ModuleType("rlinf.data.datasets.vlm")
     fake_module.VLMDatasetRegistry = Registry
     monkeypatch.setitem(sys.modules, fake_module.__name__, fake_module)
-    cfg = OmegaConf.create({
-        "data": {
-            "type": "vision_language",
-            "dataset_name": "example",
-            "train_data_paths": "train",
-            "val_data_paths": "val",
+    cfg = OmegaConf.create(
+        {
+            "data": {
+                "type": "vision_language",
+                "dataset_name": "example",
+                "train_data_paths": "train",
+                "val_data_paths": "val",
+            }
         }
-    })
+    )
     assert datasets.create_rl_dataset(cfg, object()) == (
         ("example", "train"),
         ("example", "val"),
