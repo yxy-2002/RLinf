@@ -45,7 +45,7 @@ Wuji 驱动另以 ``output_rate_hz: 1000.0`` 输出插值目标，
 
 每个回合保存到运行目录下的 ``raw_reward_episodes/episode_XXXXXX.pt``。样本包含按 ``[V,H,W,C]`` 排列的两路 RGB uint8 图像、二值标签、相机/预处理信息以及 episode/step ID。Ctrl+C 请求在当前步完成后退出，并保存当前回合已采标注帧。
 
-采集器按回合以 80/20 比例、随机种子 42 生成 ``train.pt`` 和 ``val.pt``。只对训练集负帧下采样，负正比最多为 3:1。两个集合都必须包含两类标签；数据不足时报告错误并保留原始回合。同一回合的相邻帧不会跨训练集与验证集。
+采集器按回合以 80/20 比例、随机种子 42 生成 ``train.pt`` 和 ``val.pt``。训练集和验证集均保留全部标注帧，不按失败/成功比例筛选。两个集合都必须包含两类标签；数据不足时报告错误并保留原始回合。同一回合的相邻帧不会跨训练集与验证集。
 
 需要重新处理已保存的原始回合时，运行：
 
@@ -54,8 +54,7 @@ Wuji 驱动另以 ``output_rate_hz: 1000.0`` 输出插值目标，
    PYTHONPATH=. python examples/reward/preprocess_reward_dataset.py \
      --raw-format labeled_frames \
      --raw-data-path /path/to/run/raw_reward_episodes \
-     --output-dir /path/to/processed_reward_data \
-     --fail-success-ratio 3
+     --output-dir /path/to/processed_reward_data
 
 离线审核与裁剪
 ----------------------------------------

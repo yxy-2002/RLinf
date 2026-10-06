@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import numpy as np
 
@@ -30,6 +30,9 @@ class DexpnpConfig(FrankaRobotConfig):
     reset_ee_pose: np.ndarray | None = None
     ee_pose_limit_min: np.ndarray | None = None
     ee_pose_limit_max: np.ndarray | None = None
+    random_reset_ee_pose_region: np.ndarray = field(
+        default_factory=lambda: np.array([0.05, 0.05, 0.05, 0, 0, 0])
+    )
     reset_ee_pose_offset: list[float] | None = None
     ee_pose_limit_min_offset: list[float] | None = None
     ee_pose_limit_max_offset: list[float] | None = None

@@ -1,0 +1,65 @@
+defaults:
+  - wuji_reward_data
+  - override hydra/job_logging: stdout
+  - _self_
+
+hydra:
+  run:
+    dir: .
+  output_subdir: null
+  searchpath:
+    - file://${oc.env:REPO_PATH}/examples/embodiment/config
+
+runner:
+  task_type: embodied
+  logger:
+    log_path: ./logs
+    project_name: rlinf
+    experiment_name: wuji-reward-data-stack-cube
+  num_success_frames: 200
+  val_split: 0.2
+  random_seed: 42
+# 
+env:
+  eval:
+    max_episode_steps: 400 # Keep same as env.eval.override_cfg.max_num_steps
+    override_cfg:
+      max_num_steps: 400 # Keep same as env.eval.max_episode_steps
+      # glove_config: 
+        # release_behavior: hold
+      # target_ee_pose: [0.59875072, 0.04150214, 0.44313849, 1.82560534, -0.77090803, 1.26209335]
+      # target_ee_pose: [0.6908977, 0.04706086, 0.4633577, 2.24617977, -0.52550448, 0.89871131]
+      target_ee_pose: [0.55416144, 0.14182557, 0.37127433, 2.2179049, -0.66989541, -0.40690985]
+      camera_crop_regions: 
+        "105322251046": [0.216667, 0.304688, 0.656250, 0.801562]
+      ee_pose_limit_min_offset:
+      - -0.3
+      - -0.3
+      - -0.2
+      - -0.003
+      - -0.003
+      - -0.003
+      ee_pose_limit_max_offset:
+      - 0.3
+      - 0.3
+      - 0.4
+      - 0.003
+      - 0.003
+      - 0.003
+      hand_reset_state: [
+        0.5,      0.129493, 0.229065, 0.231855, 
+        0.092210, 0.5,      0.235762, 0.229154,  
+        0.095804, 0.5,      0.234013, 0.229282,  
+        0.090670, 0.5,      0.235285, 0.234040,  
+        0.094474, 0.5,      0.235364, 0.229356   
+      ]
+    data_collection:
+      enabled: false
+    retargeting: 
+      joint_lower_limits: [
+        0.,      0., 0.229065, 0.231855, 
+        0.092210, 0.,      0.235762, 0.229154,  
+        0.095804, 0.,      0.234013, 0.229282,  
+        0.090670, 0.,      0.235285, 0.234040,  
+        0.094474, 0.,      0.235364, 0.229356   
+      ]

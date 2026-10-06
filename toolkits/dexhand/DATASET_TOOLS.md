@@ -22,7 +22,7 @@ python -m toolkits.dexhand.review_classifier_data \
 | `s` | 确认后保存 |
 | `q` / Esc | 退出；有未保存修改时询问是否保存 |
 
-各相机按 metadata 中的顺序并排显示，顶部显示标签、来源、审核数量和丢弃数量。**未审核样本默认保留**，标记不会修改原始标签。
+各相机按 metadata 中的顺序并排显示，顶部用大号绿色 `SUCCESS (label=1)` 标注成功帧、大号红色 `FAILURE (label=0)` 标注失败帧。这表示数据原有标签，不是模型预测或保留/丢弃决定。其下显示来源、审核状态、审核数量和丢弃数量。**未审核样本默认保留**，标记不会修改原始标签。
 
 每次保存生成 `logs/reviewed_reward/review_<时间>/`，保留原文件名，并同步筛选 `step_ids`、`episode_ids`。同时写入 `review.json` 和保留帧的 PNG；`images/<success或failure>/view_<序号>/` 中的序号对应 metadata 相机顺序。添加 `--no-export-images` 可关闭 PNG 导出。
 

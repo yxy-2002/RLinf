@@ -86,7 +86,7 @@ def test_review_render_and_controls(tmp_path, monkeypatch):
     path = tmp_path / "episode_000000.pt"
     make_payload(path)
     session = review.ReviewSession([path])
-    assert review.render(session, [], 0, 40).shape == (165, 1000, 3)
+    assert review.render(session, [], 0, 40).shape == (230, 1000, 3)
     monkeypatch.setenv("DISPLAY", ":test")
     for method in ("namedWindow", "imshow", "destroyAllWindows"):
         monkeypatch.setattr(cv2, method, lambda *args: None)

@@ -54,7 +54,8 @@ class FrameCollector(Worker):
             cfg.runner.num_fail_frames if self.label_source == "keyboard" else None
         )
         self.val_split = cfg.runner.get("val_split", 0.2)
-        self.fail_success_ratio = cfg.runner.get("fail_success_ratio", 2.0)
+        if self.label_source == "keyboard":
+            self.fail_success_ratio = cfg.runner.get("fail_success_ratio", 2.0)
         self.random_seed = cfg.runner.get("random_seed", 42)
 
         self.success_frames: list[torch.Tensor] = []
@@ -294,9 +295,8 @@ class FrameCollector(Worker):
         split_reward_episodes(
             raw_dir,
             cfg.runner.logger.log_path,
-            self.val_split,
-            self.fail_success_ratio,
-            self.random_seed,
+            val_split=self.val_split,
+            seed=self.random_seed,
         )
 
     def _run_legacy(self):

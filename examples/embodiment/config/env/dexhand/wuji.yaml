@@ -24,6 +24,9 @@ env:
     max_episode_steps: 10000
     retargeting:
       type: wuji_tier2
+      # Optional 20 joint limits in radians, finger1 joint1..4 through finger5.
+      joint_lower_limits: null
+      joint_upper_limits: null
     glove_config:
       type: psiglove_2
       scale_file: /workspace/RLinf/examples/embodiment/config/env/dexhand/wuji_left_scale_yxy.yaml # Optional operator scale override; null uses pipeline YAML.
@@ -70,7 +73,7 @@ env:
         side: left
         serial_number: "365C356C3333" # WUJIHAND USB serial; not the glove port.
         namespace: /wuji_hand/left
-        feedback_timeout: 0.5
+        feedback_timeout: 1.0
         reset_duration: 1.0
         output_rate_hz: 1000.0
         state_rate_hz: 100.0

@@ -22,7 +22,6 @@ runner:
   camera_keys: [wrist_1, global]
   num_success_frames: 200
   val_split: 0.2
-  fail_success_ratio: 3.0
   random_seed: 42
   fps: 10
 

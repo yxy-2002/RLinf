@@ -16,6 +16,57 @@ import numpy as np
 SNAPSHOT_HEADER = 12
 
 
+def _resolve_joint_limits(
+    physical_lower: np.ndarray,
+    physical_upper: np.ndarray,
+    lower: list[float] | None,
+    upper: list[float] | None,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Validate optional limits in native hand units and retain physical limits."""
+    bounds = [
+        np.asarray(physical_lower, dtype=float),
+        np.asarray(physical_upper, dtype=float),
+    ]
+    for index, (name, value) in enumerate(
+        (("joint_lower_limits", lower), ("joint_upper_limits", upper))
+    ):
+        if value is None:
+            continue
+        array = np.asarray(value, dtype=float)
+        if array.shape != bounds[index].shape or not np.isfinite(array).all():
+            raise ValueError(f"{name} must contain {bounds[index].size} finite values")
+        bounds[index] = (
+            np.maximum(bounds[index], array)
+            if index == 0
+            else np.minimum(bounds[index], array)
+        )
+    if np.any(bounds[0] > bounds[1]):
+        raise ValueError(
+            "Joint lower limits must not exceed upper limits within physical bounds"
+        )
+    return bounds[0], bounds[1]
+
+
+def _bounded_hand_command(
+    target: np.ndarray,
+    current: np.ndarray,
+    spec,
+    lower: np.ndarray,
+    upper: np.ndarray,
+    max_delta: float,
+) -> np.ndarray:
+    """Bound the mapped target and rate-limited command in their respective units."""
+    from rlinf_dexhand.wuji_spec import to_normalized
+
+    target = np.clip(target, lower, upper)
+    if spec.hand_type == "wuji1hand":
+        target = to_normalized(spec, target)
+        lower, upper = to_normalized(spec, lower), to_normalized(spec, upper)
+    command = current + np.clip(target - current, -max_delta, max_delta)
+    # Bounds take precedence when measured/reset state starts outside the region.
+    return np.clip(command, lower, upper)
+
+
 def _write_snapshot(shared, values):
     with shared.get_lock():
         shared[:] = values
@@ -129,6 +180,16 @@ def _teleop_worker(connection, shared, config):
             hand = WujiHand(ROSController(), **config["hand"])
         else:
             hand = RuiyanControllerClient(config)
+        lower, upper = _resolve_joint_limits(
+            hand.spec.lower,
+            hand.spec.upper,
+            config.get("joint_lower_limits"),
+            config.get("joint_upper_limits"),
+        )
+        custom_limits = (
+            config.get("joint_lower_limits") is not None
+            or config.get("joint_upper_limits") is not None
+        )
         hand.attach()
         mouse = SpaceMouseExpert()
         glove = GloveExpert(
@@ -178,6 +239,8 @@ def _teleop_worker(connection, shared, config):
                     wait_release = False
                 controlling = left and not wait_release
                 raw = np.asarray(sample.values, dtype=np.float64)
+                if custom_limits:
+                    raw = np.clip(raw, lower, upper)
                 if controlling:
                     if not previous_left:
                         baseline = raw.copy()
@@ -186,11 +249,21 @@ def _teleop_worker(connection, shared, config):
                     target = (
                         raw if config["mode"] == "absolute" else base + raw - baseline
                     )
-                    target = np.clip(target, hand.spec.lower, hand.spec.upper)
-                    if hand.spec.hand_type == "wuji1hand":
-                        target = to_normalized(hand.spec, target)
-                    limit = config["max_delta"]
-                    current = current + np.clip(target - current, -limit, limit)
+                    if custom_limits:
+                        current = _bounded_hand_command(
+                            target,
+                            current,
+                            hand.spec,
+                            lower,
+                            upper,
+                            config["max_delta"],
+                        )
+                    else:
+                        target = np.clip(target, hand.spec.lower, hand.spec.upper)
+                        if hand.spec.hand_type == "wuji1hand":
+                            target = to_normalized(hand.spec, target)
+                        limit = config["max_delta"]
+                        current = current + np.clip(target - current, -limit, limit)
                 previous_left = controlling
                 if (
                     controlling
@@ -337,7 +410,20 @@ class DexHandIntervention(gym.Wrapper):
             raise ValueError("Invalid intervention mode")
         if not np.isfinite(teleop_frequency) or teleop_frequency <= 0:
             raise ValueError("teleop_frequency must be positive and finite")
+        lower = kwargs.get("joint_lower_limits")
+        upper = kwargs.get("joint_upper_limits")
+        if lower is not None or upper is not None:
+            if hand_type == "wuji_hand":
+                from rlinf_dexhand.wuji_spec import wuji_spec
+
+                spec = wuji_spec(pipeline["hand"]["side"])
+                physical_lower, physical_upper = spec.lower, spec.upper
+            else:
+                physical_lower, physical_upper = np.zeros(hand_dim), np.ones(hand_dim)
+            _resolve_joint_limits(physical_lower, physical_upper, lower, upper)
         process_config = {
+            "joint_lower_limits": lower,
+            "joint_upper_limits": upper,
             "hand": hand_config,
             "hand_type": hand_type,
             "hand_dim": hand_dim,

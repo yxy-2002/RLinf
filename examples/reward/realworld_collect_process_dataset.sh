@@ -14,8 +14,10 @@ if [[ $# -gt 0 && "$1" != *=* && "$1" != --* ]]; then
 fi
 LOG_DIR="${REPO_PATH}/logs/$(date +'%Y%m%d-%H%M%S')-${CONFIG_NAME}"
 mkdir -p "${LOG_DIR}"
+# Supply the environment config directory for standalone and inherited configs.
 CMD=(python "${REWARD_PATH}/realworld_collect_process_dataset.py"
      --config-path "${REWARD_PATH}/config" --config-name "${CONFIG_NAME}"
+     --config-dir "${EMBODIED_PATH}/config"
      "runner.logger.log_path=${LOG_DIR}" "$@")
 printf '%q ' "${CMD[@]}" > "${LOG_DIR}/run_collect_process.log"
 printf '\n' >> "${LOG_DIR}/run_collect_process.log"

@@ -79,10 +79,9 @@ def split_reward_episodes(
     raw_dir: str,
     output_dir: str,
     val_split: float = 0.2,
-    fail_success_ratio: float = 3.0,
     seed: int = 42,
 ) -> None:
-    """Split whole episodes, then subsample training negatives only.
+    """Split whole episodes while retaining every labeled frame.
 
     Both splits must contain both classes. Never fall back to splitting frames.
     """
@@ -127,14 +126,6 @@ def split_reward_episodes(
                 ep.images, ep.labels, ep.metadata["step_ids"], strict=True
             )
         ]
-        if name == "train" and fail_success_ratio > 0:
-            positives = [sample for sample in samples if sample[1] == 1]
-            negatives = [sample for sample in samples if sample[1] == 0]
-            rng.shuffle(negatives)
-            samples = (
-                positives
-                + negatives[: max(1, int(len(positives) * fail_success_ratio))]
-            )
         rng.shuffle(samples)
         RewardDatasetPayload(
             [s[0] for s in samples],
@@ -145,6 +136,5 @@ def split_reward_episodes(
                 "step_ids": [s[3] for s in samples],
                 "random_seed": seed,
                 "val_split": val_split,
-                "fail_success_ratio": fail_success_ratio,
             },
         ).save(str(Path(output_dir) / f"{name}.pt"))

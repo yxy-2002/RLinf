@@ -31,7 +31,7 @@ def task_defaults():
     )
 
 
-def test_default_motion_matches_legacy():
+def test_default_motion_config():
     defaults = task_defaults()
     target = np.array([0.6, 0.08, 0.41, 2.9, -0.16, 0.5])
     defaults["target_ee_pose"] = target.tolist()
@@ -39,12 +39,12 @@ def test_default_motion_matches_legacy():
     np.testing.assert_allclose(cfg.action_scale, [0.03, 0.5, 1])
     np.testing.assert_allclose(cfg.reset_ee_pose, target + [0, 0, 0.05, 0, 0, 0])
     np.testing.assert_allclose(
-        cfg.ee_pose_limit_min, target - [0.02, 0.02, 0.02, 0.003, 0.003, 0.003]
+        cfg.ee_pose_limit_min, target - [0.0, 0.02, 0.02, 0.003, 0.003, 0.003]
     )
     np.testing.assert_allclose(
         cfg.ee_pose_limit_max, target + [0.02, 0.02, 0.1, 0.003, 0.003, 0.003]
     )
-    assert cfg.step_frequency == 5
+    assert cfg.step_frequency == 10
 
 
 @pytest.mark.parametrize(
@@ -104,3 +104,18 @@ def test_invalid_motion_config_fails_before_hardware(overrides, match):
     values.update(overrides)
     with pytest.raises(ValueError, match=match):
         DexpnpConfig(**values)
+
+
+@pytest.mark.parametrize(
+    "region", [[0] * 5, [-0.1] + [0] * 5, [float("nan")] * 6, [float("inf")] * 6]
+)
+def test_invalid_reset_region(region):
+    values = task_defaults()
+    values["random_reset_ee_pose_region"] = region
+    with pytest.raises(ValueError, match="random_reset_ee_pose_region"):
+        DexpnpConfig(**values)
+
+
+def test_default_reset_region():
+    cfg = DexpnpConfig(**task_defaults())
+    np.testing.assert_array_equal(cfg.random_reset_ee_pose_region, [0.05] * 3 + [0] * 3)

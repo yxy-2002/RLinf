@@ -8,8 +8,6 @@ hydra:
   run:
     dir: .
   output_subdir: null
-  searchpath:
-    - file://${oc.env:REPO_PATH}/examples/embodiment/config
 
 runner:
   task_type: embodied
@@ -21,11 +19,10 @@ runner:
   label_source: spacemouse_right
   camera_keys: [wrist_1, global]
   num_success_frames: 200
-  val_split: 0.2
-  fail_success_ratio: 3.0
+  val_split: 0.1
   random_seed: 42
   fps: 10 # Image/label capture and arm step frequency; hand teleop is independent.
-
+# [ 0.59875072  0.04150214  0.44313849  1.82560534 -0.77090803  1.26209335]
 env:
   eval:
     max_episode_steps: 10000 # Keep same as env.eval.override_cfg.max_num_steps

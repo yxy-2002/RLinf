@@ -180,9 +180,37 @@ The default orientation window is only ±0.003 radians, so larger rotation
 commands are clipped to that window. ``step_frequency`` limits environment
 steps; setting collection ``fps`` higher does not increase this limit.
 
-With ``enable_random_reset: false``, normal resets move directly to
-``target_ee_pose + reset_ee_pose_offset`` unless an absolute ``reset_ee_pose``
-is supplied. The previous 3 cm + 2 cm clearance lift and its waits are disabled.
+Reset uses ``target_ee_pose + reset_ee_pose_offset`` as its nominal pose,
+with an explicit ``reset_ee_pose`` taking precedence. On each reset,
+``env.eval.override_cfg.random_reset_ee_pose_region`` (or ``env.train``)
+adds independent uniform offsets in ``[-region[i], region[i]]`` to
+``[x, y, z, roll, pitch, yaw]`` (meters and XYZ Euler radians).
+The DexHand default is ``[0.05, 0.05, 0.05, 0, 0, 0]``; all zeros disable it.
+This works even with ``enable_random_reset: false``; if the legacy XY/yaw
+randomization is enabled, both offsets apply. The nominal pose is unchanged
+between resets. The previous 3 cm + 2 cm clearance lift remains disabled.
+
+Optional retargeting joint limits
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+For Wuji collection, configure ``env.eval.retargeting.joint_lower_limits`` and
+``joint_upper_limits`` (use ``env.train`` for training). Both default to ``null``;
+either side may be omitted. Each configured list must contain 20 finite radians
+in finger-major order: finger1 joint1–4, then finger2 through finger5.
+Limits intersect the hand's physical limits; an empty interval is rejected.
+Retargeting output and the resulting relative/absolute target are clipped.
+The final active command is also bounded after rate limiting, so these bounds
+take precedence if the starting state is outside them. They apply while hand
+intervention is active; reset poses and release-to-hold behavior are unchanged.
+Ruiyan uses six normalized values in ``[0, 1]`` instead of radians.
+
+.. code-block:: yaml
+
+   env:
+     eval:
+       retargeting:
+         joint_lower_limits: null
+         joint_upper_limits: null
 
 Run It
 ------

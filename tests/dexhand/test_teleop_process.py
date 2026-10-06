@@ -13,6 +13,8 @@ import pytest
 from rlinf.envs.realworld.common.wrappers.dexhand_intervention import (
     DexHandIntervention,
     TeleopProcess,
+    _bounded_hand_command,
+    _resolve_joint_limits,
     _write_snapshot,
 )
 
@@ -86,8 +88,11 @@ class DummyEnv(gym.Env):
         self.events.append("env_close")
 
 
+@pytest.mark.parametrize("custom_limits", [False, True])
 @pytest.mark.parametrize("hand_type, dim", [("wuji_hand", 20), ("ruiyan_hand", 6)])
-def test_wrapper_reset_order_and_snapshot_metadata(monkeypatch, hand_type, dim):
+def test_wrapper_reset_order_and_snapshot_metadata(
+    monkeypatch, hand_type, dim, custom_limits
+):
     env = DummyEnv()
     env.action_space = gym.spaces.Box(-1, 1, (6 + dim,))
     env.config.end_effector_type = hand_type
@@ -103,8 +108,13 @@ def test_wrapper_reset_order_and_snapshot_metadata(monkeypatch, hand_type, dim):
         },
     )
 
+    lower = [0.2] * dim if custom_limits else None
+    upper = [0.4] * dim if custom_limits else None
+
     class FakeClient:
         def __init__(self, config):
+            assert config["joint_lower_limits"] == lower
+            assert config["joint_upper_limits"] == upper
             assert config["frequency"] == 60
 
         def request(self, command):
@@ -123,7 +133,11 @@ def test_wrapper_reset_order_and_snapshot_metadata(monkeypatch, hand_type, dim):
         FakeClient,
     )
     wrapper = DexHandIntervention(
-        env, pipeline_config="unused", right_button_labels_only=True
+        env,
+        pipeline_config="unused",
+        right_button_labels_only=True,
+        joint_lower_limits=lower,
+        joint_upper_limits=upper,
     )
     wrapper.reset()
     assert env.events == ["pause", "reset", "resume"]
@@ -236,7 +250,6 @@ def test_collector_preserves_snapshot_rows_and_pauses_before_final_save(
     collector._quit = False
     collector.target_success = 2
     collector.val_split = 0.5
-    collector.fail_success_ratio = 3
     collector.random_seed = 42
     collector.log_info = Mock()
     collector.log_warning = Mock()
@@ -420,3 +433,57 @@ def test_ruiyan_child_uses_existing_controller_without_ros(mode):
         if child is not None:
             child.close()
         ray.shutdown()
+
+
+@pytest.mark.parametrize(
+    "lower,upper",
+    [(None, None), ([0.2, 0.3], None), (None, [0.7, 0.8]), ([0.2, 0.3], [0.7, 0.8])],
+)
+def test_optional_joint_limits(lower, upper):
+    actual_lower, actual_upper = _resolve_joint_limits([0, 0], [1, 1], lower, upper)
+    np.testing.assert_allclose(actual_lower, [0, 0] if lower is None else lower)
+    np.testing.assert_allclose(actual_upper, [1, 1] if upper is None else upper)
+
+
+@pytest.mark.parametrize(
+    "lower,upper",
+    [
+        ([0], None),
+        (None, [float("nan"), 1]),
+        ([0.8, 0], [0.2, 1]),
+        ([2, 0], None),
+        (None, [-1, 1]),
+    ],
+)
+def test_invalid_joint_limits(lower, upper):
+    with pytest.raises(ValueError):
+        _resolve_joint_limits([0, 0], [1, 1], lower, upper)
+
+
+def test_custom_limits_cannot_expand_physical_limits():
+    lower, upper = _resolve_joint_limits([0, 0], [1, 1], [-1, -1], [2, 2])
+    np.testing.assert_array_equal(lower, [0, 0])
+    np.testing.assert_array_equal(upper, [1, 1])
+
+
+@pytest.mark.parametrize("mode", ["absolute", "relative"])
+def test_wuji_target_limits_after_mapping_and_rate_limit(mode):
+    from rlinf_dexhand.wuji_spec import to_normalized, to_radians, wuji_spec
+
+    spec = wuji_spec("left")
+    physical_lower, physical_upper = np.array(spec.lower), np.array(spec.upper)
+    width = physical_upper - physical_lower
+    lower, upper = physical_lower + 0.3 * width, physical_lower + 0.6 * width
+    # Alternating low/high targets exercise both limits on all fingers.
+    raw = np.where(np.arange(20) % 2, physical_upper + width, physical_lower - width)
+    raw = np.clip(raw, lower, upper)
+    target = raw if mode == "absolute" else physical_upper + raw - lower
+    current = to_normalized(spec, physical_lower)
+    result = _bounded_hand_command(target, current, spec, lower, upper, 0.01)
+    radians = to_radians(spec, result)
+    assert np.all(radians >= lower - 1e-12)
+    assert np.all(radians <= upper + 1e-12)
+    # A current command outside the region is clamped even with a small step limit.
+    np.testing.assert_allclose(result, 0.3)
+    result = _bounded_hand_command(target, result, spec, lower, upper, float("inf"))
+    np.testing.assert_allclose(to_radians(spec, result), np.clip(target, lower, upper))

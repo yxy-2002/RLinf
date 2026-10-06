@@ -70,24 +70,25 @@ def test_frame_counts_and_progress_cap(tmp_path, monkeypatch, interrupt):
         monkeypatch,
         bars,
     )
-    collector.cfg = OmegaConf.create({
-        "runner": {
-            "camera_keys": ["wrist_1", "global"],
-            "fps": 1e9,
-            "logger": {"log_path": str(tmp_path)},
-        },
-        "env": {
-            "eval": {
-                "main_image_key": "wrist_1",
-                "max_episode_steps": 3,
-                "override_cfg": {"camera_names": {"a": "wrist_1", "b": "global"}},
-            }
-        },
-    })
+    collector.cfg = OmegaConf.create(
+        {
+            "runner": {
+                "camera_keys": ["wrist_1", "global"],
+                "fps": 1e9,
+                "logger": {"log_path": str(tmp_path)},
+            },
+            "env": {
+                "eval": {
+                    "main_image_key": "wrist_1",
+                    "max_episode_steps": 3,
+                    "override_cfg": {"camera_names": {"a": "wrist_1", "b": "global"}},
+                }
+            },
+        }
+    )
     collector.target_success = 2
     collector._quit = False
     collector.val_split = 0.2
-    collector.fail_success_ratio = 3
     collector.random_seed = 42
     collector.log_info = Mock()
     labels = iter([0, 0, 0, 1, 1, 0])
@@ -144,13 +145,15 @@ def test_demo_saved_success_and_timeout_progress(tmp_path, monkeypatch, interrup
         monkeypatch,
         bars,
     )
-    collector.cfg = OmegaConf.create({
-        "runner": {
-            "success_source": "reward_model",
-            "logger": {"log_path": str(tmp_path)},
-        },
-        "env": {"eval": {"max_episode_steps": 2}},
-    })
+    collector.cfg = OmegaConf.create(
+        {
+            "runner": {
+                "success_source": "reward_model",
+                "logger": {"log_path": str(tmp_path)},
+            },
+            "env": {"eval": {"max_episode_steps": 2}},
+        }
+    )
     collector._preexisting_success = 1
     collector.num_data_episodes = 2
     collector.action_dim = 12

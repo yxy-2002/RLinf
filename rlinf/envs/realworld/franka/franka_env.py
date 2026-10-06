@@ -90,6 +90,7 @@ class FrankaRobotConfig:
     )  # [xyz move scale, orientation scale, gripper scale]
     enable_random_reset: bool = False
 
+    random_reset_ee_pose_region: np.ndarray = field(default_factory=lambda: np.zeros(6))
     random_xy_range: float = 0.0
     random_rz_range: float = 0.0  # np.pi / 6
 
@@ -143,6 +144,16 @@ class FrankaRobotConfig:
             }
         self.target_ee_pose = np.array(self.target_ee_pose)
         self.reset_ee_pose = np.array(self.reset_ee_pose)
+        region = np.asarray(self.random_reset_ee_pose_region, dtype=float)
+        if (
+            region.shape != (6,)
+            or not np.all(np.isfinite(region))
+            or np.any(region < 0)
+        ):
+            raise ValueError(
+                "random_reset_ee_pose_region must contain six finite nonnegative values"
+            )
+        self.random_reset_ee_pose_region = region
         self.reward_threshold = np.array(self.reward_threshold)
         self.action_scale = np.array(self.action_scale)
         self.ee_pose_limit_min = np.array(self.ee_pose_limit_min)
@@ -619,9 +630,27 @@ class FrankaEnv(gym.Env):
         else:
             reset_pose = self._reset_pose.copy()
 
+        # Sample once per reset, independently of the legacy XY/yaw randomization.
+        region = self.config.random_reset_ee_pose_region
+        if np.any(region):
+            delta = np.random.uniform(-region, region)
+            reset_pose[:3] += delta[:3]
+            if np.any(region[3:]):
+                euler = R.from_quat(reset_pose[3:]).as_euler("xyz")
+                reset_pose[3:] = R.from_euler("xyz", euler + delta[3:]).as_quat()
+
         self._franka_state = self._controller.get_state().wait()[0]
         cnt = 0
-        while not np.allclose(self._franka_state.tcp_pose[:3], reset_pose[:3], 0.02):
+        while not np.allclose(
+            self._franka_state.tcp_pose[:3], reset_pose[:3], 0.02
+        ) or (
+            np.any(region[3:])
+            and (
+                R.from_quat(self._franka_state.tcp_pose[3:]).inv()
+                * R.from_quat(reset_pose[3:])
+            ).magnitude()
+            > 1e-3
+        ):
             cnt += 1
             self._interpolate_move(reset_pose)
             self._franka_state = self._controller.get_state().wait()[0]

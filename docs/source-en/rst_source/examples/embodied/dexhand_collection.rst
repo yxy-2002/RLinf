@@ -48,7 +48,7 @@ Data and Recovery
 
 Each episode is saved under ``raw_reward_episodes/episode_XXXXXX.pt`` in the run directory. Samples contain two RGB uint8 views in ``[V,H,W,C]`` order, binary labels, camera/preprocessing metadata and episode/step IDs. Ctrl+C requests a graceful stop after the current step and saves the partial labeled episode.
 
-The collector writes ``train.pt`` and ``val.pt`` using an 80/20 episode split and seed 42. Only training negatives are downsampled, to at most three negatives per positive. Both splits must contain both labels; insufficient data produces an error while preserving raw episodes. Neighboring frames from one episode are never split across train and validation.
+The collector writes ``train.pt`` and ``val.pt`` using an 80/20 episode split and seed 42. All labeled frames are retained in both splits; no failure/success ratio is applied. Both splits must contain both labels; insufficient data produces an error while preserving raw episodes. Neighboring frames from one episode are never split across train and validation.
 
 To repeat preprocessing on saved raw episodes, run:
 
@@ -57,8 +57,7 @@ To repeat preprocessing on saved raw episodes, run:
    PYTHONPATH=. python examples/reward/preprocess_reward_dataset.py \
      --raw-format labeled_frames \
      --raw-data-path /path/to/run/raw_reward_episodes \
-     --output-dir /path/to/processed_reward_data \
-     --fail-success-ratio 3
+     --output-dir /path/to/processed_reward_data
 
 Review and Crop Offline Data
 ----------------------------------------

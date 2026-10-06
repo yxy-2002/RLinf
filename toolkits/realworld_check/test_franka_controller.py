@@ -13,6 +13,23 @@
 # limitations under the License.
 
 
+"""Read Franka poses with an attached gripper, Ruiyan hand, or Wuji hand.
+
+Wuji example (run in the configured Franka/ROS environment)::
+
+    python -m toolkits.realworld_check.test_franka_controller \
+        --robot-ip 172.17.0.2 --end-effector-type wuji_hand \
+        --hand-serial-number 365C356C3333 --hand-side left
+
+At the prompt, use ``getpos`` for [x, y, z, qx, qy, qz, qw],
+``getpos_euler`` for [x, y, z, roll, pitch, yaw] (xyz Euler angles),
+``getstate`` for the full state, or ``q`` to exit. Positions are meters;
+angles are radians. The pose is Franka's O_T_EE, not a fingertip pose.
+
+This starts the hand driver and arm impedance controller. Stop collection
+or other controllers using the same hardware before running this script.
+"""
+
 import argparse
 import os
 import time
@@ -20,10 +37,8 @@ import time
 import numpy as np
 from scipy.spatial.transform import Rotation as R
 
-from rlinf.envs.realworld.franka.franka_controller import FrankaController
 
-
-def _parse_args():
+def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Check Franka controller state.")
     parser.add_argument(
         "--robot-ip",
@@ -33,7 +48,7 @@ def _parse_args():
     parser.add_argument(
         "--end-effector-type",
         default="franka_gripper",
-        choices=["franka_gripper", "robotiq_gripper", "ruiyan_hand"],
+        choices=["franka_gripper", "robotiq_gripper", "ruiyan_hand", "wuji_hand"],
         help="Mounted end-effector type.",
     )
     parser.add_argument(
@@ -54,10 +69,27 @@ def _parse_args():
         default=[1, 2, 3, 4, 5, 6],
         help="Motor IDs for Ruiyan hand.",
     )
-    return parser.parse_args()
+    parser.add_argument(
+        "--hand-serial-number",
+        help="Wuji hand USB serial number (required for wuji_hand).",
+    )
+    parser.add_argument(
+        "--hand-side",
+        choices=["left", "right"],
+        default="left",
+        help="Wuji hand side (default: left).",
+    )
+    parser.add_argument(
+        "--hand-namespace",
+        help="Wuji ROS namespace (default: /wuji_hand/<hand-side>).",
+    )
+    args = parser.parse_args()
+    if args.end_effector_type == "wuji_hand" and not args.hand_serial_number:
+        parser.error("--hand-serial-number is required when using wuji_hand.")
+    return args
 
 
-def main():
+def main() -> None:
     args = _parse_args()
     robot_ip = args.robot_ip
     assert robot_ip is not None, "Please set the FRANKA_ROBOT_IP environment variable."
@@ -72,41 +104,54 @@ def main():
             "motor_ids": tuple(args.hand_motor_ids),
         }
 
+    elif args.end_effector_type == "wuji_hand":
+        end_effector_config = {
+            "serial_number": args.hand_serial_number,
+            "side": args.hand_side,
+            "namespace": args.hand_namespace or f"/wuji_hand/{args.hand_side}",
+        }
+
+    from rlinf.envs.realworld.franka.franka_controller import FrankaController
+
     controller = FrankaController.launch_controller(
         robot_ip=robot_ip,
         end_effector_type=args.end_effector_type,
         end_effector_config=end_effector_config,
     )
 
-    start_time = time.time()
-    while not controller.is_robot_up().wait()[0]:
-        time.sleep(0.5)
-        if time.time() - start_time > 30:
-            print(
-                f"Waited {time.time() - start_time} seconds for Franka robot to be ready."
-            )
-    while True:
-        try:
-            cmd_str = input("Please input cmd:")
-            if cmd_str == "q":
+    try:
+        start_time = time.time()
+        while not controller.is_robot_up().wait()[0]:
+            time.sleep(0.5)
+            if time.time() - start_time > 30:
+                print(
+                    f"Waited {time.time() - start_time} seconds for Franka robot to be ready."
+                )
+        while True:
+            try:
+                cmd_str = input("Please input cmd:")
+                if cmd_str == "q":
+                    break
+                elif cmd_str == "getpos":
+                    print(controller.get_state().wait()[0].tcp_pose)
+                elif cmd_str == "getpos_euler":
+                    tcp_pose = controller.get_state().wait()[0].tcp_pose
+                    r = R.from_quat(tcp_pose[3:].copy())
+                    euler = r.as_euler("xyz")
+                    print(np.concatenate([tcp_pose[:3], euler]))
+                elif cmd_str == "getstate":
+                    state = controller.get_state().wait()[0]
+                    print(state.to_dict())
+                elif cmd_str == "gethand":
+                    print(controller.get_hand_detailed_state().wait()[0])
+                else:
+                    print(f"Unknown cmd: {cmd_str}")
+            except (EOFError, KeyboardInterrupt):
                 break
-            elif cmd_str == "getpos":
-                print(controller.get_state().wait()[0].tcp_pose)
-            elif cmd_str == "getpos_euler":
-                tcp_pose = controller.get_state().wait()[0].tcp_pose
-                r = R.from_quat(tcp_pose[3:].copy())
-                euler = r.as_euler("xyz")
-                print(np.concatenate([tcp_pose[:3], euler]))
-            elif cmd_str == "getstate":
-                state = controller.get_state().wait()[0]
-                print(state.to_dict())
-            elif cmd_str == "gethand":
-                print(controller.get_hand_detailed_state().wait()[0])
-            else:
-                print(f"Unknown cmd: {cmd_str}")
-        except KeyboardInterrupt:
-            break
-        time.sleep(1.0)
+            time.sleep(1.0)
+
+    finally:
+        controller.shutdown().wait()
 
 
 if __name__ == "__main__":

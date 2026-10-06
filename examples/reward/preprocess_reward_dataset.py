@@ -356,7 +356,7 @@ def parse_args() -> argparse.Namespace:
         "--fail-success-ratio",
         type=float,
         default=2.0,
-        help="Sampling ratio of fail:success frames.",
+        help="Sampling ratio of fail:success frames for pickle input only.",
     )
     parser.add_argument(
         "--seed",
@@ -381,9 +381,8 @@ def main() -> None:
         split_reward_episodes(
             args.raw_data_path,
             args.output_dir,
-            args.val_split,
-            args.fail_success_ratio,
-            args.seed,
+            val_split=args.val_split,
+            seed=args.seed,
         )
         logger.info(f"Saved episode-disjoint splits to {args.output_dir}")
         return

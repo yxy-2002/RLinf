@@ -175,9 +175,35 @@ Python 将偏移加到 ``target_ee_pose`` 上。也可以指定绝对值
 默认姿态窗口仅为 ±0.003 弧度，较大的旋转指令会被裁剪到该窗口内。
 ``step_frequency`` 限制环境步频；提高数采 ``fps`` 不会提高这一上限。
 
-当 ``enable_random_reset: false`` 时，常规复位直接移动到
-``target_ee_pose + reset_ee_pose_offset``；若指定绝对值 ``reset_ee_pose``，则优先使用绝对值。
-此前的 3 cm + 2 cm 抬升及其等待已禁用。
+复位以 ``target_ee_pose + reset_ee_pose_offset`` 为基准；显式配置的
+``reset_ee_pose`` 优先。每次复位时，
+``env.eval.override_cfg.random_reset_ee_pose_region`` （训练时为 ``env.train``）
+为 ``[x, y, z, roll, pitch, yaw]`` 各分量独立叠加
+``[-region[i], region[i]]`` 内的均匀随机偏移，单位为米和 XYZ 欧拉角弧度。
+灵巧手任务默认值为 ``[0.05, 0.05, 0.05, 0, 0, 0]``，全零关闭。
+即使 ``enable_random_reset: false`` 也生效；若启用原有 XY/yaw 随机复位，
+两种偏移会叠加。每次采样不会改变复位基准位姿。
+此前的 3 cm + 2 cm 抬升仍保持禁用。
+
+可选的 retargeting 关节限位
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Wuji 采集可配置 ``env.eval.retargeting.joint_lower_limits`` 和
+``joint_upper_limits``，训练时使用 ``env.train``。两者默认均为 ``null``，
+可只配置一侧。每个配置列表必须包含 20 个有限弧度值，按 finger1 的 joint1–4、
+finger2 至 finger5 的顺序排列。自定义范围与手部物理限位取交集，交集为空时报错。
+retargeting 输出以及相对/绝对控制换算后的目标都会裁剪；限速后的最终主动控制
+指令也会裁剪，因此起始状态在范围外时关节限位优先于单步限速。
+这些限制在手部干预激活期间生效，不改变 reset 姿态和松开按键后的保持行为。
+睿研使用 6 个 ``[0, 1]`` 归一化值，而非弧度。
+
+.. code-block:: yaml
+
+   env:
+     eval:
+       retargeting:
+         joint_lower_limits: null
+         joint_upper_limits: null
 
 运行
 ----------------------------------------

@@ -128,6 +128,8 @@ def apply_single_arm_wrappers(env: gym.Env, cfg: Mapping[str, Any]) -> gym.Env:
                 env,
                 teleop_frequency=cfg.get("hand_teleop_frequency", 60),
                 glove_frequency=glove_cfg.get("frequency", 60),
+                joint_lower_limits=retarget_cfg.get("joint_lower_limits"),
+                joint_upper_limits=retarget_cfg.get("joint_upper_limits"),
                 pipeline_config=glove_cfg.get("pipeline_config"),
                 scale_file=glove_cfg.get("scale_file"),
                 intervention_mode=glove_cfg.get("intervention_mode", "relative"),

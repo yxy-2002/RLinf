@@ -148,11 +148,13 @@ class ReviewSession:
         for (file_idx, sample_idx), decision in zip(
             self.samples, self.decisions, strict=True
         ):
-            manifest.append({
-                "source": str(self.paths[file_idx]),
-                "sample_index": sample_idx,
-                "keep": decision,
-            })
+            manifest.append(
+                {
+                    "source": str(self.paths[file_idx]),
+                    "sample_index": sample_idx,
+                    "keep": decision,
+                }
+            )
             if decision is not False:
                 kept[file_idx].append(sample_idx)
         for file_idx, (path, payload) in enumerate(
@@ -245,10 +247,22 @@ def render(
     else:
         heading = "No samples in this filter"
     width = max(1000, sum(part.shape[1] for part in parts))
-    canvas = np.zeros((height + 125, width, 3), dtype=np.uint8)
+    canvas = np.zeros((height + 190, width, 3), dtype=np.uint8)
+    if visible:
+        success = bool(payload.labels[sample_idx])
+        cv2.putText(
+            canvas,
+            "SUCCESS (label=1)" if success else "FAILURE (label=0)",
+            (10, 48),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            1.4,
+            (0, 255, 0) if success else (0, 0, 255),
+            3,
+            cv2.LINE_AA,
+        )
     x = 0
     for part in parts:
-        canvas[95 : 95 + part.shape[0], x : x + part.shape[1]] = part
+        canvas[160 : 160 + part.shape[0], x : x + part.shape[1]] = part
         x += part.shape[1]
     reviewed = sum(d is not None for d in session.decisions)
     discarded = sum(d is False for d in session.decisions)
@@ -257,7 +271,7 @@ def render(
         f"reviewed={reviewed}/{len(session.samples)} keep={len(session.samples) - discarded} discard={discarded}",
         "n/p: next/prev | g/b: keep/discard | 1/2/0: positive/negative/all | s: save | q: quit",
     ]
-    for y, line in zip((22, 48, 74), lines, strict=True):
+    for y, line in zip((87, 113, 139), lines, strict=True):
         cv2.putText(
             canvas, line, (10, y), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (220, 220, 220), 1
         )

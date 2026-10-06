@@ -15,7 +15,7 @@ import torch
 from hydra import compose, initialize_config_dir
 from omegaconf import OmegaConf
 
-from rlinf.data.datasets.reward_model import RewardBinaryDataset, RewardDatasetPayload
+from rlinf.data.datasets.reward_model import RewardDatasetPayload
 from rlinf.data.reward_collection import (
     save_reward_episode,
     select_reward_images,
@@ -60,30 +60,6 @@ def test_views_order_and_missing_camera():
     assert images[0].sum() == 192 and images[1].sum() == 0
     with pytest.raises(KeyError):
         stack_camera_frames({"wrist_1": images[0]}, KEYS)
-
-
-def test_episode_split_preserves_ids_and_classes(tmp_path):
-    metadata = {"camera_keys": KEYS, "preprocessing": {"layout": "VHWC"}}
-    for episode in range(5):
-        labels = [1, 0, 0, 0, 0]
-        save_reward_episode(
-            str(tmp_path / "raw"),
-            episode,
-            [torch.full((2, 8, 8, 3), episode, dtype=torch.uint8)] * 5,
-            labels,
-            list(range(5)),
-            metadata,
-        )
-    split_reward_episodes(str(tmp_path / "raw"), str(tmp_path), fail_success_ratio=2)
-    train = RewardDatasetPayload.load(str(tmp_path / "train.pt"))
-    val = RewardDatasetPayload.load(str(tmp_path / "val.pt"))
-    assert set(train.metadata["episode_ids"]).isdisjoint(val.metadata["episode_ids"])
-    assert set(train.labels) == set(val.labels) == {0, 1}
-    assert train.labels.count(0) == 2 * train.labels.count(1)
-    assert len(val.images) == 5
-    RewardBinaryDataset(str(tmp_path / "train.pt"), KEYS)
-    with pytest.raises(ValueError, match="camera_keys"):
-        RewardBinaryDataset(str(tmp_path / "train.pt"), KEYS[::-1])
 
 
 def test_insufficient_split_keeps_raw(tmp_path):
@@ -234,7 +210,6 @@ def test_frame_collector_multi_episode(tmp_path):
     collector._quit = False
     collector.target_success = collector.target_fail = 4
     collector.val_split = 0.5
-    collector.fail_success_ratio = 3
     collector.random_seed = 42
     collector.log_info = Mock()
     collector._run_spacemouse()
@@ -371,7 +346,6 @@ def test_stop_request_saves_partial_frame_episode(tmp_path):
     collector._quit = False
     collector.target_success = collector.target_fail = 100
     collector.val_split = 0.2
-    collector.fail_success_ratio = 3
     collector.random_seed = 42
     collector.label_source = "spacemouse_right"
     # Insufficient data must be reported, while the partial episode survives.

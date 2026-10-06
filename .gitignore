@@ -24,3 +24,4 @@ PKG-INFO
 /franka_infra
 /psi-glove-air2wuji-hand
 !third_party/rlinf-dexhand/ros/wuji_hand_driver/CMakeLists.txt
+/scripts/
