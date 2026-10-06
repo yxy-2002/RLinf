@@ -68,6 +68,47 @@ def inject_realworld_reward_cfg(
     return result
 
 
+class RealWorldRewardService:
+    """Expose a dependency-light actor class to control-node Ray clients.
+
+    Ray imports an actor's class when resolving a named handle. Keep this class
+    free of training imports; only its GPU-side instance holds the heavy worker.
+    """
+
+    def __init__(self, worker_name: str):
+        import ray
+
+        from rlinf.scheduler import Cluster
+
+        self._worker = ray.get_actor(worker_name, namespace=Cluster.NAMESPACE)
+
+    def ready(self) -> bool:
+        """Confirm that the GPU-side worker handle was resolved."""
+        return True
+
+    def compute_image_rewards(self, observations: dict[str, Any]) -> Any:
+        """Forward inference to the colocated reward worker."""
+        import ray
+
+        return ray.get(self._worker.compute_image_rewards.remote(observations))
+
+
+class _OwnedRewardService:
+    """Close the public RPC actor before its underlying worker group."""
+
+    def __init__(self, group: Any, service: Any):
+        self._group = group
+        self._service = service
+
+    def _close(self) -> None:
+        import ray
+
+        try:
+            ray.kill(self._service, no_restart=True)
+        finally:
+            self._group._close()
+
+
 class RealWorldRewardClient:
     """Call an existing reward actor without importing its implementation.
 
@@ -100,9 +141,12 @@ def launch_realworld_reward_service(env_cfg: DictConfig) -> tuple[Any, str]:
         env_cfg: Environment config returned by inject_realworld_reward_cfg.
 
     Returns:
-        The owned worker group and the name used by lightweight clients.
+        The service owner (with a ``_close`` method) and the public actor name.
     """
-    from rlinf.scheduler import WorkerAddress
+    import ray
+    from ray.util.scheduling_strategies import NodeAffinitySchedulingStrategy
+
+    from rlinf.scheduler import Cluster, WorkerAddress
     from rlinf.workers.reward.reward_worker import EmbodiedRewardWorker
 
     override = env_cfg.override_cfg
@@ -112,12 +156,41 @@ def launch_realworld_reward_service(env_cfg: DictConfig) -> tuple[Any, str]:
         node_group_label=override.reward_worker_node_group,
         hardware_rank=override.reward_worker_hardware_rank,
     )
+    service = None
     try:
         group.init_worker().wait()
-        service_name = WorkerAddress(
+        worker_name = WorkerAddress(
             root_group_name=group.worker_group_name, ranks=0
         ).get_name()
+        cluster = Cluster()
+        node = cluster.get_node_info(override.reward_worker_node_rank)
+        node_group = cluster.get_node_group(override.reward_worker_node_group)
+        python_interpreter = (
+            node_group.get_node_python_interpreter_path(
+                override.reward_worker_node_rank
+            )
+            or node.python_interpreter_path
+        )
+        service_name = f"{worker_name}-service"
+        service = (
+            ray.remote(RealWorldRewardService)
+            .options(
+                name=service_name,
+                namespace=Cluster.NAMESPACE,
+                num_cpus=0,
+                runtime_env={"py_executable": python_interpreter},
+                scheduling_strategy=NodeAffinitySchedulingStrategy(
+                    node.ray_id, soft=False
+                ),
+            )
+            .remote(worker_name)
+        )
+        ray.get(service.ready.remote())
     except BaseException:
-        group._close()
+        try:
+            if service is not None:
+                ray.kill(service, no_restart=True)
+        finally:
+            group._close()
         raise
-    return group, service_name
+    return _OwnedRewardService(group, service), service_name

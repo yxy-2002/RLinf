@@ -358,6 +358,8 @@ PY
 
 应看到两个存活节点 `192.168.10.10`、`192.168.10.11`，且 GPU 节点资源包含 GPU。
 
+RLinf 会把启动入口时相对 Ray 节点环境发生变化的环境变量传播到其他节点。因此只在 `ray start` 前设置网卡还不够：启动采集的终端也应保持上述 GPU 网卡设置。通用配置 [wuji_demo_data.yaml](examples/embodiment/config/wuji_demo_data.yaml) 通过每个节点组的 `env_configs` 固定 `RLINF_COMM_NET_DEVICES`、`GLOO_SOCKET_IFNAME` 和 `NCCL_SOCKET_IFNAME`，避免控制节点被覆盖成 GPU 节点的网卡。`wuji_demo_data_stack_cube` 继承这份分布式配置；更换工位时修改通用配置中的网卡设置。
+
 **4. 启动叠方块 demo 采集。** 先同步两端仓库代码及配置，特别是 [wuji_demo_data_stack_cube.yaml](examples/embodiment/config/wuji_demo_data_stack_cube.yaml) 和 [共享任务参数](examples/embodiment/config/env/dexhand/wuji_stack_cube.yaml)。在 GPU 节点核对 `reward.model.model_path` 指向可读的 `full_weights.pt`，在控制节点核对机器人 IP、手套 pipeline 和 scale 路径，再执行：
 
 ```bash
@@ -367,6 +369,8 @@ bash examples/embodiment/collect_data.sh wuji_demo_data_stack_cube \
 ```
 
 该命令会启动真实硬件并执行复位。输出目录属于控制节点，每次采集使用新目录。此任务默认采 20 条成功轨迹，每回合上限为 400 步；成功阈值和连续步数继承 `wuji_demo_data` 的 `0.95` 和 `1`。
+
+控制节点通过轻量 `RealWorldRewardService` 接口调用 GPU 上的 reward worker，无需安装 `transformers` 等训练依赖。两端必须同步 `rlinf/utils/realworld_reward.py` 并重新启动采集进程。旧实现直接获取重型 reward actor 的句柄，Ray 在控制节点导入该类失败后，可能将底层缺少依赖的问题表现为 `TypeError: too many positional arguments`。
 
 叠方块的 reward 正负帧采集配置 [wuji_reward_data_stack_cube.yaml](examples/reward/config/wuji_reward_data_stack_cube.yaml) 与 demo 配置共用上述任务参数，包括裁剪、目标位姿、运动范围、手部复位姿态、关节下限和回合步数。只在共享文件中修改这些参数；两种采集模式分别保留自己的节点分配、成功判定和数据保存开关。
 

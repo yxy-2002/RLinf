@@ -16,6 +16,7 @@ cluster:
       node_group: reward_gpu
       placement: 0
   node_groups:
+    # Pin per-node interfaces so the driver's environment cannot replace them.
     - label: franka
       node_ranks: 0
       hardware:
@@ -23,8 +24,20 @@ cluster:
         configs:
           - robot_ip: 172.17.0.2
             node_rank: 0
+      env_configs:
+        - node_ranks: 0
+          env_vars:
+            - RLINF_COMM_NET_DEVICES: enp3s0
+            - GLOO_SOCKET_IFNAME: enp3s0
+            - NCCL_SOCKET_IFNAME: enp3s0
     - label: reward_gpu
       node_ranks: 1
+      env_configs:
+        - node_ranks: 1
+          env_vars:
+            - RLINF_COMM_NET_DEVICES: enp5s0
+            - GLOO_SOCKET_IFNAME: enp5s0
+            - NCCL_SOCKET_IFNAME: enp5s0
 
 runner:
   task_type: embodied
