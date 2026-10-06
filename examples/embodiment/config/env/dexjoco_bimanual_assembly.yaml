@@ -1,0 +1,10 @@
+defaults:
+  - dexjoco_base
+  - _self_
+
+task_name: bimanual_assembly
+task_description: Grasp the tray with the left hand and the peg with the right hand, then insert the peg into the hole.
+camera_mapping:
+  base: ego
+  wrist_left: wrist_left
+  wrist_right: wrist_right

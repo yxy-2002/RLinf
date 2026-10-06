@@ -1,0 +1,9 @@
+defaults:
+  - dexjoco_base
+  - _self_
+
+task_name: water_plant
+task_description: Grasp the watering can and apply water to the plant.
+camera_mapping:
+  base: front
+  wrist: wrist

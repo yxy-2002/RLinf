@@ -329,6 +329,8 @@ def prepare_actions(
             action_dim=action_dim,
             action_space=policy,
         )
+    elif env_type == SupportedEnvType.DEXJOCO:
+        chunk_actions = prepare_actions_for_dexjoco(raw_chunk_actions, action_dim)
     elif env_type == SupportedEnvType.REALWORLD:
         chunk_actions = raw_chunk_actions
     elif env_type == SupportedEnvType.GENESIS:
@@ -360,4 +362,26 @@ def prepare_actions(
     else:
         chunk_actions = raw_chunk_actions
 
+    return chunk_actions
+
+
+def prepare_actions_for_dexjoco(
+    raw_chunk_actions,
+    action_dim,
+) -> np.ndarray:
+    """Validate and forward native DexJoCo quaternion actions.
+
+    Phase-one integration intentionally accepts only the upstream policy action
+    layouts: 23 dimensions for one arm and 46 dimensions for two arms. LAMP's
+    rotation-vector layouts are converted only by the standalone dataset audit
+    tool until a DexJoCo model adapter is added.
+    """
+    if action_dim not in (23, 46):
+        raise ValueError(f"DexJoCo action_dim must be 23 or 46, got {action_dim}.")
+    chunk_actions = np.ascontiguousarray(raw_chunk_actions, dtype=np.float32)
+    if chunk_actions.shape[-1] != action_dim:
+        raise ValueError(
+            "DexJoCo actions must use the native quaternion layout with "
+            f"last dimension {action_dim}, got {chunk_actions.shape}."
+        )
     return chunk_actions

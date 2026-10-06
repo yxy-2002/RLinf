@@ -1,0 +1,9 @@
+defaults:
+  - dexjoco_base
+  - _self_
+
+task_name: fold_glasses
+task_description: Fold the glasses and place them into the case.
+camera_mapping:
+  base: front
+  wrist: wrist

@@ -1,0 +1,19 @@
+# Default LSTM recipe, separate from hardware-specific scale sweeps.
+defaults:
+  - env/dexjoco_water_plant@env.train
+  - env/dexjoco_water_plant@env.eval
+  - dexjoco_lamp_residual_sac
+  - _self_
+runner:
+  logger:
+    experiment_name: dexjoco_lamp_residual_sac_lamplstm_water_plant
+actor:
+  model:
+    model_path: ./outputs/dexjoco_lamp_dp_lamplstm/artifact
+    hand_prior:
+      type: lamplstm
+env:
+  train:
+    lamp_history_length: 8
+  eval:
+    lamp_history_length: 8

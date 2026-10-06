@@ -15,6 +15,7 @@
 import dataclasses
 import importlib.util
 import logging
+import math
 import os
 from dataclasses import asdict
 from typing import TYPE_CHECKING, Callable, ClassVar, Optional, Union
@@ -100,6 +101,10 @@ SupportedModel.ABOT_M0 = SupportedModel.register("abot_m0", force=True)
 SupportedModel.RESNET_REWARD = SupportedModel.register("resnet", force=True)
 SupportedModel.CFG_MODEL = SupportedModel.register("cfg_model", force=True)
 SupportedModel.VALUE_MODEL = SupportedModel.register("value_model", force=True)
+SupportedModel.LAMP_DP = SupportedModel.register("lamp_dp", force=True)
+SupportedModel.LAMP_RESIDUAL_SAC = SupportedModel.register(
+    "lamp_residual_sac", force=True
+)
 
 SupportedModel.QWEN2_5_VL_SFT = SupportedModel.register("qwen2.5_vl", force=True)
 SupportedModel.QWEN3_VL_SFT = SupportedModel.register("qwen3_vl", force=True)
@@ -128,6 +133,8 @@ EMBODIED_MODEL = set(
         SupportedModel.GR00T_N1D7,
         SupportedModel.CFG_MODEL,
         SupportedModel.VALUE_MODEL,
+        SupportedModel.LAMP_DP,
+        SupportedModel.LAMP_RESIDUAL_SAC,
     }
 )
 
@@ -812,6 +819,144 @@ def validate_megatron_cfg(cfg: DictConfig) -> DictConfig:
     return cfg
 
 
+def validate_lamp_async_cfg(cfg: DictConfig) -> None:
+    """Validate a transition-counted async LAMP residual contract.
+
+    This helper does not construct a cluster or initialize Ray, which makes it
+    safe to use from configuration preflight and CPU-only unit tests.
+    """
+    contract_version = int(cfg.actor.model.get("contract_version", 0))
+    assert contract_version in (4, 5), (
+        "Async LAMP residual supports only contract_version 4 or 5"
+    )
+    contract_name = f"v{contract_version}"
+    assert cfg.runner.get("execution_mode", "sync") == "async", (
+        f"LAMP residual contract {contract_name} requires runner.execution_mode=async"
+    )
+    assert not cfg.runner.get("enable_decoupled_mode", False), (
+        "Async lamp_residual_sac requires fixed env-to-rollout routing so every "
+        "action uses one exact global online-macro-transition count"
+    )
+    async_cfg = cfg.algorithm.get("async", None)
+    assert async_cfg is not None, (
+        "Async lamp_residual_sac requires an algorithm.async config"
+    )
+    assert async_cfg.get("max_learner_rounds_per_collector", None) is None, (
+        f"Residual {contract_name} derives optimizer updates from "
+        "algorithm.utd_ratio; "
+        "max_learner_rounds_per_collector is not supported"
+    )
+    pending_rounds = async_cfg.get("max_pending_collector_rounds", None)
+    assert (
+        isinstance(pending_rounds, int)
+        and not isinstance(pending_rounds, bool)
+        and pending_rounds > 0
+    ), "algorithm.async.max_pending_collector_rounds must be a positive integer"
+
+    utd_ratio = cfg.algorithm.get("utd_ratio", None)
+    assert (
+        isinstance(utd_ratio, (int, float))
+        and not isinstance(utd_ratio, bool)
+        and math.isfinite(float(utd_ratio))
+        and float(utd_ratio) > 0.0
+    ), "algorithm.utd_ratio must be a positive finite number"
+    learning_starts = cfg.algorithm.get("learning_starts_macro_transitions", None)
+    progressive_steps = cfg.algorithm.get("progressive_exploration_macro_steps", None)
+    assert (
+        isinstance(learning_starts, int)
+        and not isinstance(learning_starts, bool)
+        and learning_starts >= 0
+    ), "learning_starts_macro_transitions must be a non-negative integer"
+    assert (
+        isinstance(progressive_steps, int)
+        and not isinstance(progressive_steps, bool)
+        and progressive_steps > 0
+    ), "progressive_exploration_macro_steps must be a positive integer"
+    assert (
+        int(cfg.actor.model.get("learning_starts_macro_transitions", -1))
+        == learning_starts
+    ), "Actor and learner learning-start thresholds must match"
+    assert (
+        int(cfg.actor.model.get("progressive_exploration_macro_steps", -1))
+        == progressive_steps
+    ), "Actor and learner progressive-exploration schedules must match"
+
+    placement = cfg.cluster.component_placement
+    assert contract_version == 5 or placement.env == placement.rollout, (
+        f"Async LAMP residual {contract_name} requires identical env and rollout "
+        "placement"
+    )
+    assert int(cfg.rollout.pipeline_stage_num) == 1, (
+        f"Async LAMP residual {contract_name} exact transition counting requires "
+        "one rollout "
+        "pipeline stage"
+    )
+    assert not cfg.actor.get("enable_offload", False), (
+        "Actor offload is not supported by async lamp_residual_sac"
+    )
+    assert not cfg.rollout.get("enable_offload", False), (
+        "Rollout offload is not supported by async lamp_residual_sac"
+    )
+    assert not cfg.env.train.get("enable_offload", False), (
+        "Train env offload is not supported by async lamp_residual_sac"
+    )
+    assert not cfg.env.eval.get("enable_offload", False), (
+        "Eval env offload is not supported by async lamp_residual_sac"
+    )
+
+
+def validate_lamp_residual_contract_cfg(cfg: DictConfig, model_cfg: DictConfig) -> int:
+    """Validate the model-facing v4/v5 contract without initializing Ray."""
+
+    from rlinf.models.embodiment.lamp.robot_spec import (
+        dexjoco_robot_spec,
+        resolve_robot_spec,
+        validate_horizons,
+    )
+
+    contract_version = int(model_cfg.get("contract_version", 0))
+    assert contract_version in (4, 5), (
+        "LAMP residual supports only contract_version 4 or 5"
+    )
+    spec = resolve_robot_spec(model_cfg.get("robot_spec"))
+    assert model_cfg.get("action_dim") is not None, "LAMP requires explicit action_dim"
+    assert int(model_cfg.action_dim) == spec.action_dim
+    validate_horizons(model_cfg.action_horizon, model_cfg.num_action_chunks)
+    if contract_version == 4:
+        assert spec == dexjoco_robot_spec()
+        assert int(model_cfg.action_horizon) == 16
+        assert int(model_cfg.num_action_chunks) == 8, (
+            "LAMP residual exec8_v4 requires num_action_chunks=8"
+        )
+    else:
+        assert model_cfg.get("robot_spec") is not None, (
+            "v5 requires explicit robot_spec"
+        )
+    residual_application = model_cfg.get("residual_application", None)
+    base_use_temporal_ensemble = model_cfg.get("base_use_temporal_ensemble", None)
+    assert residual_application == "corrected_plan_crop", (
+        "LAMP residual v4 requires residual_application='corrected_plan_crop'"
+    )
+    assert base_use_temporal_ensemble is False, (
+        "LAMP residual v4 requires base temporal ensembling disabled"
+    )
+
+    assert model_cfg.get("actor_input", "condition") in (
+        "condition",
+        "pre_fusion",
+    )
+    assert model_cfg.get("critic_observation_input", None) in (
+        "condition",
+        "pre_fusion",
+    )
+    assert model_cfg.get("entropy_scope", None) == "decoder_causal"
+    assert tuple(model_cfg.get("actor_hidden_dims", ())) == (256, 256, 256)
+    assert float(model_cfg.get("log_std_min", 0.0)) == -20.0
+    assert float(model_cfg.get("log_std_max", 0.0)) == 2.0
+    assert float(model_cfg.get("init_log_std", 0.0)) == -9.0
+    return contract_version
+
+
 def validate_embodied_cfg(cfg):
     only_eval = (
         cfg.runner.get("only_eval", False)
@@ -824,6 +969,39 @@ def validate_embodied_cfg(cfg):
         f"Model type: '{model_cfg.model_type}' is not an embodied model. "
         f"Supported embodied models: {sorted([x.value for x in EMBODIED_MODEL])}."
     )
+    if model_type in (SupportedModel.LAMP_DP, SupportedModel.LAMP_RESIDUAL_SAC):
+        from rlinf.envs.lamp_adapter import validate_lamp_environment
+
+        validate_lamp_environment(
+            cfg.env.eval if only_eval else cfg.env.train, model_cfg
+        )
+        if model_type == SupportedModel.LAMP_RESIDUAL_SAC:
+            version = validate_lamp_residual_contract_cfg(cfg, model_cfg)
+            if not only_eval:
+                assert cfg.algorithm.loss_type == "embodied_sac"
+                assert int(model_cfg.num_q_heads) == 2
+                assert cfg.algorithm.get("agg_q", "min") == "min"
+                assert cfg.algorithm.entropy_tuning.alpha_type == "exp"
+                alpha = float(cfg.algorithm.entropy_tuning.initial_alpha)
+                assert math.isfinite(alpha) and alpha > 0, (
+                    "initial_alpha must be finite and positive"
+                )
+                assert float(cfg.algorithm.gamma) == 0.97
+                assert cfg.rollout.collect_transitions
+                demo = cfg.algorithm.get("demo_buffer")
+                if demo is not None:
+                    assert version == 5, "RLPD requires portable v5"
+                    assert float(cfg.algorithm.get("demo_fraction", 0.5)) == 0.5
+                    assert cfg.algorithm.actor_agg_q == "mean"
+                    assert cfg.algorithm.backup_entropy is False
+                    assert cfg.algorithm.critic_actor_ratio == 4
+                    assert cfg.algorithm.get("critic_subsample_size") is None
+                    assert cfg.actor.global_batch_size % 2 == 0
+                else:
+                    assert float(cfg.algorithm.get("demo_fraction", 0)) == 0
+                    assert cfg.algorithm.actor_agg_q == "min"
+                    assert cfg.algorithm.backup_entropy
+                validate_lamp_async_cfg(cfg)
     with open_dict(cfg):
         cfg.runner.val_check_interval = cfg.runner.get("val_check_interval", -1)
     enable_eval = cfg.runner.val_check_interval > 0 or only_eval
@@ -1004,6 +1182,51 @@ def validate_embodied_cfg(cfg):
             if cfg.env.get("eval", None) is not None
             else None
         )
+        dexjoco_tasks = {
+            "bimanual_assembly",
+            "bimanual_hanoi",
+            "bimanual_microwave_cook",
+            "bimanual_photograph",
+            "bimanual_unlock_ipad",
+            "click_mouse",
+            "fold_glasses",
+            "hammer_nail",
+            "pick_bucket",
+            "pinch_tongs",
+            "water_plant",
+        }
+        dexjoco_reserved_kwargs = {
+            "policy_mode",
+            "render_mode",
+            "randomize",
+            "randomize_dynamics",
+            "seed",
+        }
+        for split_name, env_type in (
+            ("train", train_env_type),
+            ("eval", eval_env_type),
+        ):
+            if env_type != SupportedEnvType.DEXJOCO:
+                continue
+            env_cfg = cfg.env.get(split_name)
+            task_name = str(env_cfg.get("task_name", ""))
+            assert task_name in dexjoco_tasks, (
+                f"env.{split_name}.task_name must be an official DexJoCo task, "
+                f"got {task_name!r}"
+            )
+            env_kwargs = env_cfg.get("env_kwargs", {}) or {}
+            invalid_kwargs = sorted(dexjoco_reserved_kwargs.intersection(env_kwargs))
+            assert not invalid_kwargs, (
+                f"env.{split_name}.env_kwargs cannot override adapter-owned "
+                f"fields: {invalid_kwargs}"
+            )
+            assert not env_cfg.get("use_fixed_reset_state_ids", False), (
+                f"env.{split_name}.use_fixed_reset_state_ids is unsupported for DexJoCo"
+            )
+            assert not env_cfg.get("use_ordered_reset_state_ids", False), (
+                f"env.{split_name}.use_ordered_reset_state_ids is unsupported for "
+                "DexJoCo"
+            )
         if (
             train_env_type == SupportedEnvType.MANISKILL
             or eval_env_type == SupportedEnvType.MANISKILL

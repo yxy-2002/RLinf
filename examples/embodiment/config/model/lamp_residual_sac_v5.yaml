@@ -1,0 +1,9 @@
+# Supply a complete LampRobotSpec and its command width for the chosen adapter.
+defaults:
+  - lamp_residual_sac
+  - _self_
+contract_version: 5
+robot_spec: ???
+action_dim: null  # Override the inherited width; validated against robot_spec.
+action_horizon: 16
+num_action_chunks: 8

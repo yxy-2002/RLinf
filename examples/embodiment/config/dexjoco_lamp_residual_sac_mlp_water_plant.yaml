@@ -1,0 +1,20 @@
+defaults:
+- env/dexjoco_water_plant@env.train
+- env/dexjoco_water_plant@env.eval
+- dexjoco_lamp_residual_sac
+- _self_
+runner:
+  logger:
+    experiment_name: dexjoco_lamp_residual_sac_mlp_water_plant
+actor:
+  model:
+    model_path: ./outputs/lamp_dp_rerun/dexjoco_lamp_dp_il_mlp_water_plant/artifact
+    hand_prior:
+      type: mlp
+env:
+  train:
+    lamp_history_contract: primitive_v1
+    lamp_history_length: 8
+  eval:
+    lamp_history_contract: primitive_v1
+    lamp_history_length: 8

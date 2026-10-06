@@ -1,0 +1,9 @@
+defaults:
+  - dexjoco_base
+  - _self_
+
+task_name: hammer_nail
+task_description: Use the hammer to drive the nail into the wooden board.
+camera_mapping:
+  base: front
+  wrist: wrist

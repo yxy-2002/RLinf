@@ -27,7 +27,11 @@ from rlinf.utils.distributed import ScopedTimer
 from rlinf.utils.logging import get_logger
 from rlinf.utils.metric_logger import MetricLogger
 from rlinf.utils.metric_utils import compute_evaluate_metrics, print_metrics_table
-from rlinf.utils.runner_utils import check_progress
+from rlinf.utils.runner_utils import (
+    check_progress,
+    resolve_save_interval,
+    resolve_training_horizon,
+)
 
 
 class OfflineRunner:
@@ -39,11 +43,13 @@ class OfflineRunner:
         actor: Any,
         env: Any | None,
         rollout: Any | None,
+        steps_per_epoch: int | None = None,
     ):
         self.cfg = cfg
         self.actor = actor
         self.env = env
         self.rollout = rollout
+        self._runtime_steps_per_epoch = steps_per_epoch
 
         # Embodied-style eval channels (env <-> rollout)
         self.env_channel = Channel.create("Env")
@@ -200,6 +206,19 @@ class OfflineRunner:
             if values
         }
 
+    @staticmethod
+    def _training_metric_namespaces(metrics: dict) -> dict:
+        """Add ``train/`` while preserving worker-owned standard namespaces."""
+
+        return {
+            (
+                key
+                if key.startswith(("validation/", "data/", "time/"))
+                else f"train/{key}"
+            ): value
+            for key, value in metrics.items()
+        }
+
     def _process_ranked_numeric_results(
         self, results: list[dict], metric_field: str
     ) -> tuple[dict, list[dict]]:
@@ -251,6 +270,19 @@ class OfflineRunner:
         return aggregated_metrics, ranked_metrics_list
 
     def run(self):
+        if bool(self.cfg.runner.get("export_only", False)):
+            resume_dir = self.cfg.runner.get("resume_dir", None)
+            if resume_dir is None:
+                raise ValueError("runner.export_only requires runner.resume_dir")
+            actor_checkpoint_path = os.path.join(str(resume_dir), "actor")
+            self.logger.info(
+                "Exporting deployment artifacts from %s without training.",
+                actor_checkpoint_path,
+            )
+            self.actor.export_deployment_artifacts(actor_checkpoint_path).wait()
+            self._finish_logging()
+            return
+
         start_step = self.global_step
         start_time = time.time()
         log_interval = int(self.cfg.runner.log_interval)
@@ -302,7 +334,7 @@ class OfflineRunner:
                 self.global_step,
                 self.max_steps,
                 self.cfg.runner.val_check_interval,
-                self.cfg.runner.save_interval,
+                self.save_interval,
                 1.0,
                 run_time_exceeded=False,
             )
@@ -324,16 +356,20 @@ class OfflineRunner:
             time_metrics.update(
                 {f"time/actor/{k}": v for k, v in actor_time_metrics_agg.items()}
             )
-            training_metrics = {f"train/{k}": v for k, v in metrics.items()}
+            training_metrics = self._training_metric_namespaces(metrics)
 
             if _step == start_step + 1 or _step % log_interval == 0:
                 self.metric_logger.log(time_metrics, _step)
                 self.metric_logger.log(training_metrics, _step)
                 self._log_ranked_metrics(
-                    metrics_list=actor_training_metrics_per_rank,
+                    metrics_list=[
+                        self._training_metric_namespaces(rank_metrics)
+                        for rank_metrics in actor_training_metrics_per_rank
+                    ],
                     step=_step,
                     prefix="train",
                     worker_group_name=self.actor.worker_group_name,
+                    add_prefix=False,
                 )
                 self._log_ranked_metrics(
                     metrics_list=actor_time_metrics_per_rank,
@@ -348,9 +384,10 @@ class OfflineRunner:
                     _step - 1, self.max_steps, start_time, logging_metrics, start_step
                 )
 
-        self.metric_logger.finish()
+        self._finish_logging()
 
-        # Stop logging thread
+    def _finish_logging(self):
+        self.metric_logger.finish()
         self.stop_logging = True
         self.log_queue.join()  # Wait for all queued logs to be processed
         self.log_thread.join(timeout=1.0)
@@ -367,11 +404,12 @@ class OfflineRunner:
         self.actor.save_checkpoint(actor_save_path, self.global_step).wait()
 
     def set_max_steps(self):
-        self.num_steps_per_epoch = 1
-        self.max_steps = self.num_steps_per_epoch * self.cfg.runner.max_epochs
-
-        if (max_steps := self.cfg.runner.get("max_steps", -1)) >= 0:
-            self.max_steps = min(self.max_steps, max_steps)
+        self.num_steps_per_epoch, self.max_steps = resolve_training_horizon(
+            self.cfg.runner, steps_per_epoch=self._runtime_steps_per_epoch
+        )
+        self.save_interval = resolve_save_interval(
+            self.cfg.runner, steps_per_epoch=self.num_steps_per_epoch
+        )
 
     @property
     def epoch(self):

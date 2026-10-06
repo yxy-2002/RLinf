@@ -1,0 +1,9 @@
+defaults:
+  - dexjoco_base
+  - _self_
+
+task_name: pinch_tongs
+task_description: Grasp the tongs and perform three consecutive open-close motions.
+camera_mapping:
+  base: front
+  wrist: wrist

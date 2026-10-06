@@ -1,0 +1,10 @@
+model_type: lamp_dp
+is_lora: false
+model_path: ""
+precision: "32"
+action_dim: 23
+num_action_chunks: 4
+temporal_ensemble_decay: 0.25
+use_temporal_ensemble: true
+execution_horizon_override: null
+num_inference_steps_override: null

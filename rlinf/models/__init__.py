@@ -91,6 +91,18 @@ def _register_builtin_models():
 
         return get_model(cfg, torch_dtype)
 
+    def _build_lamp_policy(cfg: DictConfig, torch_dtype):
+        from rlinf.models.embodiment.lamp import get_model
+        from rlinf.models.embodiment.lamp.rollout import configure_rollout_policy
+
+        return configure_rollout_policy(get_model(cfg, torch_dtype))
+
+    def _build_lamp_residual_policy(cfg: DictConfig, torch_dtype):
+        from rlinf.models.embodiment.lamp import get_residual_model
+        from rlinf.models.embodiment.lamp.rollout import configure_rollout_policy
+
+        return configure_rollout_policy(get_residual_model(cfg, torch_dtype))
+
     def _build_lingbotvla(cfg: DictConfig, torch_dtype):
         from rlinf.models.embodiment.lingbotvla import get_model
 
@@ -182,6 +194,18 @@ def _register_builtin_models():
     register_model(
         SupportedModel.FLOW_POLICY.value,
         _build_flow_policy,
+        category="embodied",
+        force=True,
+    )
+    register_model(
+        SupportedModel.LAMP_DP.value,
+        _build_lamp_policy,
+        category="embodied",
+        force=True,
+    )
+    register_model(
+        SupportedModel.LAMP_RESIDUAL_SAC.value,
+        _build_lamp_residual_policy,
         category="embodied",
         force=True,
     )

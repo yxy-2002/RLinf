@@ -1,0 +1,9 @@
+defaults:
+  - dexjoco_base
+  - _self_
+
+task_name: click_mouse
+task_description: Move the mouse to the purple mouse pad and click the left mouse button.
+camera_mapping:
+  base: ego_right
+  wrist: wrist
