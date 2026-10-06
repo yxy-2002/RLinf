@@ -142,6 +142,115 @@ mapping 和生成的 ``retargeting.scale_file``。标定结束后才能让采集
 demo 动作记录驱动平滑之前接受的目标。采集器沿用原有数据格式，
 不增加末端专用元数据或目录检查。
 
+Wuji 观测额外保存 ``hand_state_normalized``，为按手指、关节顺序排列的
+20 维 float32 归一化值。它与 ``states[..., :20]`` 使用同一份实测弧度，
+按控制端 URDF 限位计算 ``clip((q - lower) / (upper - lower), 0, 1)``，
+不使用任务专属 retargeting 限位。原有 38 维 ``states`` 和记录的 ``actions``
+保持不变。该字段表示实测姿态，不是异步下发的目标；保存在 ``demos/*.pt`` 的
+``curr_obs``、``next_obs`` 中，以及 ``collected_data/*.pkl`` 的每个
+``observations`` 条目中。
+
+Wuji/LAMP 机械臂模型输入仅使用 ``states[..., 23:29]``：相对 reset 位姿的
+三维末端位置和三维 XYZ 欧拉角。DP 每次使用两帧，``arm_state_pair`` 形状为
+``[B,2,6]``，由状态 MLP 展平为 12 维。力、力矩和速度仍保存在原始 38 维记录中，
+不参与模型输入。离线训练、在线 rollout 和 replay 使用同一提取逻辑。机器人契约
+使用 ``arm_state_dim: 6`` 和 ``arm_state_semantics: relative_reset_xyz_euler_v1``；
+原来采用 18 维机械臂状态的 artifact 需要重新训练，缓存指纹会自动更新。
+
+所有 Wuji/LAMP 模型侧手部 state 统一使用 ``hand_state_normalized``，包括
+prior condition、DP 普通状态输入、rollout 历史和离线 replay。原有训练集
+均值/标准差标准化步骤保持不变，统计量改为基于归一化实测状态计算。未来动作
+目标仍是 ``actions[..., 6:26]``。原始弧度保留在记录的 ``states`` 中供追溯，
+硬件控制内部仍使用弧度。机器人契约声明为
+``hand_state_semantics: measured_joint_positions_normalized_0_1``；旧弧度缓存和
+artifact 与此契约不兼容，需要生成新缓存并重新训练 prior/DP。归一化字段缺失
+时会提示迁移数据，不会静默回退到弧度输入。
+
+以下 stack-cube 训练配置默认读取现有
+``logs/20261006-082710-wuji_demo_data_stack_cube/demos``。在仓库根目录运行；
+若使用其他已迁移数据，可覆盖 ``data.dataset_root``。LSTM 使用长度 8 的
+20 维归一化状态历史，每个未来时刻对应 2 维 latent；PCA 一次拟合 2 个主成分；
+VQ 使用两级各 4 项的量化器，导出 16 个手动作。MLP 没有独立 prior，直接训练
+DP，默认读取 ``pretrained_models/resnet-18`` 中的本地权重。
+
+.. code-block:: bash
+
+   bash scripts/train_wuji_lamp_prior_lamplstm_film.sh
+   bash scripts/train_wuji_lamp_prior_lamplstm_none.sh
+   bash scripts/train_wuji_lamp_prior_pca.sh
+   bash scripts/train_wuji_lamp_prior_vq.sh
+   bash scripts/train_wuji_lamp_dp_mlp.sh
+
+配置继承 ``realworld_lamp_il.yaml`` 中的双节点 Ray 布局。Rank 0 为机器人
+CPU 主机（``192.168.10.10``、``enp3s0``）；actor 放在 rank 1 的
+``training_gpu`` 组内 GPU 0（``192.168.10.11``、``enp5s0``）。在 rank 1
+使用 ``openvla`` 环境启动。配置显式指定各节点的 Python 解释器和通信网卡，
+不会实例化机器人环境。日志使用 TensorBoard。LSTM prior 训练 20,000
+次更新，对应 DP 训练 40,000 次；VQ prior 和 PCA/VQ/MLP DP 训练 30,000 次，
+PCA 执行一次拟合和导出。Artifact
+导出到 ``outputs/<config_name>/artifact``。Film 和 none 使用不同的实验名称，
+对应 DP 配置自动选择各自 prior artifact；VQ 的标量索引使用 ``latent_dim: 1``。
+
+使用 ``scripts/train_wuji_lamp.sh VARIANT STAGE`` 选择 ``lamplstm_film``、
+``lamplstm_none``、``pca``、``vq``、``mlp`` 或 ``all``，阶段可选 ``prior``、
+``dp`` 或 ``both``。``both`` 先训练 prior 再训练 DP，MLP 只运行 DP。
+``scripts/train_wuji_lamp_all.sh`` 顺序执行全部九项训练，任何一项失败都会停止，
+不会并行占用 GPU。使用 ``--dry-run`` 预览命令。无论从哪里调用，路径均相对于
+仓库根目录解析。
+
+.. code-block:: bash
+
+   bash scripts/train_wuji_lamp_all.sh --dry-run
+   bash scripts/train_wuji_lamp_all.sh
+   bash scripts/train_wuji_lamp.sh lamplstm_film both
+   bash scripts/train_wuji_lamp_dp_lamplstm_film.sh
+   bash scripts/train_wuji_lamp_dp_lamplstm_none.sh
+   bash scripts/train_wuji_lamp_dp_pca.sh
+   bash scripts/train_wuji_lamp_dp_vq.sh
+
+通过 ``DATASET_ROOT``、``OUTPUT_ROOT``、``RESNET_PATH`` 覆盖路径，通过
+``PYTHON_BIN`` 选择训练解释器。``PRIOR_ARTIFACT`` 仅用于单个变体的 ``dp`` 阶段，
+指定已有 artifact。额外的 Hydra 覆盖参数在 ``both`` 模式下会传给两个阶段。
+Prior 和 DP 应保持相同数据集及历史配置。例如：
+
+.. code-block:: bash
+
+   OUTPUT_ROOT=/path/to/results bash scripts/train_wuji_lamp.sh pca both
+   bash scripts/train_wuji_lamp_dp_mlp.sh actor.micro_batch_size=32
+
+DP 训练更新两路 ResNet-18、两个状态 MLP、观测融合网络和扩散 U-Net。
+ResNet 学习率乘以 ``actor.optim.backbone_lr_ratio``（LSTM DP 为 0.1，PCA/VQ/MLP DP 为 0.03），其他参数使用
+基础学习率。预训练 LSTM prior 冻结；PCA 基和 VQ 码本为固定 buffer。
+MLP DP 没有独立的冻结手部 prior。
+
+训练超参数对齐对应的 DexJoCo water-plant 配置。LSTM 历史长度为 8，预测长度
+为 16，condition dropout 为 0.1，batch size 为 512。Prior 学习率为 5e-5；
+对应 DP 学习率为 6e-5，warmup 为 1,000 步。PCA/VQ/MLP DP 的 batch size
+为 512，学习率为 1e-4，weight decay 为 1e-3，warmup 为 1,000 步；这三种
+DP 每个 chunk 执行 4 个动作，LSTM DP 执行 8 个。DataLoader 和编译设置也
+与对应仿真配置一致。Wuji 保留 20 维归一化手部状态和 6 维 EE pose；none
+变体关闭 LSTM 编码器和解码器的历史条件。
+
+历史长度 8 会生成不同指纹的缓存，需要重新训练 prior 和 DP，不应恢复历史长度
+16 的 checkpoint。使用独立输出目录保留之前的训练结果：
+
+.. code-block:: bash
+
+   OUTPUT_ROOT=./outputs/wuji_sim_aligned bash scripts/train_wuji_lamp_all.sh
+
+缓存样本先分配独立的可写数组，再从只读 mmap 复制，绕开触发
+``WRITEBACKIFCOPY base is read-only`` 的 ``np.array(..., copy=True)`` 转换路径。
+无需修改 NumPy 环境，也不会将缓存改为可写。
+
+无需重新采集即可更新已有的可信 Wuji 数据。在仓库根目录运行以下命令，
+并选择采集时使用的手侧。备份目录必须尚不存在。工具先完整备份运行目录，
+然后逐文件检查所有原有字段保持不变，再原子替换文件：
+
+.. code-block:: bash
+
+   PYTHONPATH=third_party/rlinf-dexhand:$PYTHONPATH python -m toolkits.dexhand.normalize_demo_hand_state \
+     --data-dir /path/to/run --backup-dir /path/to/run_before_normalization --side left
+
 通过 ``env.eval.glove_config.scale_file=/absolute/path/operator_scale.yaml``
 可按操作员覆盖 pipeline 的 scale 路径；``null`` 使用 pipeline 原值。相对路径
 以 pipeline YAML 所在目录为基准，建议使用控制节点可读的绝对路径。覆盖文件

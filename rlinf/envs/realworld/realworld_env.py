@@ -247,6 +247,14 @@ class RealWorldEnv(gym.Env):
         full_states = np.concatenate([state[k] for k in sorted(state)], axis=-1)
         obs["states"] = full_states
 
+        if self.override_cfg.get("end_effector_type") == "wuji_hand":
+            from rlinf.utils.wuji_observation import normalize_wuji_hand_state
+
+            side = self.override_cfg.get("end_effector_config", {}).get("side", "left")
+            obs["hand_state_normalized"] = normalize_wuji_hand_state(
+                state["hand_position"], side
+            )
+
         frames = raw_obs["frames"]
         if self.main_image_key not in frames:
             raise KeyError(

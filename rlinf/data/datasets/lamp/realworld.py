@@ -18,7 +18,7 @@ import torch.nn.functional as F
 from rlinf.data.datasets.lamp.offline_dataset import LampFrameData, LampSourceMetadata
 from rlinf.models.embodiment.lamp.robot_spec import LampRobotSpec
 
-CONVERSION_VERSION = 1
+CONVERSION_VERSION = 3
 
 
 def wuji_robot_spec() -> LampRobotSpec:
@@ -29,25 +29,22 @@ def wuji_robot_spec() -> LampRobotSpec:
         for joint in range(1, 5)
     )
     arm_names = (
-        *(f"tcp_force_{axis}" for axis in "xyz"),
         *(f"relative_tcp_position_{axis}" for axis in "xyz"),
         *(f"relative_tcp_euler_{axis}" for axis in "xyz"),
-        *(f"tcp_torque_{axis}" for axis in "xyz"),
-        *(f"body_tcp_velocity_{axis}" for axis in ("x", "y", "z", "rx", "ry", "rz")),
     )
     return LampRobotSpec(
         name="franka_wuji_left_relative_frame_v1",
         arm_action_dim=6,
         hand_action_dim=20,
-        arm_state_dim=18,
+        arm_state_dim=6,
         hand_state_dim=20,
         action_representation="incremental",
         action_frame="realworld_relative_frame_pre_step_adjoint_v1",
         arm_action_units=("scaled_translation_0.07",) * 3 + ("scaled_euler_0.5",) * 3,
         hand_action_units=("normalized_0_1",) * 20,
         hand_action_names=joints,
-        arm_state_semantics="force_relative_reset_xyz_euler_torque_body_velocity_v1",
-        hand_state_semantics="measured_joint_positions_rad",
+        arm_state_semantics="relative_reset_xyz_euler_v1",
+        hand_state_semantics="measured_joint_positions_normalized_0_1",
         arm_state_names=arm_names,
         hand_state_names=joints,
         hand_action_low=(0.0,) * 20,
@@ -56,11 +53,27 @@ def wuji_robot_spec() -> LampRobotSpec:
 
 
 def measured_states(observation: dict) -> tuple[torch.Tensor, torch.Tensor]:
-    """Extract independently measured arm and hand states from a batched frame."""
+    """Extract 6-D EE pose and normalized measured hand state for all LAMP paths.
+
+    Raw ``states[:, :20]`` remains radians in recorded files for provenance;
+    model inputs always use the explicit measured ``hand_state_normalized``.
+    Arm inputs select ``states[:, 23:29]``: reset-relative XYZ and XYZ Euler
+    angles. Recorded force, torque and velocity remain available in the file.
+    """
     states = torch.as_tensor(observation["states"], dtype=torch.float32)
     if states.ndim != 2 or states.shape[-1] != 38 or not states.isfinite().all():
         raise ValueError("Recorded Wuji states must be finite [B,38] tensors")
-    return states[:, 20:38], states[:, :20]
+    if "hand_state_normalized" not in observation:
+        raise ValueError(
+            "Wuji model observations require hand_state_normalized; "
+            "migrate demos with toolkits.dexhand.normalize_demo_hand_state"
+        )
+    hand = torch.as_tensor(observation["hand_state_normalized"], dtype=torch.float32)
+    if hand.shape != (states.shape[0], 20) or not hand.isfinite().all():
+        raise ValueError("Wuji hand_state_normalized must be finite [B,20]")
+    if ((hand < 0) | (hand > 1)).any():
+        raise ValueError("Wuji hand_state_normalized must be in [0,1]")
+    return states[:, 23:29], hand
 
 
 def camera_slots(observation: dict) -> dict[str, torch.Tensor]:
@@ -98,6 +111,7 @@ class RealWorldTrajectorySource:
             "version": CONVERSION_VERSION,
             "period_seconds": 0.1,
             "label": "recorded_end_step_hand_snapshot",
+            "hand_state": "hand_state_normalized_urdf_0_1_v1",
             "robot_spec": self.spec.to_dict(),
             "cameras": ["extra_view_images[0]", "main_images"],
         }
@@ -131,7 +145,16 @@ class RealWorldTrajectorySource:
                 obs = payload[key]
                 if obs["states"].shape != (length, 1, 38):
                     raise ValueError(f"{path.name}: malformed {key} states")
-                measured_states({"states": obs["states"][:, 0]})
+                if "hand_state_normalized" not in obs:
+                    raise ValueError(
+                        f"{path.name}: missing hand_state_normalized; "
+                        "migrate demos with toolkits.dexhand.normalize_demo_hand_state"
+                    )
+                if obs["hand_state_normalized"].shape != (length, 1, 20):
+                    raise ValueError(
+                        f"{path.name}: malformed {key} hand_state_normalized"
+                    )
+                measured_states({k: v[:, 0] for k, v in obs.items()})
                 camera_slots({k: v[:, 0] for k, v in obs.items()})
             for key in ("rewards", "terminations", "truncations", "dones"):
                 if payload[key].shape != (length, 1, 1):
@@ -146,7 +169,12 @@ class RealWorldTrajectorySource:
                 raise ValueError(f"{path.name}: nonfinite rewards")
             if not torch.equal(actions, payload["forward_inputs"]["action"]):
                 raise ValueError(f"{path.name}: conflicting recorded action fields")
-            for key in ("states", "main_images", "extra_view_images"):
+            for key in (
+                "states",
+                "hand_state_normalized",
+                "main_images",
+                "extra_view_images",
+            ):
                 if not torch.equal(
                     payload["next_obs"][key][:-1], payload["curr_obs"][key][1:]
                 ):
@@ -159,7 +187,7 @@ class RealWorldTrajectorySource:
             episodes, arms, hands, actions = [], [], [], []
             for episode, trajectory in self.trajectories():
                 arm, hand = measured_states(
-                    {"states": trajectory["curr_obs"]["states"][:, 0]}
+                    {key: value[:, 0] for key, value in trajectory["curr_obs"].items()}
                 )
                 episodes.append(np.full(len(arm), episode, dtype=np.int64))
                 arms.append(arm.numpy().copy())

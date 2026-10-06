@@ -253,7 +253,12 @@ class LampMMapDataset(Dataset):
     def __getitem__(self, index: int) -> dict[str, torch.Tensor]:
         result = {}
         for key, array in self._open_arrays().items():
-            value = np.array(array[index], copy=True)
+            # Allocate the writable destination explicitly. Keep the mmap source
+            # read-only and bypass the np.array conversion path implicated in
+            # WRITEBACKIFCOPY errors when reading the training cache.
+            source = np.asarray(array[index])
+            value = np.empty(source.shape, dtype=source.dtype)
+            np.copyto(value, source, casting="no")
             result[key] = torch.from_numpy(value)
         return result
 

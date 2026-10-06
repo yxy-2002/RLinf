@@ -258,3 +258,47 @@ def test_right_button_process_snapshot_controls_intervention(labels_only):
     assert info["right"] and not info["left"]
     assert ("intervene_action" in info) != labels_only
     np.testing.assert_allclose(info["executed_action"][6:], 0.4)
+
+
+@pytest.mark.parametrize("hand_type", ["wuji_hand", "ruiyan_hand"])
+def test_wrapped_wuji_observation_preserves_state_and_adds_measured_posture(hand_type):
+    from collections import OrderedDict
+
+    import torch
+
+    from rlinf.utils.wuji_observation import normalize_wuji_hand_state
+
+    methods = load_methods(
+        "rlinf/envs/realworld/realworld_env.py",
+        "RealWorldEnv",
+        {"_wrap_obs"},
+        np=np,
+        OrderedDict=OrderedDict,
+        to_tensor=lambda obs: {k: torch.as_tensor(v) for k, v in obs.items()},
+    )
+    env = SimpleNamespace(
+        override_cfg={
+            "end_effector_type": hand_type,
+            "end_effector_config": {"side": "left"},
+        },
+        main_image_key="wrist",
+        task_descriptions=["stack cube"],
+    )
+    hand = np.full((1, 20 if hand_type == "wuji_hand" else 6), 0.2, np.float32)
+    state = {"hand_position": hand, "tcp_pose": np.zeros((1, 6), np.float32)}
+    result = methods["_wrap_obs"](
+        env,
+        {
+            "state": state,
+            "frames": {"wrist": np.zeros((1, 2, 2, 3), np.uint8)},
+        },
+    )
+    np.testing.assert_array_equal(
+        result["states"], np.concatenate(list(state.values()), axis=-1)
+    )
+    if hand_type == "wuji_hand":
+        np.testing.assert_array_equal(
+            result["hand_state_normalized"], normalize_wuji_hand_state(hand)
+        )
+    else:
+        assert "hand_state_normalized" not in result

@@ -150,6 +150,129 @@ the existing Euler wrapper gives 38 flattened state values. Actions saved in
 demos are the accepted targets before driver smoothing. The collectors use the
 existing data formats without end-effector-specific metadata or directory checks.
 
+Wuji observations additionally contain ``hand_state_normalized`` (float32,
+20 values in finger-major joint order). It is calculated from the same measured
+radians as ``states[..., :20]`` using
+``clip((q - lower) / (upper - lower), 0, 1)`` with the controller's URDF limits,
+not task-specific retargeting limits. The 38-D ``states`` and recorded ``actions``
+are unchanged. This field describes measured posture, not the asynchronous
+command target. It is saved in both ``curr_obs`` and ``next_obs`` in ``demos/*.pt``,
+and in each ``observations`` entry in ``collected_data/*.pkl``.
+
+Wuji/LAMP arm model inputs use only ``states[..., 23:29]``: three reset-relative
+EE position coordinates followed by three XYZ Euler angles. Each DP observation
+contains two frames, ``arm_state_pair`` with shape ``[B,2,6]``, flattened to 12
+values by the state MLP. Force, torque and velocity remain in the original 38-D
+recording but are excluded from model inputs. Offline training, online rollout
+and replay use the same extraction. The robot contract uses ``arm_state_dim: 6``
+and ``arm_state_semantics: relative_reset_xyz_euler_v1``; previous 18-D arm-state
+artifacts require retraining. Cache fingerprints change automatically.
+
+All Wuji/LAMP model-side hand states use ``hand_state_normalized``: prior
+conditions, ordinary DP state inputs, rollout histories and offline replay.
+The existing training-set mean/std standardization still applies, now fitted on
+normalized measured states. Future action targets remain ``actions[..., 6:26]``.
+Raw radians are retained in recorded ``states`` for provenance and hardware
+control only. The robot contract declares
+``hand_state_semantics: measured_joint_positions_normalized_0_1``; old
+radians-based caches and artifacts are incompatible with this contract. Generate
+new caches and retrain prior/DP models. Missing normalized fields fail with a
+migration instruction instead of silently using radians.
+
+The stack-cube training configs below use the existing
+``logs/20261006-082710-wuji_demo_data_stack_cube/demos`` directory. Run from the
+repository root; override ``data.dataset_root`` for another migrated dataset.
+LSTM uses a 20-D normalized state history of length 8 and a 2-D latent per
+future step. PCA fits two components once. VQ uses two 4-entry quantizers and
+exports 16 hand actions. MLP has no standalone prior and trains DP directly;
+the default checkpoint is ``pretrained_models/resnet-18``.
+
+.. code-block:: bash
+
+   bash scripts/train_wuji_lamp_prior_lamplstm_film.sh
+   bash scripts/train_wuji_lamp_prior_lamplstm_none.sh
+   bash scripts/train_wuji_lamp_prior_pca.sh
+   bash scripts/train_wuji_lamp_prior_vq.sh
+   bash scripts/train_wuji_lamp_dp_mlp.sh
+
+The configs inherit the two-node Ray layout in ``realworld_lamp_il.yaml``.
+Rank 0 is the CPU robot host (``192.168.10.10``, ``enp3s0``); actor training
+uses GPU 0 in the ``training_gpu`` group on rank 1 (``192.168.10.11``,
+``enp5s0``). Launch from rank 1 using its ``openvla`` environment. Node-specific
+Python interpreters and communication interfaces are configured explicitly.
+No robot environment is instantiated. Logging uses TensorBoard.
+LSTM priors train for 20,000 updates; their DP policies train for 40,000.
+VQ prior and PCA/VQ/MLP DP train for 30,000 updates. PCA uses one fit/export step. Artifacts are exported to
+``outputs/<config_name>/artifact``. Film and none use separate experiment names.
+The corresponding DP configs automatically select their prior artifact paths;
+VQ uses ``latent_dim: 1`` for the scalar code index.
+
+Use ``scripts/train_wuji_lamp.sh VARIANT STAGE`` to select ``lamplstm_film``,
+``lamplstm_none``, ``pca``, ``vq``, ``mlp`` or ``all`` and a stage of ``prior``,
+``dp`` or ``both``. ``both`` runs prior training before DP; MLP runs only DP.
+``scripts/train_wuji_lamp_all.sh`` runs all nine jobs sequentially, stopping on
+any failure. It does not start parallel GPU jobs. Preview commands with
+``--dry-run``. Paths are resolved from the repository root, regardless of the
+caller's working directory.
+
+.. code-block:: bash
+
+   bash scripts/train_wuji_lamp_all.sh --dry-run
+   bash scripts/train_wuji_lamp_all.sh
+   bash scripts/train_wuji_lamp.sh lamplstm_film both
+   bash scripts/train_wuji_lamp_dp_lamplstm_film.sh
+   bash scripts/train_wuji_lamp_dp_lamplstm_none.sh
+   bash scripts/train_wuji_lamp_dp_pca.sh
+   bash scripts/train_wuji_lamp_dp_vq.sh
+
+Override paths with ``DATASET_ROOT``, ``OUTPUT_ROOT`` and ``RESNET_PATH``;
+select the active training interpreter with ``PYTHON_BIN``. ``PRIOR_ARTIFACT``
+selects an existing artifact only for a single-variant ``dp`` run. Extra Hydra
+overrides apply to both stages in a ``both`` run. Keep the same dataset and
+history settings between prior and DP. For example:
+
+.. code-block:: bash
+
+   OUTPUT_ROOT=/path/to/results bash scripts/train_wuji_lamp.sh pca both
+   bash scripts/train_wuji_lamp_dp_mlp.sh actor.micro_batch_size=32
+
+DP training updates both ResNet-18 backbones, both state MLPs, the observation
+fusion network and the diffusion U-Net. Backbone learning rate is multiplied
+by ``actor.optim.backbone_lr_ratio`` (0.1 for LSTM DP, 0.03 for PCA/VQ/MLP
+DP); other parameters use the base learning rate. The pretrained LSTM prior is frozen; PCA bases and VQ
+codebooks are fixed buffers. MLP DP has no separate frozen hand prior.
+
+Training hyperparameters match the corresponding DexJoCo water-plant configs.
+LSTM uses history length 8, future horizon 16, condition dropout 0.1, and
+batch size 512. Its prior learning rate is 5e-5; DP uses 6e-5 with 1,000
+warmup steps. PCA/VQ/MLP DP uses batch size 512, learning rate 1e-4,
+weight decay 1e-3, and 1,000 warmup steps. These three DP variants execute
+4 actions per chunk; LSTM DP executes 8. DataLoader and compilation settings
+also follow their respective simulation configs. Wuji keeps its 20-D normalized
+hand state and 6-D EE pose. The none variant disables both LSTM condition paths.
+
+History length 8 produces a separate cache fingerprint. Retrain priors and DP;
+do not resume history-length-16 checkpoints. Keep previous outputs by using:
+
+.. code-block:: bash
+
+   OUTPUT_ROOT=./outputs/wuji_sim_aligned bash scripts/train_wuji_lamp_all.sh
+
+Cache samples are copied into independently allocated writable arrays while the
+mmap source remains read-only. This avoids the ``np.array(..., copy=True)``
+conversion path implicated in ``WRITEBACKIFCOPY base is read-only`` errors,
+without changing NumPy or making the cache writable.
+
+To update an existing trusted Wuji run without collecting new data, run from the
+repository root (select the recorded hand side). The backup directory must not
+already exist. The tool backs up the complete run, then verifies preservation of
+all original fields before atomically replacing each file:
+
+.. code-block:: bash
+
+   PYTHONPATH=third_party/rlinf-dexhand:$PYTHONPATH python -m toolkits.dexhand.normalize_demo_hand_state \
+     --data-dir /path/to/run --backup-dir /path/to/run_before_normalization --side left
+
 Use ``env.eval.glove_config.scale_file=/absolute/path/operator_scale.yaml``
 to select an operator's scale file; ``null`` keeps the pipeline value. Relative
 paths are resolved against the pipeline YAML directory. Prefer an absolute path

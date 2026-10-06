@@ -22,11 +22,21 @@ from rlinf.envs.lamp_realworld_adapter import RealWorldLampAdapter
 def raw_episode(length=7):
     values = torch.arange(length + 1, dtype=torch.float32)
     states = values[:, None, None].expand(-1, 1, 38).clone()
+    states[..., 20:] += torch.arange(18, dtype=torch.float32)
     wrist = (
         values.to(torch.uint8)[:, None, None, None, None].expand(-1, 1, 8, 8, 3).clone()
     )
     extra = (wrist + 40)[:, :, None]
-    obs = {"states": states, "main_images": wrist, "extra_view_images": extra}
+    from rlinf.utils.wuji_observation import normalize_wuji_hand_state
+
+    obs = {
+        "states": states,
+        "main_images": wrist,
+        "extra_view_images": extra,
+        "hand_state_normalized": torch.from_numpy(
+            normalize_wuji_hand_state(states[..., :20].numpy())
+        ),
+    }
     actions = (
         torch.arange(length * 26, dtype=torch.float32).reshape(length, 1, 26) / 1000
     )
@@ -68,7 +78,7 @@ def test_reader_and_macro_terminal_observation(tmp_path):
     source = RealWorldTrajectorySource(tmp_path)
     frames = source.load_frames()
     np.testing.assert_array_equal(frames.action, raw["actions"][:, 0].numpy())
-    assert frames.arm_state.shape == (7, 18)
+    assert frames.arm_state.shape == (7, 6)
     images = source.images_for(np.array([3, 0, 3]), 8, label="test")
     assert images["front"][:, 0, 0, 0].tolist() == [43, 40, 43]
     assert images["wrist"][:, 0, 0, 0].tolist() == [3, 0, 3]
@@ -78,8 +88,16 @@ def test_reader_and_macro_terminal_observation(tmp_path):
         [True] * 3 + [False],
     ]
     assert not traj.forward_inputs["lamp_base_cache_valid"].any()
+    assert traj.curr_obs["arm_state_pair"].shape[-2:] == (2, 6)
+    torch.testing.assert_close(
+        traj.curr_obs["arm_state_pair"][0, 0, -1],
+        raw["curr_obs"]["states"][0, 0, 23:29],
+    )
     assert traj.curr_obs["hand_history_mask"][0, 0].tolist() == [0, 0, 1]
-    assert traj.next_obs["hand_history"][-1, 0, -1, 0].item() == 7
+    torch.testing.assert_close(
+        traj.next_obs["hand_history"][-1, 0, -1],
+        raw["next_obs"]["hand_state_normalized"][-1, 0],
+    )
     assert traj.rewards.sum().item() == 1
     assert not traj.actions[-1, 0, -26:].any()
     assert torch.equal(traj.actions[0, 0], raw["actions"][:4].flatten())
@@ -139,7 +157,11 @@ def test_chunk_cancels_suffix_and_preserves_measurements(intervene_at, done_at):
         ),
         OmegaConf.create({"robot_spec": spec}),
     )
-    adapter.reset()
+    initial, _ = adapter.reset()
+    assert initial["arm_state_pair"].shape == (1, 2, 6)
+    torch.testing.assert_close(
+        initial["arm_state_pair"][0, -1], env.raw["curr_obs"]["states"][0, 0, 23:29]
+    )
     obs, rewards, terms, truncs, infos = adapter.chunk_step(torch.zeros(1, 4, 26))
     count = intervene_at or done_at or 4
     info = infos[-1]
@@ -147,7 +169,10 @@ def test_chunk_cancels_suffix_and_preserves_measurements(intervene_at, done_at):
     assert not info["executed_action"][:, count:].any()
     if done_at:
         assert env.reset_count == 2
-        assert info["final_observation"]["hand_history"][0, -1, 0] == done_at
+        torch.testing.assert_close(
+            info["final_observation"]["hand_history"][0, -1],
+            env.raw["next_obs"]["hand_state_normalized"][done_at - 1, 0],
+        )
         assert obs[-1]["hand_history_mask"].tolist() == [[0, 0, 1]]
     else:
         assert env.steps == count and env.reset_count == 1
@@ -388,3 +413,138 @@ def test_demo_rejects_wrong_history_and_episode_selection(tmp_path):
     policy.base_policy.core = SimpleNamespace(decoder_history_length=16)
     with pytest.raises(ValueError, match="history length"):
         next(convert_demo_trajectories(source, policy, history_length=3))
+
+
+def test_all_wuji_model_states_use_normalized_measurements(tmp_path):
+    from rlinf.data.datasets.lamp.offline_dataset import (
+        build_history_windows,
+        load_cache_statistics,
+        prepare_lamp_cache,
+    )
+    from rlinf.models.embodiment.lamp.il_training_utils import split_episodes
+    from rlinf.models.embodiment.lamp.policy_wrapper import LampPolicy, LampPolicySpec
+    from rlinf.workers.actor.lamp_il_worker import _wrapper_statistics
+
+    raw = raw_episode()
+    for episode in range(2):
+        torch.save(raw, tmp_path / f"trajectory_{episode}_fixture.pt")
+    source = RealWorldTrajectorySource(tmp_path)
+    frames = source.load_frames()
+    np.testing.assert_array_equal(
+        frames.hand_state[:7], raw["curr_obs"]["hand_state_normalized"][:, 0]
+    )
+    np.testing.assert_array_equal(frames.action[:7], raw["actions"][:, 0])
+    np.testing.assert_array_equal(
+        frames.arm_state[:7], raw["curr_obs"]["states"][:, 0, 23:29]
+    )
+    assert (
+        frames.robot_spec.hand_state_semantics
+        == "measured_joint_positions_normalized_0_1"
+    )
+    cache = prepare_lamp_cache(
+        source=source, cache_root=tmp_path / "cache", history_length=3, action_horizon=8
+    )
+    stats = load_cache_statistics(cache)
+    assert stats["arm_state_mean"].shape == (6,)
+    assert stats["arm_state_std"].shape == (6,)
+    assert np.load(cache / "train/arm_state_pair_norm.npy").shape[1:] == (2, 6)
+    rows, _ = split_episodes(frames.episode_index, 0.9, 42)
+    np.testing.assert_allclose(
+        stats["hand_history_mean"], frames.hand_state[rows].mean(axis=0), atol=1e-7
+    )
+    windows = build_history_windows(frames.hand_state, frames.episode_index, 3)[rows]
+    expected = (windows - stats["hand_history_mean"]) / stats["hand_history_std"]
+    for name in (
+        "hand_history3_norm",
+        "lamplstm_encoder_history_norm",
+        "lamplstm_decoder_history_norm",
+    ):
+        np.testing.assert_allclose(np.load(cache / "train" / f"{name}.npy"), expected)
+    np.testing.assert_allclose(
+        np.load(cache / "train/hand_state_pair_norm.npy"), expected[:, -2:]
+    )
+    target = np.load(cache / "train/target_action.npy")
+    np.testing.assert_array_equal(target[:, 0], frames.action[rows])
+    np.testing.assert_allclose(
+        np.load(cache / "train/future_hand_norm.npy"),
+        (target[..., 6:] - stats["hand_action_mean"]) / stats["hand_action_std"],
+    )
+
+    core = torch.nn.Linear(1, 1)
+    core.robot_spec, core.action_horizon, core.core_dim = frames.robot_spec, 8, 8
+    core.decoder_history_length = 3
+    spec = LampPolicySpec(
+        "fixture",
+        "dp",
+        "single",
+        "lamplstm",
+        8,
+        4,
+        8,
+        26,
+        8,
+        ("front", "wrist"),
+        robot_spec=frames.robot_spec,
+    )
+    policy = LampPolicy(core, spec, _wrapper_statistics(stats, "single"))
+    obs = {
+        "hand_history": torch.from_numpy(windows),
+        "hand_history_mask": torch.ones(len(rows), 3),
+    }
+    actual, mask = policy.decoder_context(obs)
+    np.testing.assert_allclose(actual.detach().numpy(), expected)
+    assert torch.equal(mask, obs["hand_history_mask"])
+    dp_state = policy._normalize(torch.from_numpy(windows[:, -2:]), "hand_state_pair")
+    np.testing.assert_allclose(dp_state.detach().numpy(), expected[:, -2:])
+
+
+@pytest.mark.parametrize("bad_value", [None, float("nan"), -0.1, 1.1])
+def test_wuji_state_requires_valid_normalized_measurements(tmp_path, bad_value):
+    data = raw_episode()
+    if bad_value is None:
+        del data["curr_obs"]["hand_state_normalized"]
+    else:
+        data["curr_obs"]["hand_state_normalized"][0, 0, 0] = bad_value
+    torch.save(data, tmp_path / "trajectory_0_fixture.pt")
+    with pytest.raises(ValueError, match="hand_state_normalized"):
+        RealWorldTrajectorySource(tmp_path).load_frames()
+
+
+def test_wuji_normalized_state_continuity_is_checked(tmp_path):
+    data = raw_episode()
+    data["next_obs"]["hand_state_normalized"] = data["next_obs"][
+        "hand_state_normalized"
+    ].clone()
+    data["next_obs"]["hand_state_normalized"][0, 0, 0] = 0.123
+    torch.save(data, tmp_path / "trajectory_0_fixture.pt")
+    with pytest.raises(ValueError, match="noncontiguous hand_state_normalized"):
+        RealWorldTrajectorySource(tmp_path).load_frames()
+
+
+def test_wuji_dp_accepts_two_pose_frames_and_rejects_full_arm_state():
+    from transformers import ResNetConfig
+
+    from rlinf.models.embodiment.lamp.single_arm_diffusion_policy import (
+        LAMPDiffusionPolicy,
+    )
+
+    model = LAMPDiffusionPolicy(
+        ResNetConfig(depths=[1, 1, 1, 1], hidden_sizes=[64, 128, 256, 512]).to_dict(),
+        robot_spec=wuji_robot_spec(),
+        hand_prior_source="mlp",
+        action_horizon=16,
+        core_action_mean=[0.0] * 26,
+        core_action_std=[1.0] * 26,
+        hand_action_mean=[0.0] * 20,
+        hand_action_std=[1.0] * 20,
+    ).eval()
+    assert model.state_encoder.layers[0].in_features == 12
+    images = torch.zeros(1, 3, 32, 32)
+    pose = torch.zeros(1, 2, 6)
+    hand = torch.zeros(1, 2, 20)
+    with torch.inference_mode():
+        output = model(images, images, pose, hand)
+        assert output.shape == (1, 16, 26)
+        assert output.isfinite().all()
+        with pytest.raises(ValueError, match="arm_state_pair"):
+            model(images, images, torch.zeros(1, 2, 18), hand)

@@ -3,13 +3,42 @@ defaults:
   - dexjoco_lamp_il_base
   - robot/wuji_lamp@actor.model.robot_spec
   - _self_
+
+# Existing Ray cluster: rank 0 is the robot PC, rank 1 is the training GPU host.
+cluster:
+  num_nodes: 2
+  component_placement:
+    actor:
+      node_group: training_gpu
+      placement: 0
+  node_groups:
+    - label: franka_cpu
+      node_ranks: 0
+      ignore_hardware: true
+      env_configs:
+        - node_ranks: 0
+          python_interpreter_path: /opt/venv/franka-0.15.0/bin/python3
+          env_vars:
+            - RLINF_COMM_NET_DEVICES: enp3s0
+            - GLOO_SOCKET_IFNAME: enp3s0
+            - NCCL_SOCKET_IFNAME: enp3s0
+    - label: training_gpu
+      node_ranks: 1
+      env_configs:
+        - node_ranks: 1
+          python_interpreter_path: /opt/venv/openvla/bin/python3
+          env_vars:
+            - RLINF_COMM_NET_DEVICES: enp5s0
+            - GLOO_SOCKET_IFNAME: enp5s0
+            - NCCL_SOCKET_IFNAME: enp5s0
+
 data:
   dataset_type: realworld_lamp
   source_factory: rlinf.data.datasets.lamp.realworld:create_source
   dataset_root: ???
   task_name: wuji_stack_cube
   history_contract: primitive_v1
-  history_length: 16
+  history_length: 8
   horizon: 16
   train_ratio: 0.9
   split_seed: 42
@@ -18,9 +47,10 @@ actor:
     action_horizon: 16
     execution_horizon: 8
     num_action_chunks: 8
+    resnet_path: ./pretrained_models/resnet-18
     action_dim: 26
     hand_prior:
-      history_length: 16
+      history_length: 8
   torch_compile: false
 runner:
   logger:

@@ -1,0 +1,65 @@
+# Training hyperparameters aligned with dexjoco_lamp_prior_vq_water_plant.
+defaults:
+- realworld_lamp_il
+- _self_
+algorithm:
+  stage: prior
+data:
+  dataset_root: ./logs/20261006-082710-wuji_demo_data_stack_cube/demos
+  num_workers: 4
+  persistent_workers: true
+  pin_memory: true
+  image_size: 128
+runner:
+  max_steps: 30000
+  save_interval: 10000
+  logger:
+    experiment_name: realworld_lamp_prior_vq_stack_cube
+    logger_backends:
+    - tensorboard
+  max_epochs: 1500
+  local_update_steps: 100
+  log_interval: 100
+  val_check_interval: -1
+  save_every_epochs: 10
+actor:
+  seed: 233
+  global_batch_size: 256
+  micro_batch_size: 256
+  eval_batch_size: 512
+  validation_interval: -1
+  validate_at_end: true
+  optim:
+    lr: 0.0003
+    min_lr: 0.0
+    warmup_steps: 150
+    weight_decay: 1.0e-06
+    adam_beta1: 0.95
+    adam_beta2: 0.999
+    adam_eps: 1.0e-08
+    clip_grad: null
+    backbone_lr_ratio: 0.1
+  model:
+    hand_prior:
+      type: vq
+      hand_side: single
+      latent_dim: 1
+      history_length: 8
+      artifact_path: null
+      action_dim: 20
+      code_latent_dim: 256
+      hidden_dim: 512
+      num_quantizers: 2
+      codebook_size: 4
+      layer_num: 5
+      commitment_weight: 1.0
+      ema_decay: 0.8
+      epsilon: 1.0e-05
+      dead_code_threshold: 0.0
+      reconstruction_multiplier: 3.0
+      vq_multiplier: 5.0
+    execution_horizon: 4
+    num_action_chunks: 4
+  torch_compile: true
+  compile_mode: default
+  validation_batches: -1

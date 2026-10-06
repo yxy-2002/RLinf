@@ -86,7 +86,9 @@ def _validate_safetensors_header(path: Path) -> None:
 
     from safetensors import safe_open
 
-    with safe_open(str(path), framework="pt", device="cpu", backend="pread") as data:
+    # Only inspect keys: the default backend does not materialize tensor data.
+    # Avoid the backend keyword, which older safetensors releases do not accept.
+    with safe_open(str(path), framework="pt", device="cpu") as data:
         tuple(data.keys())
 
 
