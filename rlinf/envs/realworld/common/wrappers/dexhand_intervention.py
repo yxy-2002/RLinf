@@ -175,6 +175,7 @@ def _teleop_worker(connection, shared, config):
     logger = get_logger()
     hand = glove = mouse = None
     active = False
+    policy_mode = config.get("release_behavior", "hold") == "policy"
     try:
         if config["hand_type"] == "wuji_hand":
             hand = WujiHand(ROSController(), **config["hand"])
@@ -212,10 +213,12 @@ def _teleop_worker(connection, shared, config):
                     break
                 if command == "pause":
                     # Disarm command timeout and hold measured position before ACK.
-                    hand._call("set_teleop", False)
+                    if not policy_mode:
+                        hand._call("set_teleop", False)
                     active = False
                 elif command == "resume":
-                    hand._call("set_teleop", True)
+                    if not policy_mode:
+                        hand._call("set_teleop", True)
                     _write_snapshot(shared, [0.0] * len(shared))
                     current = _feedback_target(hand)
                     baseline = base = None
@@ -245,7 +248,11 @@ def _teleop_worker(connection, shared, config):
                     if not previous_left:
                         baseline = raw.copy()
                         base = hand.get_state()
-                        hand.clear_trajectory()
+                        if policy_mode:
+                            # The policy may have moved the hand since release.
+                            current = _feedback_target(hand)
+                        else:
+                            hand.clear_trajectory()
                     target = (
                         raw if config["mode"] == "absolute" else base + raw - baseline
                     )
@@ -271,7 +278,8 @@ def _teleop_worker(connection, shared, config):
                     or (right and not config["right_button_labels_only"])
                 ):
                     last_intervene = time.monotonic()
-                hand.command(current)
+                if not policy_mode:
+                    hand.command(current)
                 _write_snapshot(
                     shared,
                     [
@@ -280,7 +288,9 @@ def _teleop_worker(connection, shared, config):
                         sample.sequence,
                         left,
                         right,
-                        time.monotonic() - last_intervene < config["timeout"],
+                        controlling
+                        if policy_mode
+                        else time.monotonic() - last_intervene < config["timeout"],
                         *arm,
                         *current,
                     ],
@@ -296,7 +306,7 @@ def _teleop_worker(connection, shared, config):
         except (BrokenPipeError, EOFError, OSError):
             pass
     finally:
-        if hand is not None and active:
+        if hand is not None and active and not policy_mode:
             try:
                 hand.hold()
             except Exception:
@@ -389,8 +399,10 @@ class DexHandIntervention(gym.Wrapper):
         hand_type = env.unwrapped.config.end_effector_type
         if hand_type not in ("wuji_hand", "ruiyan_hand"):
             raise ValueError("DexHandIntervention requires Wuji or Ruiyan")
-        if kwargs.get("release_behavior", "hold") != "hold":
-            raise ValueError("Independent hand teleop requires release_behavior=hold")
+        self._release_behavior = kwargs.get("release_behavior", "hold")
+        if self._release_behavior not in ("hold", "policy"):
+            raise ValueError("release_behavior must be hold or policy")
+        self._was_intervening = False
         hand_dim = 20 if hand_type == "wuji_hand" else 6
         if env.action_space.shape != (6 + hand_dim,):
             raise ValueError("Hand action dimension does not match end effector")
@@ -435,6 +447,7 @@ class DexHandIntervention(gym.Wrapper):
             "mode": kwargs.get("intervention_mode", "relative"),
             "timeout": kwargs.get("timeout", 0.5),
             "max_delta": env.unwrapped.config.hand_max_delta_per_step,
+            "release_behavior": self._release_behavior,
         }
         if hand_type == "ruiyan_hand":
             import ray
@@ -452,7 +465,7 @@ class DexHandIntervention(gym.Wrapper):
         if hand_type == "ruiyan_hand":
             process_config["hand"]["side"] = pipeline["hand"]["side"]
         self._teleop = TeleopProcess(process_config)
-        env.unwrapped._external_hand_control = True
+        env.unwrapped._external_hand_control = self._release_behavior == "hold"
 
     def pause_hand_teleop(self) -> None:
         """Pause output before saving an episode or handing control to reset."""
@@ -461,6 +474,7 @@ class DexHandIntervention(gym.Wrapper):
     def reset(self, **kwargs):
         """Transfer hand control to reset only after teleop acknowledges pause."""
         self._teleop.request("pause")
+        self._was_intervening = False
         result = self.env.reset(**kwargs)
         self._teleop.request("resume")
         deadline = time.monotonic() + 5
@@ -479,6 +493,30 @@ class DexHandIntervention(gym.Wrapper):
         started = time.time()
         before = self._teleop.snapshot()
         chosen = np.array(action, dtype=np.float64, copy=True)
+        if getattr(self, "_release_behavior", "hold") == "policy":
+            # The input process never publishes hand commands in this mode.
+            # Both policy and human commands pass through the same env/limits.
+            intervening = bool(before[5])
+            if intervening:
+                chosen[:6] = before[6:12]
+                chosen[6:] = before[12:]
+            obs, reward, done, truncated, info = self.env.step(chosen)
+            after = self._teleop.snapshot()
+            info["left"], info["right"] = bool(after[3]), bool(after[4])
+            info["lamp_control_changed"] = (
+                intervening != bool(after[5]) or intervening != self._was_intervening
+            )
+            info["lamp_control_released"] = (
+                self._was_intervening and not intervening
+            ) or (intervening and not bool(after[5]))
+            self._was_intervening = bool(after[5])
+            if "executed_action" not in info:
+                raise RuntimeError(
+                    "Policy hand control requires executed_action feedback"
+                )
+            if intervening:
+                info["intervene_action"] = np.asarray(info["executed_action"]).copy()
+            return obs, reward, done, truncated, info
         if before[5]:
             chosen[:6] = before[6:12]
         chosen[6:] = before[12:]

@@ -53,6 +53,12 @@ def main(cfg) -> None:
 
         runner_cls = AsyncEmbodiedRunner
         actor_worker_cls = AsyncEmbodiedSACFSDPPolicy
+        if cfg.actor.model.model_type == "lamp_residual_sac":
+            from rlinf.workers.actor.async_fsdp_lamp_residual_sac_policy_worker import (
+                AsyncLampResidualSACFSDPPolicy,
+            )
+
+            actor_worker_cls = AsyncLampResidualSACFSDPPolicy
     elif cfg.algorithm.loss_type == "embodied_dagger":
         from rlinf.runners.async_embodied_runner import AsyncEmbodiedRunner
         from rlinf.workers.actor.async_fsdp_dagger_policy_worker import (

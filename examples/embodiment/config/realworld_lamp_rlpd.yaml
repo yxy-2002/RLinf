@@ -1,0 +1,83 @@
+# Reuse the validated Wuji device/task setup and LAMP residual network recipe.
+defaults:
+  - wuji_demo_data_stack_cube
+  - dexjoco_lamp_residual_sac
+  - robot/wuji_lamp@actor.model.robot_spec
+  - _self_
+
+cluster:
+  num_nodes: 2
+  component_placement:
+    actor:
+      node_group: reward_gpu
+      placement: 0
+    rollout:
+      node_group: reward_gpu
+      placement: 0
+    env:
+      node_group: franka
+      placement: 0
+
+runner:
+  max_steps: 16000
+  val_check_interval: -1
+  save_interval: 1000
+  logger:
+    experiment_name: realworld_lamp_rlpd
+    logger_backends: [tensorboard]
+
+algorithm:
+  demo_fraction: 0.5
+  actor_agg_q: mean
+  backup_entropy: false
+  critic_actor_ratio: 4
+  utd_ratio: 4.0
+  learning_starts_macro_transitions: 100
+  progressive_exploration_macro_steps: 30000
+  async:
+    lockstep_updates: false
+    max_pending_collector_rounds: 2
+  replay_buffer:
+    min_buffer_size: 100
+    enable_preload: false
+  demo_buffer:
+    enable_cache: true
+    cache_size: 1000
+    sample_window_size: 1000
+    min_buffer_size: 1
+    auto_save: true
+    load_path: ???
+
+env:
+  train: ${env.eval}
+  eval:
+    seed: 42
+    total_num_envs: 1
+    group_size: 1
+    auto_reset: true
+    is_eval: false
+    rollout_epoch: 1
+    max_steps_per_rollout_epoch: 8
+    lamp_adapter: rlinf.envs.lamp_realworld_adapter:RealWorldLampAdapter
+    lamp_robot_spec: ${actor.model.robot_spec}
+    lamp_history_length: 16
+    glove_config:
+      release_behavior: policy
+    video_cfg:
+      save_video: false
+
+actor:
+  global_batch_size: 256
+  micro_batch_size: 256
+  model:
+    contract_version: 5
+    action_dim: 26
+    model_path: ???
+    learning_starts_macro_transitions: 100
+    progressive_exploration_macro_steps: 30000
+
+reward:
+  use_reward_model: true
+  standalone_realworld: true
+  model:
+    model_path: ???

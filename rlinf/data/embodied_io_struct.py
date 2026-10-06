@@ -110,13 +110,24 @@ class EnvOutput:
             else None
         )
 
-        return {
+        result = {
             "main_images": image_tensor,  # [N_ENV, H, W, C]
             "wrist_images": wrist_image_tensor,  # [N_ENV, H, W, C] or [N_ENV, N_IMG, H, W, C]
             "extra_view_images": extra_view_image_tensor,  # [N_ENV, N_IMG, H, W, C]
             "states": states,
             "task_descriptions": task_descriptions,
         }
+        for key in (
+            "arm_state_pair",
+            "panda_qpos_pair",
+            "hand_state_pair",
+            "hand_history",
+            "hand_history_mask",
+            "online_macro_transitions",
+        ):
+            if key in obs:
+                result[key] = obs[key]
+        return result
 
     @staticmethod
     def merge_env_outputs(env_outputs: list[dict]) -> dict[str, Any]:
@@ -561,7 +572,61 @@ class EmbodiedRolloutResult:
         if result.versions is not None:
             self.versions.append(result.versions)
         if result.forward_inputs:
+            if "lamp_base_condition" in result.forward_inputs:
+                base_valid = result.forward_inputs["lamp_base_cache_valid"]
+                result.forward_inputs.setdefault(
+                    "lamp_next_base_condition",
+                    torch.zeros_like(result.forward_inputs["lamp_base_condition"]),
+                )
+                result.forward_inputs.setdefault(
+                    "lamp_next_base_core",
+                    torch.zeros_like(result.forward_inputs["lamp_base_core"]),
+                )
+                result.forward_inputs.setdefault(
+                    "lamp_next_base_cache_valid", torch.zeros_like(base_valid)
+                )
+                for suffix in ("actor_observation", "critic_observation"):
+                    key = f"lamp_base_{suffix}"
+                    if key not in result.forward_inputs:
+                        continue
+                    result.forward_inputs.setdefault(
+                        f"lamp_next_base_{suffix}",
+                        torch.zeros_like(result.forward_inputs[key]),
+                    )
             self.forward_inputs.append(result.forward_inputs)
+
+    def attach_lamp_next_base_cache(
+        self,
+        next_forward_inputs: dict[str, Any],
+        *,
+        terminations: torch.Tensor | None = None,
+        truncations: torch.Tensor | None = None,
+    ) -> None:
+        """Attach the next rollout's frozen LAMP context to the prior transition."""
+
+        if not self.forward_inputs:
+            return
+        required = ("lamp_base_condition", "lamp_base_core", "lamp_base_cache_valid")
+        if any(key not in next_forward_inputs for key in required):
+            return
+        previous = self.forward_inputs[-1]
+        cache_fields = (
+            "condition",
+            "core",
+            "actor_observation",
+            "critic_observation",
+        )
+
+        for suffix in cache_fields:
+            source = f"lamp_base_{suffix}"
+            if source in next_forward_inputs:
+                previous[f"lamp_next_base_{suffix}"] = next_forward_inputs[source]
+
+        valid = next_forward_inputs["lamp_base_cache_valid"].to(torch.bool).clone()
+        for done in (terminations, truncations):
+            if done is not None:
+                valid &= ~done.to(torch.bool).reshape(done.shape[0], -1).any(dim=-1)
+        previous["lamp_next_base_cache_valid"] = valid
 
     def mark_last_step_with_flags(self, save_flags: torch.Tensor):
         if not self.intervene_flags:

@@ -54,7 +54,22 @@ class AsyncEmbodiedRunner(EmbodiedRunner):
         self._pending_rollout_weight_sync = None
         self._weight_sync_coalesced_total = 0
         self._weight_sync_request_total = 0
+        self._logger_step_axis = str(
+            self.cfg.runner.logger.get("step_axis", "collector_step")
+        )
         self.sync_weight_no_wait = self.cfg.actor.get("sync_weight_no_wait", False)
+
+    def _metric_logging_step(self, progress, *, collector_step):
+        if self._logger_step_axis == "env_step":
+            return int(
+                progress.get(
+                    "progress/env_step",
+                    progress.get(
+                        "train/async/online_macro_transitions", collector_step
+                    ),
+                )
+            )
+        return collector_step
 
     def get_env_metrics(self) -> tuple[dict, list[dict], list[dict]]:
         results: list[dict] = []
@@ -154,6 +169,17 @@ class AsyncEmbodiedRunner(EmbodiedRunner):
     def run(self):
         start_step = self.global_step
         start_time = time.time()
+        lamp = self.cfg.actor.model.model_type == "lamp_residual_sac"
+        lamp_lockstep = lamp and bool(
+            self.cfg.algorithm.get("async", {}).get("lockstep_updates", False)
+        )
+        if lamp:
+            progress = self.actor.get_lamp_progress().wait()[0]
+            self.env.configure_collector_window(
+                self.global_step,
+                self.global_step + 1 if lamp_lockstep else None,
+                progress["online_macro_transitions"],
+            ).wait()
         self.update_rollout_weights(no_wait=self.sync_weight_no_wait)
 
         env_handle: Handle = self.env.interact(
@@ -196,6 +222,8 @@ class AsyncEmbodiedRunner(EmbodiedRunner):
 
                 if not skip_step:
                     self.global_step += 1
+                    if lamp_lockstep:
+                        self.env.wait_for_collector_step(self.global_step).wait()
                     if self.global_step % self.weight_sync_interval == 0:
                         self.update_rollout_weights(no_wait=self.sync_weight_no_wait)
 
@@ -224,6 +252,9 @@ class AsyncEmbodiedRunner(EmbodiedRunner):
                                 f"eval/{k}": v for k, v in eval_metrics.items()
                             }
 
+            if lamp_lockstep and not skip_step:
+                self.env.advance_collector_limit(self.global_step + 1).wait()
+
             if skip_step:
                 self.timer.consume_durations()
                 if profiled_step is not None:
@@ -246,11 +277,14 @@ class AsyncEmbodiedRunner(EmbodiedRunner):
             )
             rollout_metrics, rollout_time_metrics_per_rank = self.get_rollout_metrics()
 
-            self.metric_logger.log(time_metrics, self.global_step)
-            self.metric_logger.log(env_metrics, self.global_step)
-            self.metric_logger.log(rollout_metrics, self.global_step)
-            self.metric_logger.log(training_metrics, self.global_step)
-            self.metric_logger.log(eval_metrics, self.global_step)
+            logging_step = self._metric_logging_step(
+                training_metrics, collector_step=self.global_step
+            )
+            self.metric_logger.log(time_metrics, logging_step)
+            self.metric_logger.log(env_metrics, logging_step)
+            self.metric_logger.log(rollout_metrics, logging_step)
+            self.metric_logger.log(training_metrics, logging_step)
+            self.metric_logger.log(eval_metrics, logging_step)
             self._log_ranked_metrics(
                 metrics_list=actor_result,
                 step=self.global_step,

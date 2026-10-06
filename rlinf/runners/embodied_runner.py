@@ -93,7 +93,12 @@ class EmbodiedRunner:
         # Data channels
         self.env_channel = Channel.create("Env")
         self.rollout_channel = Channel.create("Rollout")
-        self.actor_channel = Channel.create("Actor")
+        actor_queue_size = 0
+        if cfg.actor.get("model", {}).get("model_type") == "lamp_residual_sac":
+            actor_queue_size = int(
+                cfg.algorithm.get("async", {}).get("max_pending_collector_rounds", 2)
+            )
+        self.actor_channel = Channel.create("Actor", maxsize=actor_queue_size)
         if self.reward is not None:
             self.reward_channel = Channel.create("Reward")
         else:
@@ -653,7 +658,9 @@ class EmbodiedRunner:
 
     def set_max_steps(self):
         self.num_steps_per_epoch = 1
-        self.max_steps = self.num_steps_per_epoch * self.cfg.runner.max_epochs
+        self.max_steps = self.num_steps_per_epoch * self.cfg.runner.get(
+            "max_epochs", self.cfg.runner.get("max_steps", -1)
+        )
 
         if (max_steps := self.cfg.runner.get("max_steps", -1)) >= 0:
             self.max_steps = min(self.max_steps, max_steps)

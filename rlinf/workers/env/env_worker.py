@@ -350,8 +350,28 @@ class EnvWorker(Worker):
                         env_cfg.data_collection, "finalize_interval", 100
                     ),
                 )
+            if self.model_cfg.model_type in ("lamp_dp", "lamp_residual_sac"):
+                from rlinf.envs.lamp_adapter import (
+                    lamp_adapter_class,
+                    validate_lamp_environment,
+                )
+
+                validate_lamp_environment(env_cfg, self.model_cfg)
+                if env_cfg.get("lamp_adapter"):
+                    env = lamp_adapter_class(env_cfg)(env, env_cfg, self.model_cfg)
             env_list.append(env)
         return env_list
+
+    def _lamp_env_batch(self, output):
+        batch = output.to_dict()
+        if self.model_cfg.model_type == "lamp_residual_sac":
+            ref = batch["obs"]["main_images"]
+            batch["obs"]["online_macro_transitions"] = torch.full(
+                (len(ref),),
+                getattr(self, "_lamp_online_macro_transitions", 0),
+                dtype=torch.long,
+            )
+        return batch
 
     def _init_env(self):
         for i in range(self.stage_num):
@@ -417,15 +437,20 @@ class EnvWorker(Worker):
         elif chunk_dones.any():
             if "final_info" in infos:
                 final_info = infos["final_info"]
-                for key in final_info["episode"]:
-                    env_info[key] = final_info["episode"][key][chunk_dones[:, -1]].cpu()
+                done_rows = (
+                    chunk_dones.any(dim=-1)
+                    if self.model_cfg.model_type == "lamp_residual_sac"
+                    else chunk_dones[:, -1]
+                )
+                for key in final_info.get("episode", {}):
+                    env_info[key] = final_info["episode"][key][done_rows].cpu()
 
         intervene_actions = (
             infos["intervene_action"] if "intervene_action" in infos else None
         )
         intervene_flags = infos["intervene_flag"] if "intervene_flag" in infos else None
         if self.cfg.env.train.auto_reset and chunk_dones.any():
-            if "intervene_action" in infos["final_info"]:
+            if "intervene_action" in infos.get("final_info", {}):
                 intervene_actions = infos["final_info"]["intervene_action"]
                 intervene_flags = infos["final_info"]["intervene_flag"]
 
@@ -477,7 +502,11 @@ class EnvWorker(Worker):
             )
         )
 
-        current_dones = chunk_dones[:, -1]  # [num_envs] bool
+        current_dones = (
+            chunk_dones.any(dim=-1)
+            if self.model_cfg.model_type == "lamp_residual_sac"
+            else chunk_dones[:, -1]
+        )  # [num_envs] bool; canceled LAMP chunks have an invalid suffix.
         if self.cfg.env.eval.auto_reset:
             newly_done = current_dones
         else:
@@ -832,7 +861,7 @@ class EnvWorker(Worker):
     ) -> None:
         for stage_id in range(self.stage_num):
             env_output: EnvOutput = env_outputs[stage_id]
-            env_batch = env_output.to_dict()
+            env_batch = self._lamp_env_batch(env_output)
             self.send_to(
                 group_name=self.cfg.rollout.group_name,
                 channel=rollout_channel,
@@ -951,6 +980,11 @@ class EnvWorker(Worker):
                         infer_batch_size_fn=self._infer_rollout_batch_size,
                         decoupled_mode=self.env_decoupled_mode,
                     )
+                    self.rollout_results[stage_id].attach_lamp_next_base_cache(
+                        rollout_result.forward_inputs,
+                        terminations=env_output.terminations,
+                        truncations=env_output.truncations,
+                    )
                     rewards = self.compute_bootstrap_rewards(
                         env_output, rollout_result.bootstrap_values, reward_model_output
                     )
@@ -988,7 +1022,20 @@ class EnvWorker(Worker):
                     env_output, env_info = self.env_interact_step(
                         rollout_result.actions, stage_id
                     )
-                    env_batch = env_output.to_dict()
+                    if self.model_cfg.model_type == "lamp_residual_sac":
+                        from rlinf.envs.lamp_adapter import (
+                            apply_lamp_execution_feedback,
+                        )
+
+                        if "primitive_valid" in rollout_result.forward_inputs:
+                            apply_lamp_execution_feedback(
+                                rollout_result.forward_inputs, env_output.env_infos
+                            )
+                        self._lamp_online_macro_transitions = (
+                            getattr(self, "_lamp_online_macro_transitions", 0)
+                            + int(self.cfg.env.train.total_num_envs) // self.stage_num
+                        )
+                    env_batch = self._lamp_env_batch(env_output)
                     self.send_to(
                         group_name=self.cfg.rollout.group_name,
                         channel=rollout_channel,
@@ -1048,6 +1095,11 @@ class EnvWorker(Worker):
                     merge_fn=RolloutResult.merge_rollout_results,
                     infer_batch_size_fn=self._infer_rollout_batch_size,
                     decoupled_mode=self.env_decoupled_mode,
+                )
+                self.rollout_results[stage_id].attach_lamp_next_base_cache(
+                    rollout_result.forward_inputs,
+                    terminations=env_output.terminations,
+                    truncations=env_output.truncations,
                 )
                 rewards = self.compute_bootstrap_rewards(
                     env_output, rollout_result.bootstrap_values, reward_model_output
@@ -1138,7 +1190,7 @@ class EnvWorker(Worker):
                             else None
                         ),
                     )
-                    env_batch = env_output.to_dict()
+                    env_batch = self._lamp_env_batch(env_output)
                     self.send_to(
                         group_name=self.cfg.rollout.group_name,
                         channel=rollout_channel,
@@ -1188,7 +1240,7 @@ class EnvWorker(Worker):
                     else:
                         if eval_step == self.n_eval_chunk_steps - 1:
                             continue
-                    env_batch = env_output.to_dict()
+                    env_batch = self._lamp_env_batch(env_output)
                     self.send_to(
                         group_name=self.cfg.rollout.group_name,
                         channel=rollout_channel,
