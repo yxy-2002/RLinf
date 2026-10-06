@@ -87,6 +87,16 @@ bash examples/embodiment/collect_data.sh dexhand_demo_data \
 reward.reward_threshold=0.8 env.eval.override_cfg.success_hold_steps=3
 ```
 
+如需在回合之间手动整理场景，设置 `runner.pause_between_episodes=true`（默认 `false`，Wuji demo 配置同样支持）：
+
+```bash
+bash examples/embodiment/collect_data.sh wuji_demo_data_stack_cube \
+  runner.pause_between_episodes=true \
+  runner.logger.log_path=/workspace/RLinf/logs/wuji_stack_cube_demos_paused_001
+```
+
+每个回合成功或超时后，采集器先完成保存或丢弃，再暂停环境步进和手套输出，等待 **GPU 节点启动采集命令的终端** 按回车。按回车后才执行复位并开始下一回合；控制节点终端的回车不会放行。首个回合直接开始，采满目标条数后不再等待。等待时可按 Ctrl+C 正常退出；启用此参数需要交互式终端，不支持关闭 stdin 的后台启动。采集中提前按下的回车不会放行后续回合。此参数只用于 demo 采集，reward 正负帧采集流程不变。
+
 新流程由上述 dexhand 配置启用。原有入口仍可使用：
 
 ```bash

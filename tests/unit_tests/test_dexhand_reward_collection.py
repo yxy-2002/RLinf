@@ -5,6 +5,10 @@
 
 import asyncio
 import importlib.util
+import io
+import threading
+import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock
@@ -554,6 +558,120 @@ def test_demo_stop_drops_incomplete_trajectory(tmp_path):
     collector.buffer.add_trajectories.assert_not_called()
     collector.buffer.close.assert_called_once()
     collector.env.close.assert_called_once()
+
+
+@pytest.mark.parametrize("successful_first_episode", [True, False])
+@pytest.mark.parametrize("stop_while_paused", [True, False])
+def test_demo_episode_pause_before_reset(
+    tmp_path, monkeypatch, successful_first_episode, stop_while_paused
+):
+    """Both success and timeout wait; stale confirmations and stop are safe."""
+    module = load_script("examples/embodiment/collect_real_data.py")
+    monkeypatch.setattr(module, "EmbodiedRolloutResult", Mock())
+    collector = object.__new__(module.DataCollector)
+    collector._quit = False
+    collector._episode_resume = threading.Event()
+    collector._waiting_episode = None
+    collector.env = Mock()
+    collector._realworld_env = collector.env
+    collector.env.reset.return_value = ({}, {})
+    collector._process_obs = lambda obs: obs
+
+    def result(success):
+        return (
+            {},
+            torch.tensor([float(success)]),
+            torch.tensor([success]),
+            torch.tensor([not success]),
+            {"success": torch.tensor([success])},
+        )
+
+    collector.env.step.side_effect = [result(successful_first_episode), result(True)]
+    collector.cfg = OmegaConf.create(
+        {
+            "runner": {
+                "pause_between_episodes": True,
+                "success_source": "reward_model",
+                "logger": {"log_path": str(tmp_path)},
+            },
+            "env": {"eval": {"max_episode_steps": 3}},
+        }
+    )
+    collector.buffer = Mock()
+    collector.num_data_episodes = 2 if successful_first_episode else 1
+    collector._preexisting_success = 0
+    collector.action_dim = 12
+    collector.total_cnt = 0
+    collector._target_step_period = None
+    collector.log_info = Mock()
+    # Enter sent before the episode completes must not release the future pause.
+    asyncio.run(collector.resume_episode(1))
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        future = executor.submit(lambda: asyncio.run(collector.run()))
+        try:
+            deadline = time.monotonic() + 5
+            while asyncio.run(collector.waiting_episode()) is None:
+                assert time.monotonic() < deadline, "Collector did not pause"
+                time.sleep(0.01)
+            collector.env.pause_hand_teleop.assert_called_once()
+            assert collector.env.reset.call_count == 1
+            assert collector.env.step.call_count == 1
+            assert collector.buffer.add_trajectories.call_count == int(
+                successful_first_episode
+            )
+            asyncio.run(collector.resume_episode(0))
+            assert not collector._episode_resume.is_set()
+            if stop_while_paused:
+                asyncio.run(collector.request_stop())
+            else:
+                asyncio.run(collector.resume_episode(1))
+            future.result(timeout=5)
+            assert collector.env.step.call_count == (1 if stop_while_paused else 2)
+            assert collector.env.reset.call_count == (1 if stop_while_paused else 3)
+            assert collector._waiting_episode is None
+            collector.buffer.close.assert_called_once()
+            collector.env.close.assert_called_once()
+        finally:
+            asyncio.run(collector.request_stop())
+
+
+@pytest.mark.parametrize("line", ["\n", ""])
+def test_demo_driver_enter_or_eof(monkeypatch, line):
+    module = load_script("examples/embodiment/collect_real_data.py")
+    terminal = Mock(wraps=io.StringIO(line))
+    terminal.fileno.return_value = 0
+    monkeypatch.setattr(module.sys, "stdin", terminal)
+    flush = Mock()
+    monkeypatch.setattr(module.termios, "tcflush", flush)
+    monkeypatch.setattr(
+        module.select, "select", Mock(return_value=([terminal], [], []))
+    )
+    collector = Mock()
+    collector.waiting_episode.return_value.wait.return_value = [3]
+    handle = Mock()
+    handle.done.side_effect = [False, True]
+    stopped = threading.Event()
+
+    module.wait_for_collection(collector, handle, stopped)
+
+    flush.assert_called_once_with(0, module.termios.TCIFLUSH)
+    if line:
+        collector.resume_episode.assert_called_once_with(3)
+        collector.request_stop.assert_not_called()
+    else:
+        collector.request_stop.assert_called_once()
+        collector.resume_episode.assert_not_called()
+        assert stopped.is_set()
+    handle.wait.assert_called_once()
+
+
+def test_demo_pause_requires_driver_terminal(monkeypatch):
+    module = load_script("examples/embodiment/collect_real_data.py")
+    monkeypatch.setattr(module.sys.stdin, "isatty", lambda: False)
+    with pytest.raises(ValueError, match="interactive terminal"):
+        module.main.__wrapped__(
+            OmegaConf.create({"runner": {"pause_between_episodes": True}})
+        )
 
 
 def test_reward_training_config():

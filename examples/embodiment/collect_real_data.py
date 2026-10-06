@@ -14,7 +14,11 @@
 
 import asyncio
 import os
+import select
 import signal
+import sys
+import termios
+import threading
 import time
 
 import hydra
@@ -36,6 +40,8 @@ class DataCollector(Worker):
         super().__init__()
 
         self._quit = False
+        self._episode_resume = threading.Event()
+        self._waiting_episode = None
         self.cfg = cfg
         self.num_data_episodes = cfg.runner.num_data_episodes
         self.total_cnt = 0
@@ -51,6 +57,7 @@ class DataCollector(Worker):
             worker_info=self.worker_info,
             reward_service_name=reward_service_name,
         )
+        self._realworld_env = self.env
 
         dc_cfg = cfg.env.eval.get("data_collection")
         if dc_cfg and getattr(dc_cfg, "enabled", False):
@@ -117,10 +124,39 @@ class DataCollector(Worker):
     async def request_stop(self) -> None:
         """Stop after the current step and flush complete trajectories."""
         self._quit = True
+        self._episode_resume.set()
+
+    async def waiting_episode(self) -> int | None:
+        """Return the completed episode awaiting driver confirmation, if any."""
+        return self._waiting_episode
+
+    async def resume_episode(self, episode: int) -> None:
+        """Release only the episode currently awaiting driver confirmation."""
+        if self._waiting_episode == episode:
+            self._episode_resume.set()
+
+    def _wait_for_next_episode(self) -> bool:
+        """Pause before reset until the driver confirms, or stop is requested."""
+        if not self.cfg.runner.get("pause_between_episodes", False):
+            return not self._quit
+        self._realworld_env.pause_hand_teleop()
+        self._episode_resume.clear()
+        self._waiting_episode = self.total_cnt
+        try:
+            while not self._quit:
+                if self._episode_resume.wait(timeout=0.1):
+                    break
+            return not self._quit
+        finally:
+            self._waiting_episode = None
 
     async def run(self) -> None:
         """Keep the actor responsive to stop requests while collecting."""
-        if self.cfg.runner.get("success_source") != "reward_model":
+        if self.cfg.runner.get(
+            "success_source"
+        ) != "reward_model" and not self.cfg.runner.get(
+            "pause_between_episodes", False
+        ):
             self._collect()
             self.buffer.close()
             self.env.close()
@@ -287,6 +323,14 @@ class DataCollector(Worker):
                     progress_bar.refresh()
 
                 if done:
+                    if success_cnt < self.num_data_episodes:
+                        if model_collection and self.cfg.runner.get(
+                            "pause_between_episodes", False
+                        ):
+                            progress["status"] = "waiting_for_enter"
+                            progress_bar.set_postfix(progress, refresh=True)
+                        if not self._wait_for_next_episode():
+                            break
                     reset_options = None
                     if success_cnt >= self.num_data_episodes:
                         reset_options = {"skip_wait_for_start": True}
@@ -312,10 +356,46 @@ class DataCollector(Worker):
         )
 
 
+def wait_for_collection(collector, run_handle, stop_requested: threading.Event) -> None:
+    """Read episode confirmations from the driver terminal, never a Ray worker."""
+    prompted_episode = None
+    while not run_handle.done():
+        if stop_requested.is_set():
+            time.sleep(0.1)
+            continue
+        episode = collector.waiting_episode().wait()[0]
+        if episode is None:
+            time.sleep(0.1)
+            continue
+        if episode != prompted_episode:
+            # Do not let Enter pressed during collection release a later pause.
+            termios.tcflush(sys.stdin.fileno(), termios.TCIFLUSH)
+            tqdm.write(
+                f"Episode {episode} finished. Press Enter in this GPU/driver "
+                "terminal to reset and start the next episode (Ctrl+C to stop)."
+            )
+            sys.stdout.flush()
+            prompted_episode = episode
+        readable, _, _ = select.select([sys.stdin], [], [], 0.1)
+        if readable and not stop_requested.is_set():
+            if sys.stdin.readline() == "":
+                stop_requested.set()
+                collector.request_stop().wait()
+            else:
+                collector.resume_episode(episode).wait()
+    run_handle.wait()
+
+
 @hydra.main(
     version_base="1.1", config_path="config", config_name="realworld_collect_data"
 )
 def main(cfg):
+    pause_between_episodes = cfg.runner.get("pause_between_episodes", False)
+    if pause_between_episodes and not sys.stdin.isatty():
+        raise ValueError(
+            "runner.pause_between_episodes=true requires an interactive terminal "
+            "on the GPU/driver node"
+        )
     if cfg.runner.get("success_source") == "reward_model":
         if not (cfg.reward.use_reward_model and cfg.reward.standalone_realworld):
             raise ValueError("Demo collection requires standalone reward inference")
@@ -343,6 +423,7 @@ def main(cfg):
     reward_group = None
     collector = None
     previous_handlers = {}
+    stop_requested = threading.Event()
     try:
         reward_service_name = None
         if cfg.runner.get("success_source") == "reward_model":
@@ -353,14 +434,19 @@ def main(cfg):
             cfg, env_cfg=env_cfg, reward_service_name=reward_service_name
         ).launch(cluster, name=cfg.env.group_name, placement_strategy=env_placement)
 
-        if cfg.runner.get("success_source") == "reward_model":
+        if cfg.runner.get("success_source") == "reward_model" or pause_between_episodes:
 
             def request_stop(signum, frame):
+                stop_requested.set()
                 collector.request_stop()
 
             for sig in (signal.SIGINT, signal.SIGTERM):
                 previous_handlers[sig] = signal.signal(sig, request_stop)
-        collector.run().wait()
+        run_handle = collector.run()
+        if pause_between_episodes:
+            wait_for_collection(collector, run_handle, stop_requested)
+        else:
+            run_handle.wait()
     finally:
         for sig, handler in previous_handlers.items():
             signal.signal(sig, handler)

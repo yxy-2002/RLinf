@@ -42,6 +42,7 @@ cluster:
 runner:
   task_type: embodied
   num_data_episodes: 20
+  pause_between_episodes: false # Wait for Enter on the GPU/driver before the next reset.
   record_task_description: false
   success_source: reward_model
   logger:
