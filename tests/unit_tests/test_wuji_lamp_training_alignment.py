@@ -27,29 +27,27 @@ from rlinf.data.datasets.lamp.offline_dataset import LampMMapDataset
 
 CONFIG_DIR = Path(__file__).resolve().parents[2] / "examples/embodiment/config"
 PAIRS = {
-    "prior_lamplstm_film": "dexjoco_lamp_prior_lamplstm_water_plant",
+    "prior_lamplstm_stack_cube": "dexjoco_lamp_prior_lamplstm_water_plant",
     "prior_lamplstm_none": "dexjoco_lamp_prior_lamplstm_water_plant",
-    "prior_pca": "dexjoco_lamp_prior_lamplstm_water_plant",
-    "prior_vq": "dexjoco_lamp_prior_lamplstm_water_plant",
-    "dp_lamplstm_film": "dexjoco_lamp_dp_lamplstm",
-    "dp_lamplstm_none": "dexjoco_lamp_dp_lamplstm",
-    "dp_pca": "dexjoco_lamp_dp_lamplstm",
-    "dp_vq": "dexjoco_lamp_dp_lamplstm",
-    "dp_mlp": "dexjoco_lamp_dp_lamplstm",
+    "prior_pca_stack_cube": "dexjoco_lamp_prior_pca_dim2_water_plant",
+    "prior_vq_stack_cube": "dexjoco_lamp_prior_vq_water_plant",
+    **{
+        f"dp_{variant}": "dexjoco_lamp_dp_lamplstm"
+        for variant in ("lamplstm", "lamplstm_none", "pca", "vq", "mlp")
+    },
 }
 
 
 @pytest.mark.parametrize("variant,reference", PAIRS.items())
 def test_wuji_training_matches_simulation(variant, reference):
     with initialize_config_dir(config_dir=str(CONFIG_DIR), version_base="1.1"):
-        actual = compose(config_name=f"realworld_lamp_{variant}_stack_cube")
+        actual = compose(config_name=f"realworld_lamp_{variant}")
         expected = compose(config_name=reference)
     for key in (
         "seed",
         "global_batch_size",
         "micro_batch_size",
         "eval_batch_size",
-        "torch_compile",
         "compile_mode",
         "validation_interval",
         "validation_batches",
@@ -66,45 +64,74 @@ def test_wuji_training_matches_simulation(variant, reference):
         "val_check_interval",
         "save_every_epochs",
     ):
-        if variant == "prior_pca" and key in (
-            "max_steps",
-            "local_update_steps",
-            "save_interval",
-        ):
-            assert actual.runner[key] == 1
-        else:
-            assert actual.runner.get(key) == expected.runner.get(key), key
-    for key in ("num_workers", "persistent_workers", "pin_memory", "image_size"):
-        assert actual.data[key] == expected.data[key], key
-    for key in ("execution_horizon", "num_action_chunks"):
-        assert actual.actor.model[key] == expected.actor.model[key], key
-    prior = OmegaConf.to_container(expected.actor.model.hand_prior, resolve=True)
-    for key, value in prior.items():
-        if key in ("action_dim", "history_dim"):
-            value = 20
-        elif key in ("artifact_path", "type", "latent_dim"):
-            continue
-        elif variant.endswith("_none") and key in (
-            "encoder_condition_mode",
-            "decoder_condition_mode",
-        ):
-            value = "none"
-        assert actual.actor.model.hand_prior[key] == value, key
+        assert actual.runner.get(key) == expected.runner.get(key), key
+    # Keep the real-world data loader and robot contract across all recipes.
+    assert not actual.actor.torch_compile
+    assert actual.data.num_workers == 0
+    assert not actual.data.persistent_workers
+    assert (
+        actual.data.source_factory == "rlinf.data.datasets.lamp.realworld:create_source"
+    )
+    assert actual.data.task_name == "wuji_stack_cube"
     assert actual.data.history_length == 8
-    assert actual.actor.model.hand_prior.history_length == 8
+    assert actual.data.horizon == 16
+    assert actual.actor.model.action_dim == 26
+    assert actual.actor.model.execution_horizon == 8
+    assert actual.actor.model.num_action_chunks == 8
     assert actual.actor.model.robot_spec.arm_state_dim == 6
     assert actual.actor.model.robot_spec.hand_state_dim == 20
     assert actual.cluster.num_nodes == 2
-    expected_type = variant.split("_")[1]
-    assert actual.actor.model.hand_prior.type == expected_type
-    expected_latent = {"vq": 1, "mlp": 6}.get(expected_type, 2)
-    assert actual.actor.model.hand_prior.latent_dim == expected_latent
-    if variant not in ("prior_lamplstm_film", "dp_lamplstm_film"):
-        raw = OmegaConf.load(CONFIG_DIR / f"realworld_lamp_{variant}_stack_cube.yaml")
-        stage = variant.split("_")[0]
-        assert raw.defaults[0] == f"realworld_lamp_{stage}_lamplstm_film_stack_cube"
+    assert actual.cluster.component_placement.actor.node_group == "training_gpu"
+    prior_type = variant.split("_")[1]
+    prior = actual.actor.model.hand_prior
+    assert prior.type == prior_type
+    assert prior.latent_dim == {"vq": 1, "mlp": 6}.get(prior_type, 2)
+    if variant.startswith("prior_") or prior_type == "lamplstm":
+        for key, value in expected.actor.model.hand_prior.items():
+            if key in ("action_dim", "history_dim"):
+                value = 20
+            elif key == "artifact_path":
+                continue
+            elif "lamplstm_none" in variant and key in (
+                "encoder_condition_mode",
+                "decoder_condition_mode",
+            ):
+                value = "none"
+            assert prior[key] == value, key
+    if variant.startswith("dp_") and variant != "dp_lamplstm":
+        raw = OmegaConf.load(CONFIG_DIR / f"realworld_lamp_{variant}.yaml")
+        assert raw.defaults[0] == "realworld_lamp_dp_lamplstm"
         assert "optim" not in raw.actor
         assert "data" not in raw
+
+
+def test_training_launcher_routes_all_artifacts():
+    import shlex
+    import subprocess
+
+    result = subprocess.run(
+        ["bash", "scripts/train_wuji_lamp.sh", "all", "both", "--dry-run"],
+        cwd=CONFIG_DIR.parents[2],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    commands = [
+        shlex.split(line) for line in result.stdout.splitlines() if line.startswith(" ")
+    ]
+    assert len(commands) == 9
+    prior_artifacts = set()
+    for command in commands:
+        name = command[command.index("--config-name") + 1]
+        with initialize_config_dir(config_dir=str(CONFIG_DIR), version_base="1.1"):
+            cfg = compose(config_name=name, overrides=command[4:])
+        assert cfg.runner.logger.experiment_name == name
+        if cfg.algorithm.stage == "prior":
+            prior_artifacts.add(f"{cfg.runner.logger.log_path}/{name}/artifact")
+        elif cfg.actor.model.hand_prior.type == "mlp":
+            assert cfg.actor.model.hand_prior.artifact_path is None
+        else:
+            assert cfg.actor.model.hand_prior.artifact_path in prior_artifacts
 
 
 @pytest.mark.parametrize("fortran", [False, True])

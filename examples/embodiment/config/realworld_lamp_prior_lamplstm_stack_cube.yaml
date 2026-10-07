@@ -1,5 +1,4 @@
-# Stack-cube training root: FiLM prior, aligned with DexJoCo water_plant.
-# Other priors inherit this recipe; DP overrides only stage-specific settings.
+# LSTM prior recipe pinned to dexjoco-lamp water_plant (138b726d).
 defaults:
 - realworld_lamp_il
 - _self_
@@ -15,7 +14,7 @@ runner:
   max_steps: 20000
   save_interval: 10000
   logger:
-    experiment_name: realworld_lamp_prior_lamplstm_film_stack_cube
+    experiment_name: realworld_lamp_prior_lamplstm_stack_cube
     logger_backends:
     - tensorboard
   max_epochs: 1000000

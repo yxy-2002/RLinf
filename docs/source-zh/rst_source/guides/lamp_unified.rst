@@ -43,11 +43,12 @@ reader 不构造环境、不导入机器人 SDK，原样保留动作标签和采
 
 .. code-block:: bash
 
-   python examples/embodiment/train_lamp_il.py --config-name realworld_lamp_il \
+   python examples/embodiment/train_lamp_il.py --config-name realworld_lamp_prior_lamplstm_stack_cube \
      data.dataset_root=/path/to/demos
 
-该命令训练 LSTM prior。设置 ``actor.model.hand_prior.type=vq`` 训练 VQ，
-设置为 ``pca`` 完成 PCA 拟合。MLP 不需要独立 prior 阶段。
+这里训练 FiLM LSTM prior。PCA 拟合使用 ``realworld_lamp_prior_pca_stack_cube``，
+VQ 训练使用 ``realworld_lamp_prior_vq_stack_cube``；仅修改 prior 类型不会切换训练配方。
+MLP 没有单独的 prior 阶段。``realworld_lamp_il`` 仅保存共用的真机数据与集群设置。
 
 .. code-block:: bash
 
@@ -59,6 +60,66 @@ reader 不构造环境、不导入机器人 SDK，原样保留动作标签和采
 其他路径使用 ``realworld_lamp_dp_vq``、``realworld_lamp_dp_pca`` 或
 ``realworld_lamp_dp_mlp``；MLP 省略 prior 产物参数。通过 ``runner.resume_dir``
 恢复相同训练契约；改变机器人规格、H、K 或数据集应启动新训练。
+
+配方固定为 ``dexjoco-lamp`` 提交 ``138b726d`` 中 water-plant 的参数。
+真机专有设置保留 Wuji 机器人规格、20 维手部、26 维动作、历史长度 8、预测长度 16、
+执行长度 8、episode 划分比例 0.9/seed 42、零数据加载 worker、关闭 compile，
+以及原有双节点部署。
+
+.. list-table:: 训练配方
+   :header-rows: 1
+
+   * - 阶段
+     - 步数
+     - Batch size
+     - 学习率
+     - Warmup
+     - Weight decay
+   * - LSTM prior
+     - 20000
+     - 512
+     - 5e-5
+     - 500
+     - 0
+   * - PCA prior
+     - 1（拟合）
+     - 128（继承值，不进行优化器训练）
+     - 不适用
+     - 不适用
+     - 不适用
+   * - VQ prior
+     - 30000（max epochs 1500）
+     - 256
+     - 3e-4
+     - 150
+     - 1e-6
+   * - 所有 DP 变体
+     - 40000
+     - 512
+     - 6e-5
+     - 1000
+     - 1e-4
+
+VQ 使用 seed 233、Adam betas (0.95, 0.999)、不裁剪梯度、结束时验证，
+每 10 个 epoch 保存。LSTM 使用 seed 42、latent size 2、FiLM encoder/decoder、
+beta 0.0005 和 condition dropout 0.1。PCA 的 latent size 为 2。
+VQ 保留两个 quantizer、codebook size 4 和 code latent size 256。
+所有 DP 变体均继承 ``realworld_lamp_dp_lamplstm`` 的优化器和训练调度，
+包括 backbone LR ratio 0.1，不随 prior 配方变化。
+
+``realworld_lamp_prior_lamplstm_none`` 和 ``realworld_lamp_dp_lamplstm_none``
+关闭 encoder/decoder conditioning。前者继承 LSTM prior 根配置；PCA、VQ prior
+分别独立继承 ``realworld_lamp_il``。旧的 ``*_film_stack_cube``、
+``*_none_stack_cube`` 和 DP ``*_stack_cube`` 训练配置已删除。
+启动脚本保留 ``lamplstm_film`` 变体参数，并映射到新的 FiLM 根配置：
+
+.. code-block:: bash
+
+   bash scripts/train_wuji_lamp.sh all both --dry-run
+   bash scripts/train_wuji_lamp.sh lamplstm_film both
+
+脚本为各 DP 选择对应的 prior artifact。使用 ``DATASET_ROOT`` 和 ``OUTPUT_ROOT``
+覆盖数据与输出路径。已有 artifact 目录不会重命名，复用时请传入实际路径。
 
 真机 DP 策略评估
 ----------------

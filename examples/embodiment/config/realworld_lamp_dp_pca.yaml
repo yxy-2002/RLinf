@@ -1,13 +1,12 @@
+# Inherit the FiLM recipe; override only variant/stage-specific settings.
 defaults:
-  - realworld_lamp_il
-  - _self_
-algorithm:
-  stage: dp
+- realworld_lamp_dp_lamplstm
+- _self_
 actor:
   model:
     hand_prior:
       type: pca
-      artifact_path: ???
+      artifact_path: ./outputs/realworld_lamp_prior_pca_stack_cube/artifact
 runner:
   logger:
     experiment_name: realworld_lamp_dp_pca

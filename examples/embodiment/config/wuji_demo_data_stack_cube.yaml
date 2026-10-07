@@ -2,7 +2,7 @@ defaults:
 - wuji_demo_data
 - _self_
 runner:
-  num_data_episodes: 20
+  num_data_episodes: 10
   logger:
     log_path: ./logs
     experiment_name: wuji-demo-data-stack-cube

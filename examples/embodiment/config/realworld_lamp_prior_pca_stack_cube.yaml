@@ -1,14 +1,18 @@
-# Inherit the FiLM recipe; override only variant/stage-specific settings.
+# Prior recipe pinned to dexjoco-lamp water_plant (138b726d).
 defaults:
-- realworld_lamp_prior_lamplstm_film_stack_cube
-- _self_
-actor:
-  model:
-    hand_prior:
-      type: pca
+  - realworld_lamp_il
+  - _self_
+
 runner:
   max_steps: 1
   local_update_steps: 1
   save_interval: 1
   logger:
     experiment_name: realworld_lamp_prior_pca_stack_cube
+
+actor:
+  torch_compile: false
+  model:
+    hand_prior:
+      type: pca
+      latent_dim: 2

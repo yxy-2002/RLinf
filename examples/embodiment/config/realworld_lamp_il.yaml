@@ -35,7 +35,9 @@ cluster:
 data:
   dataset_type: realworld_lamp
   source_factory: rlinf.data.datasets.lamp.realworld:create_source
-  dataset_root: ???
+  dataset_root: ./logs/20261006-082710-wuji_demo_data_stack_cube/demos
+  num_workers: 0
+  persistent_workers: false
   task_name: wuji_stack_cube
   history_contract: primitive_v1
   history_length: 8

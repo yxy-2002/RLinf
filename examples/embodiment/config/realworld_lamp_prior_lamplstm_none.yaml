@@ -1,6 +1,6 @@
 # Inherit the FiLM recipe; override only variant/stage-specific settings.
 defaults:
-- realworld_lamp_dp_lamplstm_film_stack_cube
+- realworld_lamp_prior_lamplstm_stack_cube
 - _self_
 actor:
   model:
@@ -8,7 +8,6 @@ actor:
       type: lamplstm
       encoder_condition_mode: none
       decoder_condition_mode: none
-      artifact_path: ./outputs/realworld_lamp_prior_lamplstm_none_stack_cube/artifact
 runner:
   logger:
-    experiment_name: realworld_lamp_dp_lamplstm_none_stack_cube
+    experiment_name: realworld_lamp_prior_lamplstm_none

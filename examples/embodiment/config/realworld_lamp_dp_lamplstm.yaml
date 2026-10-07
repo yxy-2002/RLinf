@@ -1,13 +1,18 @@
+# Inherit the FiLM recipe; override only variant/stage-specific settings.
 defaults:
-  - realworld_lamp_il
-  - _self_
+- realworld_lamp_prior_lamplstm_stack_cube
+- _self_
 algorithm:
   stage: dp
-actor:
-  model:
-    hand_prior:
-      type: lamplstm
-      artifact_path: ???
 runner:
+  max_steps: 40000
   logger:
     experiment_name: realworld_lamp_dp_lamplstm
+actor:
+  optim:
+    lr: 6.0e-05
+    warmup_steps: 1000
+    weight_decay: 0.0001
+  model:
+    hand_prior:
+      artifact_path: ./outputs/realworld_lamp_prior_lamplstm_stack_cube/artifact

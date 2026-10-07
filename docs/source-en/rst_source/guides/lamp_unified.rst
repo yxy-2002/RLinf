@@ -48,11 +48,14 @@ Run from the repository root in an environment with the LAMP dependencies:
 
 .. code-block:: bash
 
-   python examples/embodiment/train_lamp_il.py --config-name realworld_lamp_il \
+   python examples/embodiment/train_lamp_il.py --config-name realworld_lamp_prior_lamplstm_stack_cube \
      data.dataset_root=/path/to/demos
 
-This trains the LSTM prior. Set ``actor.model.hand_prior.type=vq`` for VQ or
-``pca`` for PCA fitting. MLP has no separate prior stage.
+This trains the FiLM LSTM prior. Use ``realworld_lamp_prior_pca_stack_cube``
+for PCA fitting or ``realworld_lamp_prior_vq_stack_cube`` for VQ training;
+changing only the prior type does not select its training recipe.
+MLP has no separate prior stage. ``realworld_lamp_il`` contains shared
+real-world data and cluster settings and is not the selected prior recipe.
 
 .. code-block:: bash
 
@@ -65,6 +68,69 @@ Use ``realworld_lamp_dp_vq``, ``realworld_lamp_dp_pca`` or
 ``realworld_lamp_dp_mlp`` for the other paths. Omit the prior artifact override
 for MLP. Resume an unchanged training contract with ``runner.resume_dir``;
 changing the robot specification, H, K or dataset starts a new run.
+
+The recipes preserve the water-plant settings from ``dexjoco-lamp`` commit
+``138b726d``. Real-world settings retain the Wuji robot specification, 20 hand
+dimensions, 26 action dimensions, history 8, prediction horizon 16, execution
+horizon 8, episode split 0.9/seed 42, zero data-loader workers, disabled compile,
+and the existing two-node placement.
+
+.. list-table:: Training recipes
+   :header-rows: 1
+
+   * - Stage
+     - Steps
+     - Batch size
+     - Learning rate
+     - Warmup
+     - Weight decay
+   * - LSTM prior
+     - 20000
+     - 512
+     - 5e-5
+     - 500
+     - 0
+   * - PCA prior
+     - 1 (fit)
+     - 128 (inherited; no optimizer training)
+     - Not applicable
+     - Not applicable
+     - Not applicable
+   * - VQ prior
+     - 30000 (max epochs 1500)
+     - 256
+     - 3e-4
+     - 150
+     - 1e-6
+   * - All DP variants
+     - 40000
+     - 512
+     - 6e-5
+     - 1000
+     - 1e-4
+
+VQ uses seed 233, Adam betas (0.95, 0.999), no gradient clipping, validation
+at the end, and epoch checkpoint interval 10. LSTM uses seed 42, latent size 2,
+FiLM encoder/decoder, beta 0.0005 and condition dropout 0.1. PCA retains latent
+size 2. VQ retains two quantizers, codebook size 4 and code latent size 256.
+All DP variants inherit ``realworld_lamp_dp_lamplstm`` optimizer and schedule
+settings, including backbone LR ratio 0.1, regardless of their prior recipe.
+
+``realworld_lamp_prior_lamplstm_none`` and ``realworld_lamp_dp_lamplstm_none``
+disable encoder/decoder conditioning. The former inherits the LSTM prior root;
+PCA and VQ prior roots inherit ``realworld_lamp_il`` independently. Old
+``*_film_stack_cube``, ``*_none_stack_cube`` and DP ``*_stack_cube`` training
+configs are removed. The launcher keeps its ``lamplstm_film`` variant argument
+and maps it to the new FiLM roots:
+
+.. code-block:: bash
+
+   bash scripts/train_wuji_lamp.sh all both --dry-run
+   bash scripts/train_wuji_lamp.sh lamplstm_film both
+
+The launcher routes each DP to its matching prior artifact. Set ``DATASET_ROOT``
+and ``OUTPUT_ROOT`` to override data and output paths. Existing saved artifact
+directories are not renamed; pass their actual paths when reusing them.
 
 Evaluate the DP Policy on the Robot
 -----------------------------------

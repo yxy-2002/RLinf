@@ -25,7 +25,6 @@ PKG-INFO
 /psi-glove-air2wuji-hand
 !third_party/rlinf-dexhand/ros/wuji_hand_driver/CMakeLists.txt
 /scripts
-!/scripts/train_wuji_lamp*.sh
 /outputs/
 /datasets/
 /pretrained_models/
