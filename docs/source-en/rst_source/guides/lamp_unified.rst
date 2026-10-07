@@ -66,6 +66,18 @@ Use ``realworld_lamp_dp_vq``, ``realworld_lamp_dp_pca`` or
 for MLP. Resume an unchanged training contract with ``runner.resume_dir``;
 changing the robot specification, H, K or dataset starts a new run.
 
+VQ codebook export uses the learned softmax layer weights from prior training.
+This shared path applies to both Dexjoco and RealWorld/Wuji; replacing those
+weights with an equal average changes the decoder inputs and can remove hand
+poses from the exported codebook.
+
+Existing artifacts retain their stored codebooks when loaded. Older exports
+used equal layer weights. To adopt the corrected export for an existing prior,
+re-export its checkpoint to a separate artifact, then regenerate DP targets and
+train a DP against that artifact. Do not replace the codebook inside an already
+trained DP: its scalar code labels and normalization are tied to the original
+codebook. Re-exporting a prior does not require retraining the prior.
+
 Convert Demonstrations
 ----------------------
 

@@ -1,0 +1,26 @@
+# Requires a single-arm version-2 lamplstm DP deployment artifact.
+defaults:
+  - env/dexjoco_pinch_tongs@env.train
+  - env/dexjoco_pinch_tongs@env.eval
+  - dexjoco_lamp_residual_sac
+  - _self_
+cluster:
+  component_placement:
+    actor: 0-0
+    env: 0-1
+    rollout: 0-1
+runner:
+  logger:
+    experiment_name: dexjoco_lamp_residual_sac_lamplstm_pinch_tongs_scale_015_015
+actor:
+  model:
+    model_path: /vepfs-mlp2/c20250301/240906020/RLinf/outputs/lamp_lstm_il/group_b/runs/pinch_tongs/lstm_film/dp/run/artifact
+    hand_prior:
+      type: lamplstm
+    wrist_residual_scale: 0.15
+    hand_residual_scale: 0.15
+env:
+  train:
+    lamp_history_length: 8
+  eval:
+    lamp_history_length: 8

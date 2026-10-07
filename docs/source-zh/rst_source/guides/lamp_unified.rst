@@ -60,6 +60,15 @@ reader 不构造环境、不导入机器人 SDK，原样保留动作标签和采
 ``realworld_lamp_dp_mlp``；MLP 省略 prior 产物参数。通过 ``runner.resume_dir``
 恢复相同训练契约；改变机器人规格、H、K 或数据集应启动新训练。
 
+VQ 码本导出使用 prior 训练时学到的 softmax 层权重。Dexjoco 与 RealWorld/Wuji
+共用这条链路；将这些权重替换为等权平均会改变 decoder 输入，并可能使导出的
+码本丢失部分手型。
+
+既有 artifact 加载时仍使用其保存的码本。旧版导出使用等权层权重；若要为既有
+prior 采用修正后的导出方式，应将其 checkpoint 重新导出为独立 artifact，
+随后重新生成 DP 标签并基于该 artifact 训练 DP。不要直接替换已训练 DP 内的码本：
+其标量码字标签和归一化统计绑定原码本。重新导出 prior 不需要重新训练 prior。
+
 转换示范
 --------
 
