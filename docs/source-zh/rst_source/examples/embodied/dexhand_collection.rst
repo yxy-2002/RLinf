@@ -335,6 +335,9 @@ Wuji LAMP 真机在线评估
 采集的机器人、相机和 reset 设置。Rank 0 执行动作，rank 1 运行 DP 推理。
 关闭 reward model、位姿奖励和成功确认，不加载 reward checkpoint，
 使用未修改的标准评估入口。
+机器人节点导入 LAMP adapter 和 robot spec 时不加载推理模型；模型类按需导入。
+``transformers`` 等视觉模型依赖只在加载模型的 GPU 节点需要。两节点应同步
+包含此延迟导入逻辑的代码，避免 franka 环境在初始化 adapter 时导入 ResNet。
 
 默认评估 FiLM DP，历史长度为 8，动作维度为 26，不使用 temporal ensemble。
 默认运行一个 400 控制步的评估轮次，关闭自动 reset；采集入口的

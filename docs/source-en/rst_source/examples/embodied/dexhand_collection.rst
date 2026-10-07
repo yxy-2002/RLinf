@@ -378,6 +378,11 @@ stack-cube collection robot, cameras and reset settings. Rank 0 executes
 actions; rank 1 runs DP inference. Reward inference, pose rewards and success
 confirmation are disabled; no reward checkpoint is loaded. The standard
 evaluation entrypoint is used unchanged.
+Importing LAMP adapters and robot specs on the robot node does not load policy
+implementations. Policy classes are imported lazily; vision dependencies such
+as ``transformers`` are needed on the GPU node that loads the model. Synchronize
+this code on both nodes so adapter initialization does not import ResNet in the
+franka environment.
 
 The default is FiLM DP with history length 8, action dimension 26 and temporal
 ensembling disabled. It runs one 400-control-step evaluation round without

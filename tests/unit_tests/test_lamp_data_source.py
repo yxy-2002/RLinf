@@ -171,3 +171,47 @@ assert VLMDatasetRegistry is DirectRegistry
         env={**os.environ, "USE_TF": "0"},
     )
     assert result.returncode == 0, result.stderr
+
+
+def test_realworld_adapter_does_not_import_policy_dependencies():
+    import os
+    import subprocess
+    import sys
+
+    code = """
+import importlib.abc
+import sys
+
+class BlockPolicyDependencies(importlib.abc.MetaPathFinder):
+    def find_spec(self, fullname, path=None, target=None):
+        if fullname.split('.')[0] in ('transformers', 'torchvision', 'diffusers', 'safetensors'):
+            raise ModuleNotFoundError(f'Blocked robot-node dependency: {fullname}')
+
+sys.meta_path.insert(0, BlockPolicyDependencies())
+from rlinf.models.embodiment.lamp.robot_spec import LampRobotSpec
+from rlinf.envs.lamp_adapter import validate_lamp_environment, LampObservationHistory
+from rlinf.envs.lamp_realworld_adapter import RealWorldLampAdapter
+from rlinf.data.datasets.lamp.realworld import wuji_robot_spec
+from omegaconf import OmegaConf
+import torch
+
+spec = wuji_robot_spec()
+cfg = OmegaConf.create({
+    'env_type': 'realworld',
+    'lamp_adapter': 'rlinf.envs.lamp_realworld_adapter:RealWorldLampAdapter',
+    'lamp_robot_spec': spec.to_dict(),
+})
+validate_lamp_environment(cfg, OmegaConf.create({'robot_spec': spec.to_dict()}))
+history = LampObservationHistory(spec, 1, 8)
+history.update(torch.zeros(1, 6), torch.zeros(1, 20), [0], reset=True)
+assert history.observation()['hand_history'].shape == (1, 8, 20)
+assert 'rlinf.models.embodiment.lamp.policy_wrapper' not in sys.modules
+assert 'rlinf.models.embodiment.lamp.residual_sac' not in sys.modules
+"""
+    result = subprocess.run(
+        [sys.executable, "-c", code],
+        capture_output=True,
+        text=True,
+        env={**os.environ, "USE_TF": "0"},
+    )
+    assert result.returncode == 0, result.stderr

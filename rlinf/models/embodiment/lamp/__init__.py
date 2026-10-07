@@ -18,20 +18,41 @@ from __future__ import annotations
 
 import copy
 from dataclasses import fields
+from importlib import import_module
+from typing import TYPE_CHECKING
 
 import torch
 from omegaconf import DictConfig, open_dict
 
 from rlinf.models.embodiment.lamp.artifact_io import load_artifact
-from rlinf.models.embodiment.lamp.policy_wrapper import LampPolicy, LampPolicySpec
-from rlinf.models.embodiment.lamp.residual_sac import LampResidualSACPolicy
-from rlinf.models.embodiment.lamp.single_arm_diffusion_policy import LAMPDiffusionPolicy
 
 from .robot_spec import LampRobotSpec, resolve_robot_spec
+
+if TYPE_CHECKING:
+    from .policy_wrapper import LampPolicy
+    from .residual_sac import LampResidualSACPolicy
+
+
+def __getattr__(name: str):
+    """Load policy exports only when requested, not for robot-side adapters."""
+    modules = {
+        "LampPolicy": ".policy_wrapper",
+        "LampPolicySpec": ".policy_wrapper",
+        "LampResidualSACPolicy": ".residual_sac",
+        "LAMPDiffusionPolicy": ".single_arm_diffusion_policy",
+    }
+    if name not in modules:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    value = getattr(import_module(modules[name], __name__), name)
+    globals()[name] = value
+    return value
 
 
 def get_model(cfg: DictConfig, torch_dtype: torch.dtype = torch.float32) -> LampPolicy:
     """Build a deployment policy from a native self-contained artifact."""
+
+    from .policy_wrapper import LampPolicy, LampPolicySpec
+    from .single_arm_diffusion_policy import LAMPDiffusionPolicy
 
     del torch_dtype
     artifact_path = cfg.get("model_path", None)
@@ -122,6 +143,8 @@ def get_residual_model(
     cfg: DictConfig, torch_dtype: torch.dtype = torch.float32
 ) -> LampResidualSACPolicy:
     """Build online residual SAC around a frozen native LAMP DP artifact."""
+
+    from .residual_sac import LampResidualSACPolicy
 
     contract_version = int(cfg.get("contract_version", 4))
     if contract_version not in (4, 5):
