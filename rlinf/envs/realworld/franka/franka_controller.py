@@ -442,6 +442,16 @@ class FrankaController(Worker):
         assert self._end_effector is not None
         return self._end_effector.finger_names
 
+    def pause_hand_evaluation(self) -> None:
+        """Hold the Wuji hand while the operator prepares the next phase."""
+        if self._end_effector_type == EndEffectorType.WUJI_HAND:
+            self._end_effector.hold()
+
+    def resume_hand_evaluation(self) -> None:
+        """Resume Wuji output only after an explicit operator confirmation."""
+        if self._end_effector_type == EndEffectorType.WUJI_HAND:
+            self._end_effector.resume()
+
     def clear_hand_trajectory(self) -> None:
         if self._end_effector_type == EndEffectorType.WUJI_HAND:
             self._end_effector.clear_trajectory()

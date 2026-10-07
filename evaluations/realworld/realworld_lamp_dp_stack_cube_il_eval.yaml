@@ -1,0 +1,22 @@
+# Load task/device settings first, then apply the shared evaluation settings.
+defaults:
+  - wuji_demo_data_stack_cube
+  - realworld_lamp_dp_il_eval
+  - _self_
+
+hydra:
+  searchpath:
+    - file://${oc.env:EMBODIED_PATH}/config/
+
+runner:
+  logger:
+    log_path: ./logs/eval/wuji_lamp
+    experiment_name: realworld_lamp_dp_stack_cube_il_eval
+
+rollout:
+  model:
+    model_path: /workspace/yxy_RLinf/RLinf/logs/realworld_stack_cubes/realworld_lamp_dp_lamplstm_film_stack_cube/artifact
+
+reward:
+  model:
+    model_path: /workspace/yxy_RLinf/RLinf/logs/20261006-072812-wuji_reward_training_stack_cube/wuji-stack-cube-resnet18/checkpoints/best_model/actor/model_state_dict/full_weights.pt

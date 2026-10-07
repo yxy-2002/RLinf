@@ -28,9 +28,18 @@ class RealWorldLampAdapter(LampEnvAdapter):
             )
         if int(env.num_envs) != 1:
             raise ValueError("The RealWorld LAMP adapter supports one robot per worker")
+        self.auto_reset = bool(cfg.get("auto_reset", False))
         self.history = LampObservationHistory(
             self.robot_spec, 1, int(cfg.get("lamp_history_length", 16))
         )
+
+    def pause_evaluation(self) -> None:
+        """Hold the robot hand throughout the interactive wait."""
+        self.env.unwrapped.pause_evaluation()
+
+    def resume_evaluation(self) -> None:
+        """Resume only in response to the matching operator confirmation."""
+        self.env.unwrapped.resume_evaluation()
 
     def _observe(self, raw, *, reset=False):
         arm, hand = measured_states(raw)
@@ -105,7 +114,7 @@ class RealWorldLampAdapter(LampEnvAdapter):
             intervene_flag=intervention,
         )
         done = (terms | truncs).any(dim=1)
-        if done.any() and self.env.auto_reset:
+        if done.any() and self.auto_reset:
             reset_obs, reset_info = self.reset()
             final.update(
                 final_observation=obs,

@@ -340,7 +340,7 @@ Wuji LAMP 真机在线评估
 包含此延迟导入逻辑的代码，避免 franka 环境在初始化 adapter 时导入 ResNet。
 
 默认评估 FiLM DP，历史长度为 8，动作维度为 26，不使用 temporal ensemble。
-默认运行一个 400 控制步的评估轮次，关闭自动 reset；采集入口的
+当前配置运行 20 个评估轮次，每轮 400 控制步，关闭自动 reset；采集入口的
 ``pause_between_episodes`` 不控制评估入口。保留按钮接管，松开后恢复 policy。
 仅执行策略，不判断任务成功与否。以下命令会连接并控制真实机器人：
 
@@ -371,3 +371,26 @@ Wuji LAMP 真机在线评估
 无需另外指定 prior 路径，完整 DP artifact 已包含所需权重和统计量。
 日志位于 ``logs/<时间>-realworld_lamp_dp_stack_cube_eval``。软件配置和回归测试
 不替代实际硬件验证。
+
+评估轮次间的两次回车确认
+~~~~~~~~~~~~~~~~~~~~~~~~
+
+设置 ``runner.pause_between_eval_episodes: true`` 开启交互确认；默认关闭。
+它与采集的 ``pause_between_episodes`` 独立，键盘输入来自 GPU/driver 终端。
+每轮（包括第一轮）先等待第一次回车，才执行该轮 reset。Reset 返回后再次
+提示，第二次回车才发送初始观测并开始策略推理和动作执行。最后一轮结束后
+直接退出，不再要求回车。执行或 reset 期间提前按下的回车不会确认后续阶段。
+
+Wuji LAMP 评估在两次等待前均暂停手部轨迹并解除指令超时计时；收到匹配的
+回车确认后，先显式恢复驱动，再执行 reset 或策略。硬件故障、反馈过期时
+仍会拒绝恢复，人工等待不会关闭这些检查。
+
+.. code-block:: bash
+
+   bash evaluations/run_eval.sh realworld realworld_lamp_dp_stack_cube_eval \
+     runner.pause_between_eval_episodes=true \
+     env.eval.rollout_epoch=20
+
+交互模式要求 GPU/driver 使用交互终端、单环境、单 pipeline stage、
+``auto_reset: false``，且不启用 decoupled rollout。等待时 Ctrl+C 或终端 EOF
+会取消确认并关闭环境及 rollout worker。关闭此选项时保留原有自动轮次流程。

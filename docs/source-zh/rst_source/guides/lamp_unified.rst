@@ -60,6 +60,32 @@ reader 不构造环境、不导入机器人 SDK，原样保留动作标签和采
 ``realworld_lamp_dp_mlp``；MLP 省略 prior 产物参数。通过 ``runner.resume_dir``
 恢复相同训练契约；改变机器人规格、H、K 或数据集应启动新训练。
 
+真机 DP 策略评估
+----------------
+
+使用以下命令评估叠方块任务：
+
+.. code-block:: bash
+
+   bash evaluations/run_eval.sh realworld realworld_lamp_dp_stack_cube_il_eval
+
+``evaluations/realworld/`` 下的 ``realworld_lamp_dp_il_eval.yaml`` 保存通用
+rollout、adapter 和 reward 启用配置。小配置
+``realworld_lamp_dp_stack_cube_il_eval.yaml`` 先加载 ``wuji_demo_data_stack_cube``
+中的任务与设备设置，再应用通用评估配置，并指定 ``runner.logger``、
+``rollout.model.model_path`` 和 ``reward.model.model_path``。
+请按实际产物修改路径。``run_eval.sh`` 会传入带时间戳的
+``runner.logger.log_path``；如需自定义路径，可在命令行覆盖此字段。
+旧名称 ``realworld_lamp_dp_stack_cube_eval`` 保留为兼容入口。
+
+独立 reward model 在 ``reward_gpu`` 上运行。评估 driver 负责启动和关闭该服务；
+真机节点仅使用轻量 RPC 客户端，无需安装 ``transformers`` 等 reward model 训练依赖。
+启用
+``reward_success_confirmation: true`` 后，模型概率连续 ``success_hold_steps``
+（1）步严格超过 ``reward.reward_threshold``（0.95）才判定成功。
+位姿奖励保持关闭。每次评估运行 20 个 episode，每轮最多 400 步；
+每轮先按 Enter 复位，再按 Enter 开始执行策略。
+
 转换示范
 --------
 

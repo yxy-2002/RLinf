@@ -14,6 +14,8 @@
 
 """Placement, service creation and lightweight clients for real-world rewards."""
 
+from collections.abc import Iterator
+from contextlib import contextmanager
 from typing import TYPE_CHECKING, Any
 
 from omegaconf import DictConfig, OmegaConf
@@ -194,3 +196,32 @@ def launch_realworld_reward_service(env_cfg: DictConfig) -> tuple[Any, str]:
             group._close()
         raise
     return _OwnedRewardService(group, service), service_name
+
+
+@contextmanager
+def evaluation_reward_service(
+    cfg: DictConfig,
+    component_placement: "ComponentPlacement",
+    cluster: "Cluster",
+) -> Iterator[str | None]:
+    """Own the standalone reward service on the evaluation driver.
+
+    Only the service name crosses into the robot environment, so its Python
+    environment does not need the reward worker's training dependencies.
+    """
+    reward = cfg.get("reward", {})
+    if not (
+        reward.get("use_reward_model", False)
+        and reward.get("standalone_realworld", False)
+        and cfg.env.eval.env_type == "realworld"
+    ):
+        yield None
+        return
+    env_cfg = inject_realworld_reward_cfg(
+        cfg, cfg.env.eval, component_placement, cluster
+    )
+    owner, service_name = launch_realworld_reward_service(env_cfg)
+    try:
+        yield service_name
+    finally:
+        owner._close()

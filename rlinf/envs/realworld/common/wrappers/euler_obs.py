@@ -12,6 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import copy
+
 import gymnasium as gym
 import numpy as np
 from gymnasium import Env, spaces
@@ -25,6 +27,7 @@ class Quat2EulerWrapper(gym.ObservationWrapper):
 
     def __init__(self, env: Env):
         super().__init__(env)
+        self.observation_space = copy.deepcopy(env.observation_space)
         # from xyz + quat to xyz + euler
         self.observation_space["state"]["tcp_pose"] = spaces.Box(
             -np.inf, np.inf, shape=(6,)
@@ -35,5 +38,5 @@ class Quat2EulerWrapper(gym.ObservationWrapper):
         tcp_pose = observation["state"]["tcp_pose"]
         observation["state"]["tcp_pose"] = np.concatenate(
             (tcp_pose[:3], R.from_quat(tcp_pose[3:].copy()).as_euler("xyz"))
-        )
+        ).astype(self.observation_space["state"]["tcp_pose"].dtype)
         return observation

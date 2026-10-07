@@ -17,17 +17,21 @@
 from pathlib import Path
 from unittest.mock import MagicMock
 
+import pytest
 from hydra import compose, initialize_config_dir
+from omegaconf import OmegaConf
 
 ROOT = Path(__file__).resolve().parents[2]
 
 
-def eval_config(monkeypatch):
+def eval_config(
+    monkeypatch, config_name="realworld_lamp_dp_stack_cube_il_eval", overrides=None
+):
     monkeypatch.setenv("EMBODIED_PATH", str(ROOT / "examples/embodiment"))
     with initialize_config_dir(
         config_dir=str(ROOT / "evaluations/realworld"), version_base="1.1"
     ):
-        return compose(config_name="realworld_lamp_dp_stack_cube_eval")
+        return compose(config_name=config_name, overrides=overrides or [])
 
 
 def test_eval_config_uses_normalized_wuji_adapter(monkeypatch):
@@ -45,11 +49,18 @@ def test_eval_config_uses_normalized_wuji_adapter(monkeypatch):
     assert not cfg.env.eval.auto_reset
     assert cfg.cluster.component_placement.env.node_group == "franka"
     assert cfg.cluster.component_placement.rollout.node_group == "reward_gpu"
-    assert not cfg.reward.use_reward_model
-    assert not cfg.reward.standalone_realworld
-    assert cfg.reward.model.model_path is None
-    assert not cfg.env.eval.override_cfg.use_reward_model
-    assert not cfg.env.eval.override_cfg.reward_success_confirmation
+    assert cfg.reward.use_reward_model
+    assert cfg.reward.standalone_realworld
+    assert cfg.reward.model.model_path.endswith("full_weights.pt")
+    assert cfg.env.eval.override_cfg.use_reward_model
+    assert cfg.env.eval.override_cfg.reward_success_confirmation
+    assert cfg.reward.reward_threshold == 0.95
+    assert cfg.env.eval.override_cfg.success_hold_steps == 1
+    assert cfg.runner.success_source == "reward_model"
+    assert cfg.cluster.component_placement.reward.node_group == "reward_gpu"
+    assert (
+        cfg.env.eval.override_cfg.max_num_steps == cfg.env.eval.max_episode_steps == 400
+    )
     assert not cfg.env.eval.override_cfg.enable_pose_reward
 
 
@@ -84,3 +95,31 @@ def test_dp_eval_counts_terminal_prefix_before_cancelled_suffix(monkeypatch):
     assert metrics["success"].item()
     _, metrics = module.EnvWorker.env_evaluate_step(worker, torch.zeros(1, 8, 26), 0)
     assert metrics == {}
+
+
+def test_legacy_eval_config_matches_task_config(monkeypatch):
+    current = eval_config(monkeypatch)
+    legacy = eval_config(monkeypatch, "realworld_lamp_dp_stack_cube_eval")
+    assert OmegaConf.to_container(current, resolve=True) == OmegaConf.to_container(
+        legacy, resolve=True
+    )
+
+
+@pytest.mark.parametrize(
+    "config_name",
+    ["realworld_lamp_dp_stack_cube_il_eval", "realworld_lamp_dp_stack_cube_eval"],
+)
+def test_eval_task_paths_can_be_overridden(monkeypatch, config_name):
+    cfg = eval_config(
+        monkeypatch,
+        config_name,
+        [
+            "rollout.model.model_path=/tmp/policy/artifact",
+            "reward.model.model_path=/tmp/reward.pt",
+            "runner.logger.log_path=/tmp/eval",
+        ],
+    )
+    assert cfg.rollout.model.model_path == "/tmp/policy/artifact"
+    assert cfg.reward.model.model_path == "/tmp/reward.pt"
+    assert cfg.runner.logger.log_path == "/tmp/eval"
+    assert cfg.env.eval.override_cfg.reward_success_confirmation

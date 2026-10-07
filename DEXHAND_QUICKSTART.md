@@ -395,3 +395,23 @@ bash examples/reward/run_reward_training.sh wuji_reward_training_stack_cube
 在采集入口终端按 Ctrl+C，等待进程清理结束；手部关闭流程会请求失能，再结束自有驱动。随后关闭 RViz。reward 采集和 demo 采集对未完成 episode 的保存规则见前文，强杀进程不能保证执行正常清理。
 
 更多参数和驱动接口见 [工具说明](toolkits/dexhand/README.md)，已完成的测试及未完成的真机验收见 [验证记录](third_party/rlinf-dexhand/VALIDATION.md)。
+
+### tips 如何在两个设备间快速传输代码
+
+4090 to nuc: 
+
+```bash
+
+git add .
+
+{
+  git ls-files -z
+  git diff --name-only --diff-filter=D -z HEAD
+} | rsync -rlzn --itemize-changes \
+      --from0 \
+      --files-from=- \
+      --delete-missing-args \
+      --rsync-path='sudo -n /usr/bin/rsync' \
+      ./ psibot@192.168.10.10:/home/psibot/RLinf/
+
+```

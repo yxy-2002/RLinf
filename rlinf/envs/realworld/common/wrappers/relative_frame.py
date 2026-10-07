@@ -108,6 +108,11 @@ class RelativeFrame(gym.Wrapper):
             quat_r_o = R.from_matrix(T_r_o[:3, :3].copy()).as_quat()
             obs["state"]["tcp_pose"] = np.concatenate((p_r_o, quat_r_o))
 
+        for key in ("tcp_pose", "tcp_vel"):
+            if key in obs["state"]:
+                obs["state"][key] = np.asarray(
+                    obs["state"][key], dtype=self.observation_space["state"][key].dtype
+                )
         return obs
 
     def transform_action(self, action: np.ndarray):

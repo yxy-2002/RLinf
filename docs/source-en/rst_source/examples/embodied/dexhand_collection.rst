@@ -385,7 +385,7 @@ this code on both nodes so adapter initialization does not import ResNet in the
 franka environment.
 
 The default is FiLM DP with history length 8, action dimension 26 and temporal
-ensembling disabled. It runs one 400-control-step evaluation round without
+ensembling disabled. The current config runs 20 evaluation rounds of 400 control steps without
 automatic reset. The collection setting ``pause_between_episodes`` does not
 control this entrypoint. Button intervention remains enabled; release returns
 to policy control. This run executes the policy without judging task success.
@@ -422,3 +422,31 @@ an intermediate checkpoint. No separate prior path is needed: the full DP
 artifact contains the required weights and statistics. Logs are written to
 ``logs/<timestamp>-realworld_lamp_dp_stack_cube_eval``. Config checks and
 regression tests do not replace hardware validation.
+
+Two Enter confirmations between evaluation rounds
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Set ``runner.pause_between_eval_episodes: true`` to enable interactive
+confirmation; it defaults to false. This is independent of the collection
+setting ``pause_between_episodes``. Input is read from the GPU/driver terminal.
+Every round, including the first, waits for Enter before resetting. After reset
+returns, a second prompt waits for another Enter before sending the initial
+observation and starting policy inference and action execution. The final round
+exits without another prompt. Enter pressed during execution or reset does not
+approve a later phase.
+
+For Wuji LAMP evaluation, both prompts hold the hand and disarm the command
+timeout. Each matching Enter explicitly resumes the driver before reset or
+policy execution. Resume still rejects hardware faults or stale feedback;
+waiting does not disable these checks.
+
+.. code-block:: bash
+
+   bash evaluations/run_eval.sh realworld realworld_lamp_dp_stack_cube_eval \
+     runner.pause_between_eval_episodes=true \
+     env.eval.rollout_epoch=20
+
+Interactive mode requires a driver TTY, one environment, one pipeline stage,
+``auto_reset: false`` and coupled rollout. Ctrl+C or terminal EOF while waiting
+cancels confirmation and closes the environment and rollout workers. Disabling
+the option preserves the existing automatic round sequence.

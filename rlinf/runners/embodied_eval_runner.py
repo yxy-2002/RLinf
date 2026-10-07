@@ -12,6 +12,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import asyncio
+import os
+import select
+import sys
+import termios
+import time
 import typing
 
 from rlinf.scheduler import Channel
@@ -20,6 +26,36 @@ from rlinf.utils.distributed import ScopedTimer
 from rlinf.utils.logging import get_logger
 from rlinf.utils.metric_logger import MetricLogger
 from rlinf.utils.metric_utils import compute_evaluate_metrics
+
+
+def wait_for_eval_confirmations(control: Channel, env_handle: Handle) -> None:
+    """Confirm reset and execution separately from the driver terminal."""
+    while not env_handle.done():
+        try:
+            episode, phase = control.get_nowait(key="request")
+        except asyncio.QueueEmpty:
+            time.sleep(0.1)
+            continue
+        # A key pressed during execution/reset must not approve a later phase.
+        termios.tcflush(sys.stdin.fileno(), termios.TCIFLUSH)
+        action = "reset" if phase == "reset" else "start evaluation"
+        print(
+            f"Episode {episode}: press Enter to {action} (Ctrl+C to stop).",
+            flush=True,
+        )
+        while not env_handle.done():
+            readable, _, _ = select.select([sys.stdin], [], [], 0.1)
+            if readable:
+                # Read from the fd directly so TextIO buffering cannot retain
+                # a second Enter and accidentally approve the next phase.
+                line = os.read(sys.stdin.fileno(), 4096)
+                if line == b"":
+                    raise EOFError("Evaluation confirmation terminal was closed")
+                if line.strip():
+                    continue
+                control.put((episode, phase), key="confirm")
+                break
+
 
 if typing.TYPE_CHECKING:
     from omegaconf.dictconfig import DictConfig
@@ -40,6 +76,26 @@ class EmbodiedEvalRunner:
         self.rollout = rollout
         self.env = env
 
+        self.pause_between_eval_episodes = bool(
+            cfg.runner.get("pause_between_eval_episodes", False)
+        )
+        if self.pause_between_eval_episodes:
+            if not sys.stdin.isatty():
+                raise ValueError(
+                    "runner.pause_between_eval_episodes=true requires an interactive "
+                    "terminal on the GPU/driver node"
+                )
+            if (
+                cfg.env.eval.auto_reset
+                or cfg.env.eval.total_num_envs != 1
+                or cfg.rollout.pipeline_stage_num != 1
+                or cfg.runner.get("enable_decoupled_mode", False)
+            ):
+                raise ValueError(
+                    "Interactive evaluation requires one environment, one pipeline "
+                    "stage, auto_reset=false and coupled rollout"
+                )
+
         # Data channels
         self.env_channel = Channel.create("Env")
         self.rollout_channel = Channel.create("Rollout")
@@ -52,23 +108,47 @@ class EmbodiedEvalRunner:
 
         self.logger = get_logger()
 
-    def init_workers(self):
+    def init_workers(self, reward_service_name: str | None = None):
         rollout_handle = self.rollout.init_worker()
-        env_handle = self.env.init_worker()
+        env_kwargs = (
+            {"reward_service_name": reward_service_name}
+            if reward_service_name is not None
+            else {}
+        )
+        env_handle = self.env.init_worker(**env_kwargs)
 
         rollout_handle.wait()
         env_handle.wait()
 
     def evaluate(self):
+        control = (
+            Channel.create("EvalConfirmation")
+            if self.pause_between_eval_episodes
+            else None
+        )
+        control_kwargs = {"confirmation_channel": control} if control else {}
         env_handle: Handle = self.env.evaluate(
             input_channel=self.env_channel,
             rollout_channel=self.rollout_channel,
+            **control_kwargs,
         )
         rollout_handle: Handle = self.rollout.evaluate(
             input_channel=self.rollout_channel,
             output_channel=self.env_channel,
         )
-        env_results = env_handle.wait()
+        try:
+            if control is not None:
+                wait_for_eval_confirmations(control, env_handle)
+            env_results = env_handle.wait()
+        except (KeyboardInterrupt, EOFError):
+            if control is not None:
+                control.put(None, key="confirm")
+                try:
+                    env_handle.wait()
+                finally:
+                    self.rollout._close()
+                    self.env._close()
+            raise
         env_decoupled_mode = self.cfg.runner.get("enable_decoupled_mode", False)
         if not env_decoupled_mode:
             rollout_handle.wait()

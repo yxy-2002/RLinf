@@ -304,6 +304,10 @@ class WujiHand(EndEffector):
     def hold(self) -> None:
         self._call("hold")
 
+    def resume(self) -> None:
+        """Explicitly resume; the driver rejects stale feedback and hardware faults."""
+        self._call("resume")
+
     def clear_trajectory(self) -> None:
         self._call("clear_trajectory")
 

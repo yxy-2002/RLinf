@@ -157,3 +157,103 @@ def test_wrong_feedback_dimension_is_not_silently_cached():
     hand._on_state(SimpleNamespace(name=hand.spec.joint_names, position=[0.0] * 19))
     with pytest.raises(ValueError, match="joint order/dimension mismatch"):
         hand.get_state()
+
+
+def test_relative_euler_observations_match_spaces_without_mutating_base():
+    """Check reset and step at every checker boundary, including nonzero poses."""
+    import warnings
+
+    from gymnasium.wrappers import PassiveEnvChecker
+
+    from rlinf.envs.realworld.common.wrappers.relative_frame import RelativeFrame
+
+    class MeasuredEnv(gym.Env):
+        action_space = gym.spaces.Box(-1, 1, (26,), dtype=np.float32)
+
+        def __init__(self):
+            self.observation_space = gym.spaces.Dict(
+                {
+                    "state": gym.spaces.Dict(
+                        {
+                            "tcp_pose": gym.spaces.Box(-np.inf, np.inf, (7,)),
+                            "tcp_vel": gym.spaces.Box(-np.inf, np.inf, (6,)),
+                        }
+                    )
+                }
+            )
+
+        def reset(self, **kwargs):
+            return {
+                "state": {
+                    "tcp_pose": np.array([0.4, 0.2, 0.3, 0, 0, 0, 1], np.float32),
+                    "tcp_vel": np.ones(6, np.float32),
+                }
+            }, {}
+
+        def step(self, action):
+            obs, info = self.reset()
+            obs["state"]["tcp_pose"][0] += 0.1
+            return obs, 0.0, False, False, info
+
+    base = MeasuredEnv()
+    relative = RelativeFrame(PassiveEnvChecker(base))
+    euler = Quat2EulerWrapper(PassiveEnvChecker(relative))
+    wrapped = PassiveEnvChecker(euler)
+    assert base.observation_space["state"]["tcp_pose"].shape == (7,)
+    assert relative.observation_space["state"]["tcp_pose"].shape == (7,)
+    assert euler.observation_space["state"]["tcp_pose"].shape == (6,)
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        obs, _ = wrapped.reset()
+        assert wrapped.observation_space.contains(obs)
+        np.testing.assert_allclose(obs["state"]["tcp_pose"], 0, atol=1e-7)
+        obs, *_ = wrapped.step(np.zeros(26, np.float32))
+        assert wrapped.observation_space.contains(obs)
+        assert obs["state"]["tcp_pose"][0] == pytest.approx(0.1)
+
+
+@pytest.mark.parametrize("success", [False, True])
+def test_wuji_explicit_resume_preserves_driver_fault_checks(success):
+    from types import SimpleNamespace
+
+    from rlinf.envs.realworld.common.hand.wuji_hand import WujiHand
+
+    hand = WujiHand.__new__(WujiHand)
+    service = Mock(return_value=SimpleNamespace(success=success, message="fault"))
+    hand._services = {"resume": service}
+    if success:
+        hand.resume()
+    else:
+        with pytest.raises(RuntimeError, match="Wuji resume: fault"):
+            hand.resume()
+    service.assert_called_once_with()
+
+
+def test_evaluation_hand_hooks_cross_wrappers_without_deprecation_warnings():
+    import warnings
+    from types import SimpleNamespace
+
+    from rlinf.envs.lamp_realworld_adapter import RealWorldLampAdapter
+    from rlinf.envs.realworld.realworld_env import RealWorldEnv
+
+    # Only the controller RPC boundary is mocked; no hardware is initialized.
+    franka = FrankaEnv.__new__(FrankaEnv)
+    franka.config = SimpleNamespace(is_dummy=False)
+    franka._hand_spec = object()
+    franka._controller = Mock()
+    wrapped_franka = gym.Wrapper(gym.Wrapper(franka))
+
+    class Vector:
+        def call(self, name, *args):
+            return (getattr(wrapped_franka, name)(*args),)
+
+    realworld = RealWorldEnv.__new__(RealWorldEnv)
+    realworld.env = Vector()
+    adapter = RealWorldLampAdapter.__new__(RealWorldLampAdapter)
+    adapter.env = gym.Wrapper(realworld)
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        adapter.pause_evaluation()
+        adapter.resume_evaluation()
+    franka._controller.pause_hand_evaluation.return_value.wait.assert_called_once()
+    franka._controller.resume_hand_evaluation.return_value.wait.assert_called_once()

@@ -66,6 +66,33 @@ Use ``realworld_lamp_dp_vq``, ``realworld_lamp_dp_pca`` or
 for MLP. Resume an unchanged training contract with ``runner.resume_dir``;
 changing the robot specification, H, K or dataset starts a new run.
 
+Evaluate the DP Policy on the Robot
+-----------------------------------
+
+Run the stack-cube evaluation with:
+
+.. code-block:: bash
+
+   bash evaluations/run_eval.sh realworld realworld_lamp_dp_stack_cube_il_eval
+
+Under ``evaluations/realworld/``, ``realworld_lamp_dp_il_eval.yaml`` holds the
+shared rollout, adapter and reward enablement settings. The small
+``realworld_lamp_dp_stack_cube_il_eval.yaml`` loads ``wuji_demo_data_stack_cube``
+for the task/device setup before applying those shared settings, and specifies
+``runner.logger``, ``rollout.model.model_path`` and ``reward.model.model_path``.
+Update these paths for your artifacts. ``run_eval.sh`` supplies a timestamped
+``runner.logger.log_path``; pass that key as a CLI override to use your own path.
+The old ``realworld_lamp_dp_stack_cube_eval`` name remains a compatibility alias.
+
+The standalone reward model runs on ``reward_gpu``. The evaluation driver starts
+and closes this service; the robot node uses a lightweight RPC client and does
+not need reward-model training dependencies such as ``transformers``.
+With
+``reward_success_confirmation: true``, success requires probability strictly
+above ``reward.reward_threshold`` (0.95) for ``success_hold_steps`` (1) steps.
+Pose rewards remain disabled. Evaluation runs 20 episodes, up to 400 steps each;
+press Enter to reset, then Enter again to start policy execution in each episode.
+
 Convert Demonstrations
 ----------------------
 

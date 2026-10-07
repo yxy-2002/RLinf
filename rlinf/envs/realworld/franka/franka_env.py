@@ -580,6 +580,16 @@ class FrankaEnv(gym.Env):
         reward_array = np.asarray(reward_output).reshape(-1)
         return float(reward_array[0])
 
+    def pause_evaluation(self) -> None:
+        """Stop hand trajectories before waiting for operator confirmation."""
+        if getattr(self, "_hand_spec", None) is not None and not self.config.is_dummy:
+            self._controller.pause_hand_evaluation().wait()
+
+    def resume_evaluation(self) -> None:
+        """Resume a healthy hand after operator confirmation, without moving it."""
+        if getattr(self, "_hand_spec", None) is not None and not self.config.is_dummy:
+            self._controller.resume_hand_evaluation().wait()
+
     def reset(self, joint_reset=False, seed=None, options=None):
         if getattr(self, "_hand_spec", None) is not None and not self.config.is_dummy:
             self._controller.clear_hand_trajectory().wait()

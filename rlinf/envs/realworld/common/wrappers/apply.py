@@ -94,7 +94,11 @@ def _apply_keyboard_wrapper(env: gym.Env, mode: Optional[str]) -> gym.Env:
 def apply_single_arm_wrappers(env: gym.Env, cfg: Mapping[str, Any]) -> gym.Env:
     """Wrapper stack for single-arm realworld envs (franka single, xsquare)."""
     end_effector_type = str(
-        getattr(getattr(env, "config", None), "end_effector_type", "franka_gripper")
+        getattr(
+            getattr(env.unwrapped, "config", None),
+            "end_effector_type",
+            "franka_gripper",
+        )
     )
     is_dex_hand = end_effector_type.endswith("hand")
 
@@ -109,7 +113,7 @@ def apply_single_arm_wrappers(env: gym.Env, cfg: Mapping[str, Any]) -> gym.Env:
 
     gripper_enabled = not no_gripper
 
-    if not env.config.is_dummy and use_spacemouse:
+    if not env.unwrapped.config.is_dummy and use_spacemouse:
         if is_dex_hand:
             glove_cfg = cfg.get("glove_config", {})
             retarget_cfg = cfg.get("retargeting", {})
@@ -139,7 +143,7 @@ def apply_single_arm_wrappers(env: gym.Env, cfg: Mapping[str, Any]) -> gym.Env:
         else:
             env = SpacemouseIntervention(env, gripper_enabled=gripper_enabled)
 
-    if not env.config.is_dummy and use_gello:
+    if not env.unwrapped.config.is_dummy and use_gello:
         if is_dex_hand:
             raise ValueError("use_gello=True is not supported for ruiyan_hand.")
         gello_port = cfg.get("gello_port", None)
@@ -150,7 +154,7 @@ def apply_single_arm_wrappers(env: gym.Env, cfg: Mapping[str, Any]) -> gym.Env:
             )
         env = GelloIntervention(env, port=gello_port, gripper_enabled=gripper_enabled)
 
-    if not env.config.is_dummy and use_pico:
+    if not env.unwrapped.config.is_dummy and use_pico:
         if is_dex_hand:
             raise ValueError("use_pico=True is not supported for dexterous hands.")
         pico_cfg = dict(cfg.get("pico", {}))
@@ -199,7 +203,7 @@ def apply_dual_franka_joint_wrappers(env: gym.Env, cfg: Mapping[str, Any]) -> gy
             stream_period=cfg.get("gello_joint_stream_period", 0.001),
         )
 
-    if not env.config.is_dummy and use_pico:
+    if not env.unwrapped.config.is_dummy and use_pico:
         raise NotImplementedError(
             "use_pico=True is implemented for single-arm Franka envs only. "
             "Add a dual-arm PicoIntervention before enabling it for DualFrankaEnv."

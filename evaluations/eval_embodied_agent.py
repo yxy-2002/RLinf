@@ -22,6 +22,7 @@ from rlinf.config import validate_cfg
 from rlinf.runners.embodied_eval_runner import EmbodiedEvalRunner
 from rlinf.scheduler import Cluster
 from rlinf.utils.placement import HybridComponentPlacement
+from rlinf.utils.realworld_reward import evaluation_reward_service
 from rlinf.workers.env.env_worker import EnvWorker
 from rlinf.workers.rollout.hf.huggingface_worker import MultiStepRolloutWorker
 
@@ -41,25 +42,28 @@ def main(cfg) -> None:
     cluster = Cluster(cluster_cfg=cfg.cluster)
     component_placement = HybridComponentPlacement(cfg, cluster)
 
-    # Create rollout worker group
-    rollout_placement = component_placement.get_strategy("rollout")
-    rollout_group = MultiStepRolloutWorker.create_group(cfg).launch(
-        cluster, name=cfg.rollout.group_name, placement_strategy=rollout_placement
-    )
-    # Create env worker group
-    env_placement = component_placement.get_strategy("env")
-    env_group = EnvWorker.create_group(cfg).launch(
-        cluster, name=cfg.env.group_name, placement_strategy=env_placement
-    )
+    with evaluation_reward_service(
+        cfg, component_placement, cluster
+    ) as reward_service_name:
+        # Create rollout worker group
+        rollout_placement = component_placement.get_strategy("rollout")
+        rollout_group = MultiStepRolloutWorker.create_group(cfg).launch(
+            cluster, name=cfg.rollout.group_name, placement_strategy=rollout_placement
+        )
+        # Create env worker group
+        env_placement = component_placement.get_strategy("env")
+        env_group = EnvWorker.create_group(cfg).launch(
+            cluster, name=cfg.env.group_name, placement_strategy=env_placement
+        )
 
-    runner = EmbodiedEvalRunner(
-        cfg=cfg,
-        rollout=rollout_group,
-        env=env_group,
-    )
+        runner = EmbodiedEvalRunner(
+            cfg=cfg,
+            rollout=rollout_group,
+            env=env_group,
+        )
 
-    runner.init_workers()
-    runner.run()
+        runner.init_workers(reward_service_name=reward_service_name)
+        runner.run()
 
 
 if __name__ == "__main__":

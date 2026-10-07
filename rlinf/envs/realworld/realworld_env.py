@@ -226,6 +226,16 @@ class RealWorldEnv(gym.Env):
         infos["episode"] = to_tensor(episode_info)
         return infos
 
+    def pause_evaluation(self) -> None:
+        """Pause physical hand output before the evaluation confirmation prompt."""
+        for pause in self.env.call("get_wrapper_attr", "pause_evaluation"):
+            pause()
+
+    def resume_evaluation(self) -> None:
+        """Resume physical hand output after the operator confirms."""
+        for resume in self.env.call("get_wrapper_attr", "resume_evaluation"):
+            resume()
+
     def reset(self, *, reset_state_ids=None, seed=None, options=None, env_idx=None):
         # TODO: handle partial reset
         raw_obs, infos = self.env.reset(seed=seed, options=options)

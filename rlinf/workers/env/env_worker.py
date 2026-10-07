@@ -168,7 +168,8 @@ class EnvWorker(Worker):
                 "the world size of env must be greater than the world size of rollout in env_decoupled_mode"
             )
 
-    def init_worker(self):
+    def init_worker(self, reward_service_name: str | None = None):
+        self._reward_service_name = reward_service_name
         # This is a barrier to ensure all envs' initial setup upon import is done
         # Essential for RealWorld env to ensure initial ROS node setup is done
         self.broadcast(
@@ -319,7 +320,14 @@ class EnvWorker(Worker):
         env_list = []
 
         for stage_id in range(self.stage_num):
+            env_kwargs = {}
+            if (
+                env_cfg.env_type == "realworld"
+                and getattr(self, "_reward_service_name", None) is not None
+            ):
+                env_kwargs["reward_service_name"] = self._reward_service_name
             env = env_cls(
+                **env_kwargs,
                 cfg=env_cfg,
                 num_envs=num_envs_per_stage,
                 seed_offset=self._rank * self.stage_num + stage_id,
@@ -1171,10 +1179,41 @@ class EnvWorker(Worker):
 
         return env_metrics
 
-    def evaluate(self, input_channel: Channel, rollout_channel: Channel):
+    def _confirm_eval_phase(self, channel: Channel, episode: int, phase: str) -> bool:
+        """Wait for the driver's matching confirmation without reading worker stdin."""
+        # Resolve explicit hooks without Gymnasium's deprecated attribute forwarding.
+        for env in self.eval_env_list:
+            pause = getattr(type(env), "pause_evaluation", None)
+            if pause is not None:
+                pause(env)
+        channel.put((episode, phase), key="request")
+        while True:
+            confirmation = channel.get(key="confirm")
+            if confirmation is None:
+                for env in self.eval_env_list:
+                    env.close()
+                return False
+            if confirmation == (episode, phase):
+                for env in self.eval_env_list:
+                    resume = getattr(type(env), "resume_evaluation", None)
+                    if resume is not None:
+                        resume(env)
+                return True
+
+    def evaluate(
+        self,
+        input_channel: Channel,
+        rollout_channel: Channel,
+        confirmation_channel: Channel | None = None,
+    ):
         eval_metrics = defaultdict(list)
 
         for eval_rollout_epoch in range(self.eval_rollout_epoch):
+            episode = eval_rollout_epoch + 1
+            if confirmation_channel is not None and not self._confirm_eval_phase(
+                confirmation_channel, episode, "reset"
+            ):
+                return {}
             if not self.cfg.env.eval.auto_reset or eval_rollout_epoch == 0:
                 for stage_id in range(self.stage_num):
                     self.eval_env_list[stage_id].is_start = True
@@ -1182,6 +1221,13 @@ class EnvWorker(Worker):
                         self.eval_num_envs_per_stage, dtype=torch.bool
                     )
                     extracted_obs, infos = self.eval_env_list[stage_id].reset()
+                    if (
+                        confirmation_channel is not None
+                        and not self._confirm_eval_phase(
+                            confirmation_channel, episode, "start"
+                        )
+                    ):
+                        return {}
                     env_output = EnvOutput(
                         obs=extracted_obs,
                         final_obs=(

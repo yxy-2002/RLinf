@@ -1,13 +1,8 @@
-# One physical-robot evaluation rollout; reuse the demonstrated task setup.
+# Shared DP evaluation settings; compose after the task/device configuration.
 defaults:
-  - wuji_demo_data_stack_cube
   - model/lamp_dp@rollout.model
   - robot/wuji_lamp@rollout.model.robot_spec
   - _self_
-
-hydra:
-  searchpath:
-    - file://${oc.env:EMBODIED_PATH}/config/
 
 cluster:
   component_placement:
@@ -21,16 +16,15 @@ cluster:
 runner:
   task_type: embodied_eval
   only_eval: true
-  success_source: null
+  # First Enter resets; second Enter starts policy execution, including round 1.
+  pause_between_eval_episodes: true
+  success_source: reward_model
   max_epochs: 1
   max_steps: -1
   val_check_interval: -1
   save_interval: -1
   resume_dir: null
   ckpt_path: null
-  logger:
-    log_path: ./logs/eval/wuji_lamp
-    experiment_name: realworld_lamp_dp_stack_cube_eval
 
 algorithm:
   loss_type: lamp_il
@@ -46,8 +40,8 @@ env:
     auto_reset: false
     is_eval: true
     override_cfg:
-      use_reward_model: false
-      reward_success_confirmation: false
+      use_reward_model: true
+      reward_success_confirmation: true
       enable_pose_reward: false
     lamp_adapter: rlinf.envs.lamp_realworld_adapter:RealWorldLampAdapter
     lamp_robot_spec: ${rollout.model.robot_spec}
@@ -67,7 +61,6 @@ rollout:
   collect_transitions: false
   collect_prev_infos: false
   model:
-    model_path: /workspace/yxy_RLinf/RLinf/logs/realworld_stack_cubes/realworld_lamp_dp_mlp_stack_cube/artifact
     action_dim: 26
     num_action_chunks: 8
     use_temporal_ensemble: false
@@ -76,9 +69,7 @@ rollout:
 critic:
   use_critic_model: false
 
-# Execute the policy without loading a reward checkpoint or judging success.
+# The environment uses the standalone reward service to confirm success.
 reward:
-  use_reward_model: false
-  standalone_realworld: false
-  model:
-    model_path: null
+  use_reward_model: true
+  standalone_realworld: true
