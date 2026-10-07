@@ -234,7 +234,7 @@ class DQRiseResidualVQ(nn.Module):
         self.codebooks.copy_(next_codebook)
 
     def lookup_export_codes(self, indices: Array) -> Array:
-        """Decode with fixed equal layer weights, matching official export."""
+        """Combine selected codes with the same learned weights as forward."""
 
         if indices.ndim != 2 or indices.shape[-1] != self.num_quantizers:
             raise ValueError(
@@ -246,11 +246,12 @@ class DQRiseResidualVQ(nn.Module):
             dtype=self.codebooks.dtype,
             device=self.codebooks.device,
         )
-        fixed_weight = 1.0 / float(self.num_quantizers)
+        weights = torch.softmax(self.layer_weights, dim=0)
         for layer_index in range(self.num_quantizers):
             result = (
                 result
-                + self.codebooks[layer_index][indices[:, layer_index]] * fixed_weight
+                + self.codebooks[layer_index][indices[:, layer_index]]
+                * weights[layer_index]
             )
         return result
 

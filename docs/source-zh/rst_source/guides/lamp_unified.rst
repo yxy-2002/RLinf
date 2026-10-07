@@ -61,91 +61,14 @@ MLP 没有单独的 prior 阶段。``realworld_lamp_il`` 仅保存共用的真�
 ``realworld_lamp_dp_mlp``；MLP 省略 prior 产物参数。通过 ``runner.resume_dir``
 恢复相同训练契约；改变机器人规格、H、K 或数据集应启动新训练。
 
-配方固定为 ``dexjoco-lamp`` 提交 ``138b726d`` 中 water-plant 的参数。
-真机专有设置保留 Wuji 机器人规格、20 维手部、26 维动作、历史长度 8、预测长度 16、
-执行长度 8、episode 划分比例 0.9/seed 42、零数据加载 worker、关闭 compile，
-以及原有双节点部署。
+VQ 码本导出使用 prior 训练时学到的 softmax 层权重。Dexjoco 与 RealWorld/Wuji
+共用这条链路；将这些权重替换为等权平均会改变 decoder 输入，并可能使导出的
+码本丢失部分手型。
 
-.. list-table:: 训练配方
-   :header-rows: 1
-
-   * - 阶段
-     - 步数
-     - Batch size
-     - 学习率
-     - Warmup
-     - Weight decay
-   * - LSTM prior
-     - 20000
-     - 512
-     - 5e-5
-     - 500
-     - 0
-   * - PCA prior
-     - 1（拟合）
-     - 128（继承值，不进行优化器训练）
-     - 不适用
-     - 不适用
-     - 不适用
-   * - VQ prior
-     - 30000（max epochs 1500）
-     - 256
-     - 3e-4
-     - 150
-     - 1e-6
-   * - 所有 DP 变体
-     - 40000
-     - 512
-     - 6e-5
-     - 1000
-     - 1e-4
-
-VQ 使用 seed 233、Adam betas (0.95, 0.999)、不裁剪梯度、结束时验证，
-每 10 个 epoch 保存。LSTM 使用 seed 42、latent size 2、FiLM encoder/decoder、
-beta 0.0005 和 condition dropout 0.1。PCA 的 latent size 为 2。
-VQ 保留两个 quantizer、codebook size 4 和 code latent size 256。
-所有 DP 变体均继承 ``realworld_lamp_dp_lamplstm`` 的优化器和训练调度，
-包括 backbone LR ratio 0.1，不随 prior 配方变化。
-
-``realworld_lamp_prior_lamplstm_none`` 和 ``realworld_lamp_dp_lamplstm_none``
-关闭 encoder/decoder conditioning。前者继承 LSTM prior 根配置；PCA、VQ prior
-分别独立继承 ``realworld_lamp_il``。旧的 ``*_film_stack_cube``、
-``*_none_stack_cube`` 和 DP ``*_stack_cube`` 训练配置已删除。
-启动脚本保留 ``lamplstm_film`` 变体参数，并映射到新的 FiLM 根配置：
-
-.. code-block:: bash
-
-   bash scripts/train_wuji_lamp.sh all both --dry-run
-   bash scripts/train_wuji_lamp.sh lamplstm_film both
-
-脚本为各 DP 选择对应的 prior artifact。使用 ``DATASET_ROOT`` 和 ``OUTPUT_ROOT``
-覆盖数据与输出路径。已有 artifact 目录不会重命名，复用时请传入实际路径。
-
-真机 DP 策略评估
-----------------
-
-使用以下命令评估叠方块任务：
-
-.. code-block:: bash
-
-   bash evaluations/run_eval.sh realworld realworld_lamp_dp_stack_cube_il_eval
-
-``evaluations/realworld/`` 下的 ``realworld_lamp_dp_il_eval.yaml`` 保存通用
-rollout、adapter 和 reward 启用配置。小配置
-``realworld_lamp_dp_stack_cube_il_eval.yaml`` 先加载 ``wuji_demo_data_stack_cube``
-中的任务与设备设置，再应用通用评估配置，并指定 ``runner.logger``、
-``rollout.model.model_path`` 和 ``reward.model.model_path``。
-请按实际产物修改路径。``run_eval.sh`` 会传入带时间戳的
-``runner.logger.log_path``；如需自定义路径，可在命令行覆盖此字段。
-旧名称 ``realworld_lamp_dp_stack_cube_eval`` 保留为兼容入口。
-
-独立 reward model 在 ``reward_gpu`` 上运行。评估 driver 负责启动和关闭该服务；
-真机节点仅使用轻量 RPC 客户端，无需安装 ``transformers`` 等 reward model 训练依赖。
-启用
-``reward_success_confirmation: true`` 后，模型概率连续 ``success_hold_steps``
-（1）步严格超过 ``reward.reward_threshold``（0.95）才判定成功。
-位姿奖励保持关闭。每次评估运行 20 个 episode，每轮最多 400 步；
-每轮先按 Enter 复位，再按 Enter 开始执行策略。
+既有 artifact 加载时仍使用其保存的码本。旧版导出使用等权层权重；若要为既有
+prior 采用修正后的导出方式，应将其 checkpoint 重新导出为独立 artifact，
+随后重新生成 DP 标签并基于该 artifact 训练 DP。不要直接替换已训练 DP 内的码本：
+其标量码字标签和归一化统计绑定原码本。重新导出 prior 不需要重新训练 prior。
 
 转换示范
 --------

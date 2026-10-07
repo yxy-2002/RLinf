@@ -69,95 +69,17 @@ Use ``realworld_lamp_dp_vq``, ``realworld_lamp_dp_pca`` or
 for MLP. Resume an unchanged training contract with ``runner.resume_dir``;
 changing the robot specification, H, K or dataset starts a new run.
 
-The recipes preserve the water-plant settings from ``dexjoco-lamp`` commit
-``138b726d``. Real-world settings retain the Wuji robot specification, 20 hand
-dimensions, 26 action dimensions, history 8, prediction horizon 16, execution
-horizon 8, episode split 0.9/seed 42, zero data-loader workers, disabled compile,
-and the existing two-node placement.
+VQ codebook export uses the learned softmax layer weights from prior training.
+This shared path applies to both Dexjoco and RealWorld/Wuji; replacing those
+weights with an equal average changes the decoder inputs and can remove hand
+poses from the exported codebook.
 
-.. list-table:: Training recipes
-   :header-rows: 1
-
-   * - Stage
-     - Steps
-     - Batch size
-     - Learning rate
-     - Warmup
-     - Weight decay
-   * - LSTM prior
-     - 20000
-     - 512
-     - 5e-5
-     - 500
-     - 0
-   * - PCA prior
-     - 1 (fit)
-     - 128 (inherited; no optimizer training)
-     - Not applicable
-     - Not applicable
-     - Not applicable
-   * - VQ prior
-     - 30000 (max epochs 1500)
-     - 256
-     - 3e-4
-     - 150
-     - 1e-6
-   * - All DP variants
-     - 40000
-     - 512
-     - 6e-5
-     - 1000
-     - 1e-4
-
-VQ uses seed 233, Adam betas (0.95, 0.999), no gradient clipping, validation
-at the end, and epoch checkpoint interval 10. LSTM uses seed 42, latent size 2,
-FiLM encoder/decoder, beta 0.0005 and condition dropout 0.1. PCA retains latent
-size 2. VQ retains two quantizers, codebook size 4 and code latent size 256.
-All DP variants inherit ``realworld_lamp_dp_lamplstm`` optimizer and schedule
-settings, including backbone LR ratio 0.1, regardless of their prior recipe.
-
-``realworld_lamp_prior_lamplstm_none`` and ``realworld_lamp_dp_lamplstm_none``
-disable encoder/decoder conditioning. The former inherits the LSTM prior root;
-PCA and VQ prior roots inherit ``realworld_lamp_il`` independently. Old
-``*_film_stack_cube``, ``*_none_stack_cube`` and DP ``*_stack_cube`` training
-configs are removed. The launcher keeps its ``lamplstm_film`` variant argument
-and maps it to the new FiLM roots:
-
-.. code-block:: bash
-
-   bash scripts/train_wuji_lamp.sh all both --dry-run
-   bash scripts/train_wuji_lamp.sh lamplstm_film both
-
-The launcher routes each DP to its matching prior artifact. Set ``DATASET_ROOT``
-and ``OUTPUT_ROOT`` to override data and output paths. Existing saved artifact
-directories are not renamed; pass their actual paths when reusing them.
-
-Evaluate the DP Policy on the Robot
------------------------------------
-
-Run the stack-cube evaluation with:
-
-.. code-block:: bash
-
-   bash evaluations/run_eval.sh realworld realworld_lamp_dp_stack_cube_il_eval
-
-Under ``evaluations/realworld/``, ``realworld_lamp_dp_il_eval.yaml`` holds the
-shared rollout, adapter and reward enablement settings. The small
-``realworld_lamp_dp_stack_cube_il_eval.yaml`` loads ``wuji_demo_data_stack_cube``
-for the task/device setup before applying those shared settings, and specifies
-``runner.logger``, ``rollout.model.model_path`` and ``reward.model.model_path``.
-Update these paths for your artifacts. ``run_eval.sh`` supplies a timestamped
-``runner.logger.log_path``; pass that key as a CLI override to use your own path.
-The old ``realworld_lamp_dp_stack_cube_eval`` name remains a compatibility alias.
-
-The standalone reward model runs on ``reward_gpu``. The evaluation driver starts
-and closes this service; the robot node uses a lightweight RPC client and does
-not need reward-model training dependencies such as ``transformers``.
-With
-``reward_success_confirmation: true``, success requires probability strictly
-above ``reward.reward_threshold`` (0.95) for ``success_hold_steps`` (1) steps.
-Pose rewards remain disabled. Evaluation runs 20 episodes, up to 400 steps each;
-press Enter to reset, then Enter again to start policy execution in each episode.
+Existing artifacts retain their stored codebooks when loaded. Older exports
+used equal layer weights. To adopt the corrected export for an existing prior,
+re-export its checkpoint to a separate artifact, then regenerate DP targets and
+train a DP against that artifact. Do not replace the codebook inside an already
+trained DP: its scalar code labels and normalization are tied to the original
+codebook. Re-exporting a prior does not require retraining the prior.
 
 Convert Demonstrations
 ----------------------
