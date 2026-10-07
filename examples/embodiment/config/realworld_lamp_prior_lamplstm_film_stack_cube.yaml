@@ -1,4 +1,5 @@
-# Training hyperparameters aligned with dexjoco_lamp_prior_lamplstm_water_plant.
+# Stack-cube training root: FiLM prior, aligned with DexJoCo water_plant.
+# Other priors inherit this recipe; DP overrides only stage-specific settings.
 defaults:
 - realworld_lamp_il
 - _self_

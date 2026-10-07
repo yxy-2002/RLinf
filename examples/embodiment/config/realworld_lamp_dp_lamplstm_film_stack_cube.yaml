@@ -1,61 +1,18 @@
-# Training hyperparameters aligned with dexjoco_lamp_dp_lamplstm.
+# Inherit the FiLM recipe; override only variant/stage-specific settings.
 defaults:
-- realworld_lamp_dp_lamplstm
+- realworld_lamp_prior_lamplstm_film_stack_cube
 - _self_
-data:
-  dataset_root: ./logs/20261006-082710-wuji_demo_data_stack_cube/demos
-  num_workers: 0
-  persistent_workers: false
-  pin_memory: true
-  image_size: 128
+algorithm:
+  stage: dp
 runner:
   max_steps: 40000
-  save_interval: 10000
   logger:
     experiment_name: realworld_lamp_dp_lamplstm_film_stack_cube
-    logger_backends:
-    - tensorboard
-  max_epochs: 1000000
-  local_update_steps: 100
-  log_interval: 100
-  val_check_interval: -1
 actor:
   optim:
     lr: 6.0e-05
-    min_lr: 1.0e-06
     warmup_steps: 1000
     weight_decay: 0.0001
-    adam_beta1: 0.9
-    adam_beta2: 0.999
-    adam_eps: 1.0e-08
-    clip_grad: 1.0
-    backbone_lr_ratio: 0.1
   model:
-    resnet_path: ./pretrained_models/resnet-18
     hand_prior:
-      type: lamplstm
-      hand_side: single
-      latent_dim: 2
-      history_length: 8
       artifact_path: ./outputs/realworld_lamp_prior_lamplstm_film_stack_cube/artifact
-      action_dim: 20
-      history_dim: 20
-      horizon: 16
-      action_hidden_dim: 256
-      condition_hidden_dim: 256
-      encoder_condition_mode: film
-      decoder_condition_mode: film
-      num_lstm_layers: 1
-      beta: 0.0005
-      beta_warmup_steps: 0
-      condition_drop_prob: 0.1
-    execution_horizon: 8
-    num_action_chunks: 8
-  seed: 42
-  global_batch_size: 512
-  micro_batch_size: 512
-  eval_batch_size: 512
-  torch_compile: false
-  compile_mode: default
-  validation_interval: 1000
-  validation_batches: -1

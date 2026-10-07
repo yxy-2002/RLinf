@@ -201,8 +201,8 @@ uses GPU 0 in the ``training_gpu`` group on rank 1 (``192.168.10.11``,
 ``enp5s0``). Launch from rank 1 using its ``openvla`` environment. Node-specific
 Python interpreters and communication interfaces are configured explicitly.
 No robot environment is instantiated. Logging uses TensorBoard.
-LSTM priors train for 20,000 updates; their DP policies train for 40,000.
-VQ prior and PCA/VQ/MLP DP train for 30,000 updates. PCA uses one fit/export step. Artifacts are exported to
+LSTM and VQ priors train for 20,000 updates; all DP policies train for 40,000.
+PCA uses one fit/export step. Artifacts are exported to
 ``outputs/<config_name>/artifact``. Film and none use separate experiment names.
 The corresponding DP configs automatically select their prior artifact paths;
 VQ uses ``latent_dim: 1`` for the scalar code index.
@@ -238,18 +238,24 @@ history settings between prior and DP. For example:
 
 DP training updates both ResNet-18 backbones, both state MLPs, the observation
 fusion network and the diffusion U-Net. Backbone learning rate is multiplied
-by ``actor.optim.backbone_lr_ratio`` (0.1 for LSTM DP, 0.03 for PCA/VQ/MLP
-DP); other parameters use the base learning rate. The pretrained LSTM prior is frozen; PCA bases and VQ
+by ``actor.optim.backbone_lr_ratio`` (0.1 for every DP variant); other
+parameters use the base learning rate. The pretrained LSTM prior is frozen; PCA bases and VQ
 codebooks are fixed buffers. MLP DP has no separate frozen hand prior.
 
-Training hyperparameters match the corresponding DexJoCo water-plant configs.
-LSTM uses history length 8, future horizon 16, condition dropout 0.1, and
-batch size 512. Its prior learning rate is 5e-5; DP uses 6e-5 with 1,000
-warmup steps. PCA/VQ/MLP DP uses batch size 512, learning rate 1e-4,
-weight decay 1e-3, and 1,000 warmup steps. These three DP variants execute
-4 actions per chunk; LSTM DP executes 8. DataLoader and compilation settings
-also follow their respective simulation configs. Wuji keeps its 20-D normalized
-hand state and 6-D EE pose. The none variant disables both LSTM condition paths.
+The FiLM prior config is the task-wide training root, aligned with the
+DexJoCo water-plant LSTM prior. The FiLM DP inherits it and overrides only the
+DP stage, 40,000 updates, learning rate 6e-5, 1,000 warmup steps and weight
+decay 1e-4. Every other DP inherits the FiLM DP config, overriding only the
+prior type, required structure, artifact path and experiment name. All DP
+variants share batch size 512, seed 42, validation interval 1,000, zero
+DataLoader workers, disabled compilation and execution horizon 8.
+
+The none prior and VQ prior inherit the FiLM prior training recipe: batch
+size 512, 20,000 updates, learning rate 5e-5, 500 warmup steps and no weight
+decay. PCA inherits the same root but uses one fit/export step. VQ overrides
+its quantizer architecture and loss coefficients. LSTM uses history length 8,
+future horizon 16 and condition dropout 0.1. Wuji retains 20-D normalized
+hand states and 6-D EE poses. The none variant disables both condition paths.
 
 History length 8 produces a separate cache fingerprint. Retrain priors and DP;
 do not resume history-length-16 checkpoints. Keep previous outputs by using:
@@ -362,3 +368,52 @@ the post-step snapshot. These are approximate associations: the camera API does
 not expose exposure timestamps, and targets may change during a collection step.
 They are not synchronized action-demonstration data. Existing reward splitting
 uses images and labels; these diagnostic rows remain in the raw episodes.
+
+Wuji LAMP online hardware evaluation
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Run ``evaluations/run_eval.sh`` in the openvla environment on rank 1. The config
+``evaluations/realworld/realworld_lamp_dp_stack_cube_eval.yaml`` reuses the
+stack-cube collection robot, cameras and reset settings. Rank 0 executes
+actions; rank 1 runs DP inference. Reward inference, pose rewards and success
+confirmation are disabled; no reward checkpoint is loaded. The standard
+evaluation entrypoint is used unchanged.
+
+The default is FiLM DP with history length 8, action dimension 26 and temporal
+ensembling disabled. It runs one 400-control-step evaluation round without
+automatic reset. The collection setting ``pause_between_episodes`` does not
+control this entrypoint. Button intervention remains enabled; release returns
+to policy control. This run executes the policy without judging task success.
+The following command connects to and controls the physical robot:
+
+.. code-block:: bash
+
+   bash evaluations/run_eval.sh realworld realworld_lamp_dp_stack_cube_eval
+
+To select another policy, specify its full DP artifact and matching execution
+length. Evaluation defaults to 8 for all variants, independently of the
+training execution horizon. Override both keys together when changing it.
+
+.. code-block:: bash
+
+   variant=pca
+   chunks=8
+   bash evaluations/run_eval.sh realworld realworld_lamp_dp_stack_cube_eval \
+     rollout.model.model_path="./logs/realworld_stack_cubes/realworld_lamp_dp_${variant}_stack_cube/artifact" \
+     rollout.model.num_action_chunks="$chunks" \
+     rollout.model.execution_horizon_override="$chunks"
+
+All five final DP artifacts under ``logs/realworld_stack_cubes`` use execution
+horizon 8 in their deployment spec and embedded configuration, matching the
+DexJoCo water-plant evaluation override. Metadata before this change is saved
+as ``artifact.json.before_exec8``. The deployment override records the original
+training execution horizon: 8 for LSTM and 4 for PCA/VQ/MLP. Prediction horizon
+remains 16. Weights, statistics and intermediate training checkpoints are
+unchanged; no retraining is required.
+
+Choose ``lamplstm_film``, ``lamplstm_none``, ``pca``, ``vq`` or ``mlp`` for
+``variant``. Use ``checkpoints/global_step_<N>/actor/artifact`` to evaluate
+an intermediate checkpoint. No separate prior path is needed: the full DP
+artifact contains the required weights and statistics. Logs are written to
+``logs/<timestamp>-realworld_lamp_dp_stack_cube_eval``. Config checks and
+regression tests do not replace hardware validation.

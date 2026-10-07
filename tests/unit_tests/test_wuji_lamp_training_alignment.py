@@ -29,13 +29,13 @@ CONFIG_DIR = Path(__file__).resolve().parents[2] / "examples/embodiment/config"
 PAIRS = {
     "prior_lamplstm_film": "dexjoco_lamp_prior_lamplstm_water_plant",
     "prior_lamplstm_none": "dexjoco_lamp_prior_lamplstm_water_plant",
-    "prior_pca": "dexjoco_lamp_prior_pca",
-    "prior_vq": "dexjoco_lamp_prior_vq_water_plant",
+    "prior_pca": "dexjoco_lamp_prior_lamplstm_water_plant",
+    "prior_vq": "dexjoco_lamp_prior_lamplstm_water_plant",
     "dp_lamplstm_film": "dexjoco_lamp_dp_lamplstm",
     "dp_lamplstm_none": "dexjoco_lamp_dp_lamplstm",
-    "dp_pca": "dexjoco_lamp_dp_il_pca_water_plant",
-    "dp_vq": "dexjoco_lamp_dp_il_vq_water_plant",
-    "dp_mlp": "dexjoco_lamp_dp_il_mlp_water_plant",
+    "dp_pca": "dexjoco_lamp_dp_lamplstm",
+    "dp_vq": "dexjoco_lamp_dp_lamplstm",
+    "dp_mlp": "dexjoco_lamp_dp_lamplstm",
 }
 
 
@@ -66,7 +66,14 @@ def test_wuji_training_matches_simulation(variant, reference):
         "val_check_interval",
         "save_every_epochs",
     ):
-        assert actual.runner.get(key) == expected.runner.get(key), key
+        if variant == "prior_pca" and key in (
+            "max_steps",
+            "local_update_steps",
+            "save_interval",
+        ):
+            assert actual.runner[key] == 1
+        else:
+            assert actual.runner.get(key) == expected.runner.get(key), key
     for key in ("num_workers", "persistent_workers", "pin_memory", "image_size"):
         assert actual.data[key] == expected.data[key], key
     for key in ("execution_horizon", "num_action_chunks"):
@@ -75,7 +82,7 @@ def test_wuji_training_matches_simulation(variant, reference):
     for key, value in prior.items():
         if key in ("action_dim", "history_dim"):
             value = 20
-        elif key == "artifact_path":
+        elif key in ("artifact_path", "type", "latent_dim"):
             continue
         elif variant.endswith("_none") and key in (
             "encoder_condition_mode",
@@ -88,6 +95,16 @@ def test_wuji_training_matches_simulation(variant, reference):
     assert actual.actor.model.robot_spec.arm_state_dim == 6
     assert actual.actor.model.robot_spec.hand_state_dim == 20
     assert actual.cluster.num_nodes == 2
+    expected_type = variant.split("_")[1]
+    assert actual.actor.model.hand_prior.type == expected_type
+    expected_latent = {"vq": 1, "mlp": 6}.get(expected_type, 2)
+    assert actual.actor.model.hand_prior.latent_dim == expected_latent
+    if variant not in ("prior_lamplstm_film", "dp_lamplstm_film"):
+        raw = OmegaConf.load(CONFIG_DIR / f"realworld_lamp_{variant}_stack_cube.yaml")
+        stage = variant.split("_")[0]
+        assert raw.defaults[0] == f"realworld_lamp_{stage}_lamplstm_film_stack_cube"
+        assert "optim" not in raw.actor
+        assert "data" not in raw
 
 
 @pytest.mark.parametrize("fortran", [False, True])

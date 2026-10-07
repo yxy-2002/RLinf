@@ -504,7 +504,7 @@ class EnvWorker(Worker):
 
         current_dones = (
             chunk_dones.any(dim=-1)
-            if self.model_cfg.model_type == "lamp_residual_sac"
+            if self.model_cfg.model_type in ("lamp_dp", "lamp_residual_sac")
             else chunk_dones[:, -1]
         )  # [num_envs] bool; canceled LAMP chunks have an invalid suffix.
         if self.cfg.env.eval.auto_reset:

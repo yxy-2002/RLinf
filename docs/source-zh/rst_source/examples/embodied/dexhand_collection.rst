@@ -185,9 +185,8 @@ DP，默认读取 ``pretrained_models/resnet-18`` 中的本地权重。
 CPU 主机（``192.168.10.10``、``enp3s0``）；actor 放在 rank 1 的
 ``training_gpu`` 组内 GPU 0（``192.168.10.11``、``enp5s0``）。在 rank 1
 使用 ``openvla`` 环境启动。配置显式指定各节点的 Python 解释器和通信网卡，
-不会实例化机器人环境。日志使用 TensorBoard。LSTM prior 训练 20,000
-次更新，对应 DP 训练 40,000 次；VQ prior 和 PCA/VQ/MLP DP 训练 30,000 次，
-PCA 执行一次拟合和导出。Artifact
+不会实例化机器人环境。日志使用 TensorBoard。LSTM 和 VQ prior 训练 20,000
+次更新，所有 DP 训练 40,000 次；PCA 执行一次拟合和导出。Artifact
 导出到 ``outputs/<config_name>/artifact``。Film 和 none 使用不同的实验名称，
 对应 DP 配置自动选择各自 prior artifact；VQ 的标量索引使用 ``latent_dim: 1``。
 
@@ -219,17 +218,21 @@ Prior 和 DP 应保持相同数据集及历史配置。例如：
    bash scripts/train_wuji_lamp_dp_mlp.sh actor.micro_batch_size=32
 
 DP 训练更新两路 ResNet-18、两个状态 MLP、观测融合网络和扩散 U-Net。
-ResNet 学习率乘以 ``actor.optim.backbone_lr_ratio``（LSTM DP 为 0.1，PCA/VQ/MLP DP 为 0.03），其他参数使用
+ResNet 学习率乘以 ``actor.optim.backbone_lr_ratio``（所有 DP 均为 0.1），其他参数使用
 基础学习率。预训练 LSTM prior 冻结；PCA 基和 VQ 码本为固定 buffer。
 MLP DP 没有独立的冻结手部 prior。
 
-训练超参数对齐对应的 DexJoCo water-plant 配置。LSTM 历史长度为 8，预测长度
-为 16，condition dropout 为 0.1，batch size 为 512。Prior 学习率为 5e-5；
-对应 DP 学习率为 6e-5，warmup 为 1,000 步。PCA/VQ/MLP DP 的 batch size
-为 512，学习率为 1e-4，weight decay 为 1e-3，warmup 为 1,000 步；这三种
-DP 每个 chunk 执行 4 个动作，LSTM DP 执行 8 个。DataLoader 和编译设置也
-与对应仿真配置一致。Wuji 保留 20 维归一化手部状态和 6 维 EE pose；none
-变体关闭 LSTM 编码器和解码器的历史条件。
+FiLM prior 配置是任务公共训练根配置，与 DexJoCo water-plant 的 LSTM prior
+一致。FiLM DP 继承它，只覆盖 DP 阶段、40,000 次更新、学习率 6e-5、1,000
+步 warmup 和 weight decay 1e-4。其余 DP 全部继承 FiLM DP，只覆盖 prior
+类型、必要结构、artifact 路径和实验名。所有 DP 统一使用 batch size 512、
+seed 42、验证间隔 1,000、零 DataLoader worker、关闭编译和执行长度 8。
+
+None prior 和 VQ prior 继承 FiLM prior 的训练设置：batch size 512、20,000
+次更新、学习率 5e-5、500 步 warmup、无 weight decay。PCA 继承同一根配置，
+但只做一次拟合和导出。VQ 覆盖量化器结构和损失系数。LSTM 历史长度为 8、
+预测长度为 16、condition dropout 为 0.1。Wuji 保留 20 维归一化手部状态和
+6 维 EE pose；none 变体关闭两个条件路径。
 
 历史长度 8 会生成不同指纹的缓存，需要重新训练 prior 和 DP，不应恢复历史长度
 16 的 checkpoint。使用独立输出目录保留之前的训练结果：
@@ -323,3 +326,45 @@ step 起止墙钟时间、step 前后遥操快照墙钟时间、手套序号、2
 相机接口没有曝光时间戳，且 step 内目标可能变化，因此这只是近似关联，
 不能当作精确同步的动作示范数据。现有 reward 划分仍使用图像和标签，
 诊断时间行保留在原始 episode 中。
+
+Wuji LAMP 真机在线评估
+~~~~~~~~~~~~~~~~~~~~~
+
+在 rank 1 的 openvla 环境中使用 ``evaluations/run_eval.sh``。专用配置
+``evaluations/realworld/realworld_lamp_dp_stack_cube_eval.yaml`` 复用 stack-cube
+采集的机器人、相机和 reset 设置。Rank 0 执行动作，rank 1 运行 DP 推理。
+关闭 reward model、位姿奖励和成功确认，不加载 reward checkpoint，
+使用未修改的标准评估入口。
+
+默认评估 FiLM DP，历史长度为 8，动作维度为 26，不使用 temporal ensemble。
+默认运行一个 400 控制步的评估轮次，关闭自动 reset；采集入口的
+``pause_between_episodes`` 不控制评估入口。保留按钮接管，松开后恢复 policy。
+仅执行策略，不判断任务成功与否。以下命令会连接并控制真实机器人：
+
+.. code-block:: bash
+
+   bash evaluations/run_eval.sh realworld realworld_lamp_dp_stack_cube_eval
+
+选择其他策略时，设置完整 DP artifact 路径和匹配的执行长度。评估默认对所有变体统一覆盖为 8，与训练时的执行长度独立。
+修改执行长度时同时覆盖两个配置键，避免 rollout 和环境 chunk 不一致。
+
+.. code-block:: bash
+
+   variant=pca
+   chunks=8
+   bash evaluations/run_eval.sh realworld realworld_lamp_dp_stack_cube_eval \
+     rollout.model.model_path="./logs/realworld_stack_cubes/realworld_lamp_dp_${variant}_stack_cube/artifact" \
+     rollout.model.num_action_chunks="$chunks" \
+     rollout.model.execution_horizon_override="$chunks"
+
+``logs/realworld_stack_cubes`` 下五个 DP 最终 artifact 的部署 spec 和内嵌
+配置统一为执行长度 8，与 DexJoCo water-plant 评估覆盖值一致。此次修改前的
+元数据备份为 ``artifact.json.before_exec8``。Deployment override 记录原训练
+执行长度：LSTM 为 8，PCA/VQ/MLP 为 4。预测长度仍为 16；权重、统计量和
+中间训练 checkpoint 保持原样，无需重新训练。
+
+``variant`` 可选 ``lamplstm_film``、``lamplstm_none``、``pca``、``vq``、``mlp``。
+也可以指向 ``checkpoints/global_step_<N>/actor/artifact`` 评估中间 checkpoint。
+无需另外指定 prior 路径，完整 DP artifact 已包含所需权重和统计量。
+日志位于 ``logs/<时间>-realworld_lamp_dp_stack_cube_eval``。软件配置和回归测试
+不替代实际硬件验证。
