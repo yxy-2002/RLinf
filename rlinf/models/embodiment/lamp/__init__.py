@@ -29,7 +29,7 @@ from rlinf.models.embodiment.lamp.artifact_io import load_artifact
 from .robot_spec import LampRobotSpec, resolve_robot_spec
 
 if TYPE_CHECKING:
-    from .policy_wrapper import LampPolicy
+    from .policy_wrapper import LampPolicy, LampPolicySpec
     from .residual_sac import LampResidualSACPolicy
 
 
