@@ -128,6 +128,7 @@ def prepare_lamp_cache(
     history_length: int = 16,
     history_contract: str = "primitive_v1",
     action_horizon: int = 16,
+    include_episode_index: bool = False,
 ) -> Path:
     """Build or validate training caches from a format-independent data source."""
 
@@ -179,6 +180,28 @@ def prepare_lamp_cache(
                 history_length=int(history_length),
             )
         _validate_cache(cache_dir, fingerprint_payload, fingerprint)
+        if include_episode_index:
+            # Older caches lack row-level episode IDs. Add only that metadata;
+            # leave their arrays, statistics and artifact fingerprint intact.
+            missing_splits = [
+                split
+                for split in ("train", "validation")
+                if not (cache_dir / split / "episode_index.npy").is_file()
+            ]
+            if missing_splits:
+                frames = source.load_frames() if frames is None else frames
+                split_rows = split_episodes(
+                    frames.episode_index, TRAIN_RATIO, SPLIT_SEED
+                )
+                metadata = load_cache_metadata(cache_dir)
+                for split, rows in zip(("train", "validation"), split_rows):
+                    if split not in missing_splits:
+                        continue
+                    if len(rows) != int(metadata[f"{split}_rows"]):
+                        raise ValueError("Episode metadata does not match cached split")
+                    temporary = cache_dir / split / f".episode_index.{os.getpid()}.npy"
+                    np.save(temporary, frames.episode_index[rows], allow_pickle=False)
+                    os.replace(temporary, cache_dir / split / "episode_index.npy")
         if include_images:
             # Serialize camera materialization across history lengths as well.
             with (cache_parent / task / ".shared_images.lock").open(
@@ -212,6 +235,8 @@ class LampMMapDataset(Dataset):
         cache_dir: str | Path,
         split: str,
         keys: Sequence[str],
+        *,
+        pair_stride: int = 0,
     ) -> None:
         if split not in ("train", "validation"):
             raise ValueError(f"Unknown LAMP split {split!r}")
@@ -246,13 +271,25 @@ class LampMMapDataset(Dataset):
         if len(lengths) != 1:
             raise ValueError(f"LAMP cache arrays have inconsistent lengths: {lengths}")
         self.length = lengths.pop()
+        if pair_stride < 0:
+            raise ValueError("pair_stride must be non-negative")
+        self.pair_stride = int(pair_stride)
+        if self.pair_stride:
+            self._array_paths["__previous_index"] = self._prepare_pair_indices()
 
     def __len__(self) -> int:
         return self.length
 
     def __getitem__(self, index: int) -> dict[str, torch.Tensor]:
         result = {}
-        for key, array in self._open_arrays().items():
+        arrays = self._open_arrays()
+        previous_index = -1
+        if self.pair_stride:
+            previous_index = int(arrays["__previous_index"][index])
+            result["boundary_pair_mask"] = torch.tensor(previous_index >= 0)
+        for key, array in arrays.items():
+            if key == "__previous_index":
+                continue
             # Allocate the writable destination explicitly. Keep the mmap source
             # read-only and bypass the np.array conversion path implicated in
             # WRITEBACKIFCOPY errors when reading the training cache.
@@ -260,7 +297,47 @@ class LampMMapDataset(Dataset):
             value = np.empty(source.shape, dtype=source.dtype)
             np.copyto(value, source, casting="no")
             result[key] = torch.from_numpy(value)
+            if self.pair_stride:
+                source = np.asarray(
+                    array[previous_index if previous_index >= 0 else index]
+                )
+                value = np.empty(source.shape, dtype=source.dtype)
+                np.copyto(value, source, casting="no")
+                result[f"previous_{key}"] = torch.from_numpy(value)
         return result
+
+    def _prepare_pair_indices(self) -> Path:
+        """Cache indices of windows K steps earlier in the same episode.
+
+        Index arrays are mmap-backed too, so spawned workers do not copy them.
+        Stable grouping also handles interleaved episode rows. Invalid pairs
+        remain -1 and contribute only the usual reconstruction/KL objective.
+        """
+        split_dir = self.cache_dir / self.split
+        path = split_dir / f"boundary_previous_index_k{self.pair_stride}.npy"
+        if path.is_file():
+            indices = np.load(path, mmap_mode="r", allow_pickle=False)
+            if indices.shape != (self.length,) or indices.dtype != np.int64:
+                raise ValueError("Invalid cached boundary pair indices")
+            return path
+        episode_path = split_dir / "episode_index.npy"
+        if not episode_path.is_file():
+            raise ValueError(
+                "Boundary pairing needs episode_index.npy; prepare the cache "
+                "with include_episode_index=True"
+            )
+        episodes = np.load(episode_path, mmap_mode="r", allow_pickle=False)
+        if episodes.shape != (self.length,):
+            raise ValueError("Episode metadata must match the dataset length")
+        order = np.argsort(episodes, kind="stable")
+        current, previous = order[self.pair_stride :], order[: -self.pair_stride]
+        same_episode = episodes[current] == episodes[previous]
+        indices = np.full(self.length, -1, dtype=np.int64)
+        indices[current[same_episode]] = previous[same_episode]
+        temporary = split_dir / f".{path.stem}.{os.getpid()}.npy"
+        np.save(temporary, indices, allow_pickle=False)
+        os.replace(temporary, path)
+        return path
 
     def __getstate__(self) -> dict[str, Any]:
         """Exclude process-local mmap handles from spawned worker payloads."""
@@ -588,6 +665,7 @@ def _normalized_arrays(
     arm_pair = windows["arm_pair"][rows]
     hand_pair = history[:, -2:]
     result = {
+        "episode_index": data.episode_index[rows],
         "arm_state_norm": _normalize(arm, stats, "arm_state"),
         "arm_state_pair_norm": _normalize(arm_pair, stats, "arm_state"),
         "hand_history_norm": _normalize(history, stats, "hand_history"),

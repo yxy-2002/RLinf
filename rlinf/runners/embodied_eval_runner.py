@@ -107,15 +107,18 @@ class EmbodiedEvalRunner:
 
         if cfg.runner.get("debug_actions", False):
             if (
-                cfg.env.eval.get("lamp_adapter")
-                != "rlinf.envs.lamp_realworld_adapter:RealWorldLampAdapter"
+                (
+                    cfg.env.eval.get("lamp_adapter")
+                    != "rlinf.envs.lamp_realworld_adapter:RealWorldLampAdapter"
+                    and cfg.env.eval.env_type != "dexjoco"
+                )
                 or cfg.env.eval.auto_reset
                 or cfg.env.eval.total_num_envs != 1
                 or cfg.rollout.pipeline_stage_num != 1
                 or cfg.runner.get("enable_decoupled_mode", False)
             ):
                 raise ValueError(
-                    "runner.debug_actions requires RealWorldLampAdapter, one "
+                    "runner.debug_actions requires RealWorldLampAdapter or DexJoCo, one "
                     "environment/stage, auto_reset=false and coupled rollout"
                 )
 

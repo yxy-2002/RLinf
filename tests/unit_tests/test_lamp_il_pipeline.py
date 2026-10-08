@@ -17,6 +17,7 @@ from __future__ import annotations
 import json
 import pickle
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import av
@@ -41,6 +42,7 @@ from rlinf.models.embodiment.lamp.hand_prior_artifact import (
     sorted_vq_codebook,
 )
 from rlinf.models.embodiment.lamp.hand_vq_vae import HandVQVAE
+from rlinf.models.embodiment.lamp.lamplstm_prior import LampLSTMPrior
 from rlinf.models.embodiment.lamp.policy_wrapper import (
     LampObservationFeatures,
     LampPlan,
@@ -61,6 +63,7 @@ from rlinf.runners.offline_runner import OfflineRunner
 from rlinf.utils.runner_utils import resolve_save_interval, resolve_training_horizon
 from rlinf.workers.actor.lamp_il_worker import (
     DeterministicInfiniteBatchSampler,
+    LampILWorker,
     _clip_gradients,
     _nearest_vq_indices,
     _prior_architecture,
@@ -108,6 +111,59 @@ _DP_CONFIG_NAMES = tuple(
 def _compose_lamp_config(config_name: str):
     with initialize_config_dir(config_dir=str(_CONFIG_DIR), version_base="1.3"):
         return compose(config_name=config_name)
+
+
+@pytest.mark.parametrize("loss_type", ["none", "mse", "delta_mse"])
+def test_lstm_worker_routes_boundary_configuration_and_metrics(loss_type):
+    cfg = _compose_lamp_config("dexjoco_lamp_prior_lamplstm_water_plant")
+    cfg.actor.model.hand_prior.boundary_loss_type = loss_type
+    weight = 0.0 if loss_type == "none" else 0.3
+    cfg.actor.model.hand_prior.boundary_loss_weight = weight
+    cfg.actor.model.execution_horizon = 2
+    model = LampLSTMPrior(
+        action_dim=2,
+        history_dim=2,
+        horizon=4,
+        action_hidden_dim=4,
+        condition_hidden_dim=4,
+    )
+    worker = SimpleNamespace(cfg=cfg, device=torch.device("cpu"), model=model)
+    batch = {
+        "hand_history8_norm": torch.randn(2, 8, 2),
+        "hand_history8_mask": torch.ones(2, 8),
+        "future_hand_norm": torch.randn(2, 4, 2),
+        "mask": torch.ones(2, 4),
+    }
+    if weight:
+        batch.update(
+            {f"previous_{key}": value.clone() for key, value in list(batch.items())}
+        )
+        batch["boundary_pair_mask"] = torch.tensor([True, False])
+    output = LampILWorker._prior_loss(worker, batch, torch.tensor(0))
+    torch.testing.assert_close(
+        output["weighted_boundary_loss"], weight * output["boundary_loss"]
+    )
+    torch.testing.assert_close(
+        output["total_loss"],
+        output["reconstruction_loss"]
+        + output["beta"] * output["kl_loss"]
+        + output["weighted_boundary_loss"],
+    )
+    assert output["boundary_valid_fraction"].item() == (0.5 if weight else 0.0)
+    output["total_loss"].backward()
+    assert torch.isfinite(model.decoder_output.weight.grad).all()
+
+
+def test_boundary_defaults_preserve_legacy_training_contract():
+    cfg = _compose_lamp_config("dexjoco_lamp_prior_lamplstm_water_plant")
+    contract = _training_contract(cfg, steps_per_epoch=10, max_steps=20000)
+    assert "boundary_loss_type" not in contract["model"]["hand_prior"]
+    assert "boundary_loss_weight" not in contract["model"]["hand_prior"]
+    cfg.actor.model.hand_prior.boundary_loss_type = "mse"
+    cfg.actor.model.hand_prior.boundary_loss_weight = 0.2
+    changed = _training_contract(cfg, steps_per_epoch=10, max_steps=20000)
+    assert changed["model"]["hand_prior"]["boundary_loss_type"] == "mse"
+    assert changed["model"]["hand_prior"]["boundary_loss_weight"] == 0.2
 
 
 def test_offline_runner_preserves_standard_metric_namespaces():

@@ -42,6 +42,7 @@ from rlinf.models.embodiment.lamp.artifact_io import (
     save_artifact,
     save_training_state,
 )
+from rlinf.models.embodiment.lamp.chunk_boundary_loss import validate_boundary_loss
 from rlinf.models.embodiment.lamp.hand_pca import fit_hand_pca
 from rlinf.models.embodiment.lamp.hand_prior_artifact import (
     TorchHandPCA,
@@ -116,6 +117,15 @@ def _training_contract(
     cfg: DictConfig, *, steps_per_epoch: int, max_steps: int
 ) -> dict[str, Any]:
     """Return the resolved numerical training recipe stored with artifacts."""
+    model = OmegaConf.to_container(cfg.actor.model, resolve=True)
+    prior = model.get("hand_prior", {})
+    if (
+        prior.get("boundary_loss_type", "none") == "none"
+        and prior.get("boundary_loss_weight", 0.0) == 0.0
+    ):
+        # Preserve exact-resume compatibility with pre-boundary baseline runs.
+        prior.pop("boundary_loss_type", None)
+        prior.pop("boundary_loss_weight", None)
     return {
         "seed": int(cfg.actor.seed),
         "max_epochs": int(cfg.runner.max_epochs),
@@ -125,7 +135,7 @@ def _training_contract(
         "micro_batch_size": int(cfg.actor.micro_batch_size),
         "eval_batch_size": int(cfg.actor.eval_batch_size),
         "optimizer": OmegaConf.to_container(cfg.actor.optim, resolve=True),
-        "model": OmegaConf.to_container(cfg.actor.model, resolve=True),
+        "model": model,
         "torch_compile": bool(cfg.actor.get("torch_compile", True)),
         "compile_mode": str(cfg.actor.get("compile_mode", "default")),
         "validation_interval": int(cfg.actor.get("validation_interval", 0)),
@@ -699,11 +709,25 @@ class LampILWorker(Worker):
         )
 
     def _setup_dataloaders(self, cache_dir: Path) -> None:
+        prior_cfg = self.cfg.actor.model.hand_prior
+        use_boundary = validate_boundary_loss(
+            str(prior_cfg.get("boundary_loss_type", "none")),
+            float(prior_cfg.get("boundary_loss_weight", 0.0)),
+        )
+        if use_boundary and (
+            self.stage != "prior" or str(prior_cfg.type) != "lamplstm"
+        ):
+            raise ValueError("Boundary loss is only supported for LSTM prior training")
         if self.stage == "prior_pca":
             return
         keys = self._dataset_keys()
-        train = LampMMapDataset(cache_dir, "train", keys)
-        validation = LampMMapDataset(cache_dir, "validation", keys)
+        pair_stride = int(self.cfg.actor.model.execution_horizon) if use_boundary else 0
+        if use_boundary and not 1 <= pair_stride <= int(prior_cfg.horizon):
+            raise ValueError("execution_horizon must satisfy 1 <= K <= H")
+        train = LampMMapDataset(cache_dir, "train", keys, pair_stride=pair_stride)
+        validation = LampMMapDataset(
+            cache_dir, "validation", keys, pair_stride=pair_stride
+        )
         global_batch_size = int(self.cfg.actor.global_batch_size)
         micro_batch_size = int(self.cfg.actor.micro_batch_size)
         if (
@@ -798,27 +822,48 @@ class LampILWorker(Worker):
         prefix = "" if side == "single" else f"{side}_"
         prior_type = str(prior_cfg.type)
         if prior_type == "lamplstm":
+            history_key = (
+                f"{prefix}hand_history{int(prior_cfg.get('history_length', 16))}"
+            )
+            boundary_type = str(prior_cfg.get("boundary_loss_type", "none"))
+            boundary_weight = float(prior_cfg.get("boundary_loss_weight", 0.0))
+            previous_chunk = None
+            if validate_boundary_loss(boundary_type, boundary_weight):
+                previous_chunk = {
+                    "history": batch[f"previous_{history_key}_norm"],
+                    "history_mask": batch[f"previous_{history_key}_mask"],
+                    "future_actions": batch[f"previous_{prefix}future_hand_norm"],
+                    "future_mask": batch["previous_mask"],
+                    "pair_mask": batch["boundary_pair_mask"],
+                }
             beta = beta_warmup(
                 step,
                 float(prior_cfg.get("beta", 5e-4)),
                 int(prior_cfg.get("beta_warmup_steps", 0)),
             )
             output = self.model(
-                batch[
-                    f"{prefix}hand_history{int(prior_cfg.get('history_length', 16))}_norm"
-                ],
+                batch[f"{history_key}_norm"],
                 batch[f"{prefix}future_hand_norm"],
-                history_mask=batch[
-                    f"{prefix}hand_history{int(prior_cfg.get('history_length', 16))}_mask"
-                ],
+                history_mask=batch[f"{history_key}_mask"],
                 future_mask=batch["mask"],
                 beta=beta,
                 sample=self.model.training,
+                boundary_loss_type=boundary_type,
+                boundary_loss_weight=boundary_weight,
+                execution_horizon=(
+                    int(self.cfg.actor.model.execution_horizon)
+                    if previous_chunk is not None
+                    else None
+                ),
+                previous_chunk=previous_chunk,
             )
             return {
                 "total_loss": output.total_loss,
                 "reconstruction_loss": output.reconstruction_loss,
                 "kl_loss": output.kl_loss,
+                "boundary_loss": output.boundary_loss,
+                "weighted_boundary_loss": boundary_weight * output.boundary_loss,
+                "boundary_valid_fraction": output.boundary_valid_fraction,
                 "beta": torch.as_tensor(beta, device=self.device),
                 "latent_std": output.mu.std(),
             }

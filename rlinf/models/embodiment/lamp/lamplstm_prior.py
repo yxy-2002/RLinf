@@ -16,11 +16,17 @@ never aligned position-by-position with the future chunk.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Literal
 
 import torch
 from torch import Tensor, nn
+
+from rlinf.models.embodiment.lamp.chunk_boundary_loss import (
+    chunk_boundary_loss,
+    validate_boundary_loss,
+)
 
 ConditionMode = Literal["none", "concat", "film"]
 _CONDITION_MODES = {"none", "concat", "film"}
@@ -76,6 +82,8 @@ class LampLSTMPriorOutput:
     reconstruction_loss: Tensor
     kl_loss: Tensor
     total_loss: Tensor
+    boundary_loss: Tensor
+    boundary_valid_fraction: Tensor
 
 
 class _HistoryEncoder(nn.Module):
@@ -385,7 +393,27 @@ class LampLSTMPrior(nn.Module):
         future_mask: Tensor | None = None,
         beta: float | None = None,
         sample: bool = True,
+        *,
+        boundary_loss_type: str = "none",
+        boundary_loss_weight: float = 0.0,
+        execution_horizon: int | None = None,
+        previous_chunk: Mapping[str, Tensor] | None = None,
     ) -> LampLSTMPriorOutput:
+        """Reconstruct a chunk, optionally regularizing a paired execution seam.
+
+        ``previous_chunk`` contains history, history_mask, future_actions,
+        future_mask and pair_mask for the window starting K frames earlier.
+        Boundary predictions use posterior means and share the current
+        condition-dropout decision. The previous prediction is detached.
+        Reconstruction and KL retain their original stochastic objective.
+        A zero boundary weight skips all paired computation and RNG draws.
+        """
+        use_boundary = validate_boundary_loss(boundary_loss_type, boundary_loss_weight)
+        if use_boundary:
+            if previous_chunk is None:
+                raise ValueError("boundary loss requires a paired previous_chunk")
+            if execution_horizon is None or not 1 <= execution_horizon <= self.horizon:
+                raise ValueError("execution_horizon must satisfy 1 <= K <= H")
         self._validate_actions(future_actions)
         if future_mask is None:
             future_mask = torch.ones(
@@ -428,8 +456,50 @@ class LampLSTMPrior(nn.Module):
         kl_loss = (kl * future_mask.unsqueeze(-1).to(dtype=kl.dtype)).sum() / kl_denom
         weight = self.beta if beta is None else float(beta)
         total = reconstruction_loss + weight * kl_loss
+        boundary_loss = total.new_zeros(())
+        boundary_valid_fraction = total.new_zeros(())
+        if use_boundary:
+            # Posterior sampling noise should not itself create a seam target.
+            current_mean_action = (
+                self._decode_impl(mu, history, history_mask, condition_keep_mask)
+                if sample
+                else reconstruction
+            )
+            with torch.no_grad():
+                previous_mu, _ = self._encode_impl(
+                    previous_chunk.get("history"),
+                    previous_chunk["future_actions"],
+                    previous_chunk.get("history_mask"),
+                    condition_keep_mask,
+                )
+                previous_action = self._decode_impl(
+                    previous_mu,
+                    previous_chunk.get("history"),
+                    previous_chunk.get("history_mask"),
+                    condition_keep_mask,
+                )
+            boundary_loss, boundary_valid_fraction = chunk_boundary_loss(
+                current_mean_action,
+                previous_action,
+                future_actions,
+                previous_chunk["future_actions"],
+                future_mask,
+                previous_chunk["future_mask"],
+                previous_chunk["pair_mask"],
+                execution_horizon=execution_horizon,
+                loss_type=boundary_loss_type,
+            )
+            total = total + boundary_loss_weight * boundary_loss
         return LampLSTMPriorOutput(
-            mu, log_var, latent, reconstruction, reconstruction_loss, kl_loss, total
+            mu,
+            log_var,
+            latent,
+            reconstruction,
+            reconstruction_loss,
+            kl_loss,
+            total,
+            boundary_loss,
+            boundary_valid_fraction,
         )
 
     def _validate_actions(self, values: Tensor) -> None:

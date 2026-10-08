@@ -121,6 +121,63 @@ train a DP against that artifact. Do not replace the codebook inside an already
 trained DP: its scalar code labels and normalization are tied to the original
 codebook. Re-exporting a prior does not require retraining the prior.
 
+LSTM Prior Boundary Losses
+-------------------------
+
+The unified ``train_lamp_il.py`` entrypoint supports two optional LSTM prior
+objectives. Set ``actor.model.hand_prior.boundary_loss_type`` to ``mse`` or
+``delta_mse`` and ``boundary_loss_weight`` to a non-negative weight. The defaults
+are ``none`` and ``0.0``; zero weight preserves the original reconstruction +
+beta KL objective, sampling and data loading. This does not modify DP training.
+
+For a previous window A and current window B starting K frames later:
+
+.. code-block:: text
+
+   mse       = mean((B[0] - stopgrad(A[K-1])) ** 2)
+   delta_mse = mean(((B[0] - stopgrad(A[K-1]))
+                    - (expert_B[0] - expert_A[K-1])) ** 2)
+   total     = reconstruction + beta * KL + boundary_loss_weight * boundary_loss
+
+K comes from ``actor.model.execution_horizon``. With H=16 and K=8, the seam
+uses previous index 7, not 15. Pairing uses the same episode and split, even
+with shuffled batches. Missing previous windows, resets and invalid execution
+prefixes are masked. Actions use the existing hand-action normalization;
+measured hand history is not a command target. The ordinary reconstruction and
+KL terms still cover all sampled anchors, including anchors without a pair.
+
+Both boundary predictions decode posterior means with one shared condition
+dropout decision per pair. The old prediction has no gradient. The original
+reconstruction term still uses posterior samples during training. ``mse``
+penalizes motion at the boundary, including legitimate motion; ``delta_mse``
+instead follows the demonstrated increment. Neither guarantees smooth closed-loop
+execution under DP-generated latents.
+
+For example, start a new fine-tuning run from a matching baseline prior artifact
+and give it a separate output name (0.1 is an illustrative weight, not tuned):
+
+.. code-block:: bash
+
+   python examples/embodiment/train_lamp_il.py \
+     --config-name realworld_lamp_prior_lamplstm_concat \
+     actor.model.model_path=/path/to/baseline/prior/artifact \
+     actor.model.hand_prior.boundary_loss_type=delta_mse \
+     actor.model.hand_prior.boundary_loss_weight=0.1 \
+     runner.logger.experiment_name=lstm_concat_delta_mse
+
+Use the baseline's architecture, data directories and normalization. Choose
+``mse`` for the direct penalty. This initializes weights; changing the objective
+is not an exact resume of the old optimizer contract. Logs include
+``boundary_loss``, ``weighted_boundary_loss`` and ``boundary_valid_fraction``
+under the training/validation namespaces. Legacy caches receive episode metadata
+on demand without changing their fingerprint or existing arrays.
+
+An existing checkpoint is the original-objective reference. For a controlled
+fine-tuning comparison, also continue that checkpoint with zero weight for the
+same number of updates. This option trains the whole prior; preserving an
+existing frozen DP's latent interface requires a separate encoder/history-freezing
+design. Do not assume a newly trained prior can replace the old one inside DP.
+
 Convert Demonstrations
 ----------------------
 
@@ -220,6 +277,17 @@ targets or high-frequency hardware telemetry. Actions retain Wuji command
 units: translation scaled by 0.07, Euler increments scaled by 0.5, and
 20 absolute normalized hand targets.
 
-Logging requires ``RealWorldLampAdapter``, one environment and pipeline stage,
+Logging supports ``RealWorldLampAdapter`` and native ``dexjoco`` environments.
+For DexJoCo, append ``+runner.debug_actions=true env.eval.total_num_envs=1``
+to the evaluation command (use ``runner.debug_actions=true`` without ``+``
+if the key already exists). DexJoCo records native ``hand_state`` in radians,
+``arm_state`` as TCP position/quaternion, and ``raw_states``. Its
+``executed_action`` is the command passed to the simulator, not measured joint
+positions or internal actuator controls. Dual-arm states contain both arms
+followed by both hands. Compare boundary/within-chunk change ratios across
+robots; Wuji normalized joints and Allegro radians are different units.
+Simulator wall-clock gaps do not advance physics when realtime pacing is off.
+
+Logging requires one environment and pipeline stage,
 coupled rollout, and ``auto_reset: false``. Append ``runner.debug_actions=false``
 to disable it.

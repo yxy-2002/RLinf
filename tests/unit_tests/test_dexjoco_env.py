@@ -357,3 +357,27 @@ def test_primitive_history_mask_and_snapshot_isolation(tmp_path):
 def test_legacy_history_contract_is_rejected():
     with pytest.raises(ValueError, match="primitive_v1"):
         _make_env(lamp_history_contract="legacy")
+
+
+def test_action_debug_records_measured_states_and_excludes_terminal_padding():
+    env = _make_env(num_envs=1, auto_reset=False)
+    try:
+        env.debug_actions = True
+        env.reset()
+        actions = torch.arange(92).reshape(1, 4, 23).float()
+        env.chunk_step(actions)
+        assert len(env.debug_steps) == 2
+        first, second = env.debug_steps
+        assert first["state_before"]["hand_state"] == [10.0] * 16
+        assert first["state_after"] == second["state_before"]
+        assert second["state_after"]["hand_state"] == [12.0] * 16
+        assert first["sent_env_action"] == actions[0, 0].tolist()
+        assert first["executed_action"] == actions[:, 0].tolist()
+        assert second["terminated"] == [True]
+        env.chunk_step(actions)
+        assert len(env.debug_steps) == 2
+        env.reset()
+        assert env.debug_steps == []
+        assert not env.debug_finished
+    finally:
+        env.close()

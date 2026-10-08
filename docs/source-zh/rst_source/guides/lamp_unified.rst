@@ -104,6 +104,57 @@ prior 采用修正后的导出方式，应将其 checkpoint 重新导出为独�
 随后重新生成 DP 标签并基于该 artifact 训练 DP。不要直接替换已训练 DP 内的码本：
 其标量码字标签和归一化统计绑定原码本。重新导出 prior 不需要重新训练 prior。
 
+LSTM Prior 边界损失
+------------------
+
+统一入口 ``train_lamp_il.py`` 支持两种可选的 LSTM prior 目标。
+设置 ``actor.model.hand_prior.boundary_loss_type`` 为 ``mse`` 或 ``delta_mse``，
+并将 ``boundary_loss_weight`` 设为非负权重。默认值为 ``none`` 和 ``0.0``；
+权重为零时保持原有 reconstruction + beta KL 目标、随机采样和数据加载行为。
+该功能不修改 DP 训练。
+
+设旧窗口为 A，新窗口 B 比 A 晚 K 帧开始：
+
+.. code-block:: text
+
+   mse       = mean((B[0] - stopgrad(A[K-1])) ** 2)
+   delta_mse = mean(((B[0] - stopgrad(A[K-1]))
+                    - (expert_B[0] - expert_A[K-1])) ** 2)
+   total     = reconstruction + beta * KL + boundary_loss_weight * boundary_loss
+
+K 来自 ``actor.model.execution_horizon``。H=16、K=8 时，旧窗口使用索引 7，
+不是 15。即使 batch 被打乱，配对仍来自同一 episode 和数据划分。
+缺失旧窗口、reset 以及执行前缀中的无效帧会被屏蔽。动作沿用手部命令归一化；
+不把实测手部 history 当成命令目标。原有重建和 KL 仍覆盖所有采样锚点，
+包括无法配对的锚点。
+
+边界两侧均解码 posterior mean，每对窗口共享一次 condition dropout 决策，
+旧预测停止梯度。原有训练重建项仍使用 posterior 随机采样。
+``mse`` 会抑制边界运动，包括正常运动；``delta_mse`` 则匹配示教增量。
+两者都不能保证在 DP 生成的 latent 下，闭环执行一定平滑。
+
+例如，从对应的基线 prior artifact 初始化新的微调任务，并使用独立输出名
+（0.1 仅为示例权重，未经调优）：
+
+.. code-block:: bash
+
+   python examples/embodiment/train_lamp_il.py \
+     --config-name realworld_lamp_prior_lamplstm_concat \
+     actor.model.model_path=/path/to/baseline/prior/artifact \
+     actor.model.hand_prior.boundary_loss_type=delta_mse \
+     actor.model.hand_prior.boundary_loss_weight=0.1 \
+     runner.logger.experiment_name=lstm_concat_delta_mse
+
+使用与基线一致的架构、数据目录及归一化；直接边界惩罚选择 ``mse``。
+上述方式只初始化权重；更换目标不属于旧优化器契约的精确续训。
+训练与验证日志包含 ``boundary_loss``、``weighted_boundary_loss`` 和
+``boundary_valid_fraction``。旧缓存按需补齐 episode 元数据，保持指纹及原有数组。
+
+已有 checkpoint 可作为原始目标参考。严格比较微调效果时，应从同一 checkpoint
+再运行一组等步数的零权重对照。该选项训练整个 prior；若要保持既有冻结 DP 的
+latent 接口，还需单独设计 encoder/shared history 冻结方案，不能直接假定
+新 prior 可替换 DP 内原有的 prior。
+
 转换示范
 --------
 
@@ -191,6 +242,17 @@ MLP 不包含 latent 字段；VQ 还记录 ``vq_index``。
 动作保留 Wuji 指令单位：平移缩放系数 0.07、欧拉角增量缩放系数 0.5，
 以及 20 维归一化手部绝对目标。
 
-日志功能要求使用 ``RealWorldLampAdapter``、单环境、单 pipeline stage、
+日志功能支持 ``RealWorldLampAdapter`` 和原生 ``dexjoco`` 环境。
+DexJoCo 评估命令末尾可添加
+``+runner.debug_actions=true env.eval.total_num_envs=1``
+（若配置已有该字段，则使用不带 ``+`` 的 ``runner.debug_actions=true``）。
+DexJoCo 记录弧度单位的 ``hand_state``、TCP 位置/四元数 ``arm_state``
+及 ``raw_states``。其 ``executed_action`` 是传入仿真器的指令，
+并非实测关节位置或内部执行器控制量。双臂状态依次包含两臂和两手。
+跨机器人比较时应使用 chunk 边界变化与内部变化的比值；
+Wuji 归一化关节和 Allegro 弧度值单位不同。
+关闭实时 pacing 时，仿真的墙钟等待不会推进物理时间。
+
+日志功能要求单环境、单 pipeline stage、
 耦合 rollout 及 ``auto_reset: false``。在命令末尾添加
 ``runner.debug_actions=false`` 可关闭记录。

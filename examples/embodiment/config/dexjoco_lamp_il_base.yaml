@@ -77,6 +77,10 @@ actor:
       latent_dim: 2
       history_length: 8
       artifact_path: null
+      # Optional LSTM prior seam objective: none, mse, or delta_mse.
+      # Uses actor.model.execution_horizon for the paired window stride.
+      boundary_loss_type: none
+      boundary_loss_weight: 0.0
 rollout:
   group_name: RolloutGroup
   pipeline_stage_num: 1

@@ -26,6 +26,7 @@ from rlinf.data.datasets.lamp.offline_dataset import (
     prepare_lamp_cache,
 )
 from rlinf.data.datasets.lamp.source_factory import create_lamp_data_source
+from rlinf.models.embodiment.lamp.chunk_boundary_loss import validate_boundary_loss
 from rlinf.runners.offline_runner import OfflineRunner
 from rlinf.scheduler import Cluster
 from rlinf.utils.placement import HybridComponentPlacement
@@ -41,12 +42,22 @@ mp.set_start_method("spawn", force=True)
 )
 def main(cfg) -> None:
     include_images = str(cfg.algorithm.stage) == "dp"
+    prior_cfg = cfg.actor.model.hand_prior
+    use_boundary = validate_boundary_loss(
+        str(prior_cfg.get("boundary_loss_type", "none")),
+        float(prior_cfg.get("boundary_loss_weight", 0.0)),
+    )
+    if use_boundary and (
+        str(cfg.algorithm.stage) != "prior" or str(prior_cfg.type) != "lamplstm"
+    ):
+        raise ValueError("Boundary loss is only supported for LSTM prior training")
     cache_path = prepare_lamp_cache(
         source=create_lamp_data_source(cfg.data),
         action_horizon=int(cfg.actor.model.get("action_horizon", 16)),
         cache_root=cfg.data.cache_root,
         image_size=int(cfg.data.image_size),
         include_images=include_images,
+        include_episode_index=use_boundary,
         history_contract=str(cfg.data.get("history_contract", "primitive_v1")),
         history_length=(
             int(cfg.actor.model.hand_prior.history_length)

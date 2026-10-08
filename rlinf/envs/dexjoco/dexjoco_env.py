@@ -19,6 +19,7 @@ from __future__ import annotations
 import copy
 import json
 import math
+import time
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Any, Optional, Union
@@ -29,6 +30,7 @@ import numpy as np
 import torch
 
 from rlinf.envs.venv.venv import SubprocVectorEnv
+from rlinf.utils.eval_action_debug import jsonable
 
 __all__ = ["DexJocoEnv"]
 
@@ -362,6 +364,9 @@ class DexJocoEnv(gym.Env):
         self.total_num_processes = int(total_num_processes)
         self.worker_info = worker_info
         self.record_metrics = bool(record_metrics)
+        self.debug_actions = False
+        self.debug_steps = []
+        self.debug_finished = False
         if self.num_envs <= 0:
             raise ValueError(f"num_envs must be positive, got {self.num_envs}.")
 
@@ -881,6 +886,11 @@ class DexJocoEnv(gym.Env):
         options: Optional[dict[str, Any]] = None,
     ) -> tuple[dict[str, Any], dict[str, Any]]:
         """Reset selected subprocesses and return a full-batch observation."""
+        if self.debug_actions:
+            if self.num_envs != 1:
+                raise ValueError("DexJoCo action debugging requires one environment")
+            self.debug_steps = []
+            self.debug_finished = False
         requested_idx = (
             np.arange(self.num_envs, dtype=np.int64)
             if env_idx is None
@@ -998,6 +1008,9 @@ class DexJocoEnv(gym.Env):
         if self._last_raw_obs is None:
             self.reset()
 
+        trace = self.debug_actions and not self.debug_finished
+        before = self._debug_state() if trace else None
+        started = time.time() if trace else None
         raw_obs, rewards, terminations, truncations, raw_infos = self.env.step(
             action_array, id=env_idx
         )
@@ -1061,6 +1074,26 @@ class DexJocoEnv(gym.Env):
 
         obs_dict = self._wrap_obs(self._last_raw_obs)
         dones = np.logical_or(terminations, truncations)
+        if trace:
+            self.debug_steps.append(
+                jsonable(
+                    {
+                        "step": len(self.debug_steps),
+                        "timestamp_start": started,
+                        "timestamp_end": time.time(),
+                        "state_before": before,
+                        "state_after": self._debug_state(),
+                        "sent_env_action": action_array[0],
+                        # Native simulator command, not measured joint position.
+                        "executed_action": action_array,
+                        "intervene_flag": False,
+                        "reward": rewards,
+                        "terminated": terminations,
+                        "truncated": truncations,
+                    }
+                )
+            )
+            self.debug_finished = bool(dones.any())
         if self._episode_result_path:
             output = Path(str(self._episode_result_path))
             output.parent.mkdir(parents=True, exist_ok=True)
@@ -1088,6 +1121,20 @@ class DexJocoEnv(gym.Env):
             torch.as_tensor(terminations, dtype=torch.bool),
             torch.as_tensor(truncations, dtype=torch.bool),
             infos,
+        )
+
+    def _debug_state(self) -> dict[str, Any]:
+        """Snapshot native measured coordinates (Allegro hand joints in radians)."""
+        state = np.asarray(self._last_raw_obs[0]["state"])
+        arm_dim = 14 if self.dual_arm else 7
+        hand_dim = 32 if self.dual_arm else 16
+        return jsonable(
+            {
+                "arm_state": state[:arm_dim],
+                "hand_state": state[arm_dim : arm_dim + hand_dim],
+                "hand_state_units": "radians",
+                "raw_states": state,
+            }
         )
 
     def chunk_step(

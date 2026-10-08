@@ -1,6 +1,7 @@
 # Copyright 2026 The RLinf Authors.
 """Source-independent training caches and episode/window alignment."""
 
+import pickle
 from pathlib import Path
 
 import numpy as np
@@ -16,6 +17,46 @@ from rlinf.data.datasets.lamp.offline_dataset import (
     prepare_lamp_cache,
 )
 from rlinf.models.embodiment.lamp.il_training_utils import split_episodes
+
+
+def test_boundary_pairing_handles_interleaving_resets_and_shuffle(tmp_path):
+    split = tmp_path / "train"
+    split.mkdir()
+    # Two interleaved episodes, with the first one shorter than the second.
+    episodes = np.array([7, 2, 7, 2, 7, 2, 2])
+    values = np.arange(len(episodes), dtype=np.float32)[:, None]
+    np.save(split / "episode_index.npy", episodes)
+    np.save(split / "value.npy", values)
+    dataset = LampMMapDataset(tmp_path, "train", ["value"], pair_stride=2)
+    expected = {0: None, 1: None, 2: None, 3: None, 4: 0, 5: 1, 6: 3}
+    for index in [6, 0, 4, 1, 5, 3, 2]:
+        row = dataset[index]
+        assert row["boundary_pair_mask"].item() == (expected[index] is not None)
+        if expected[index] is not None:
+            assert row["previous_value"].item() == expected[index]
+        assert row["value"].item() == index
+    restored = pickle.loads(pickle.dumps(dataset))
+    assert restored[6]["previous_value"].item() == 3
+    assert len(pickle.dumps(dataset)) < 2000
+    # The default reader returns only the requested fields, without pairing.
+    assert set(LampMMapDataset(tmp_path, "train", ["value"])[0]) == {"value"}
+
+
+def test_boundary_pairing_all_invalid_for_short_episodes(tmp_path):
+    split = tmp_path / "train"
+    split.mkdir()
+    np.save(split / "episode_index.npy", np.array([0, 0, 1]))
+    np.save(split / "value.npy", np.arange(3))
+    dataset = LampMMapDataset(tmp_path, "train", ["value"], pair_stride=8)
+    assert not any(dataset[i]["boundary_pair_mask"].item() for i in range(3))
+
+
+def test_boundary_pairing_requires_explicit_episode_metadata(tmp_path):
+    split = tmp_path / "train"
+    split.mkdir()
+    np.save(split / "value.npy", np.arange(3))
+    with pytest.raises(ValueError, match="include_episode_index"):
+        LampMMapDataset(tmp_path, "train", ["value"], pair_stride=2)
 
 
 class ArraySource:
@@ -45,6 +86,50 @@ class ArraySource:
             (len(rows), image_size, image_size, 3),
         ).copy()
         return {"front": images, "wrist": images.copy()}
+
+
+def test_boundary_metadata_backfills_legacy_cache_without_changing_artifact_identity(
+    tmp_path,
+):
+    source = ArraySource(tmp_path / "source")
+    cache = prepare_lamp_cache(source=source, cache_root=tmp_path / "cache")
+    preserved = {
+        path: path.read_bytes()
+        for path in (
+            cache / "metadata.json",
+            cache / "statistics.npz",
+            cache / "train" / "future_hand_norm.npy",
+        )
+    }
+    for split in ("train", "validation"):
+        (cache / split / "episode_index.npy").unlink()
+    reused = prepare_lamp_cache(
+        source=source, cache_root=tmp_path / "cache", include_episode_index=True
+    )
+    assert reused == cache
+    assert source.loads == 2
+    assert all(path.read_bytes() == content for path, content in preserved.items())
+    for split, rows in zip(
+        ("train", "validation"), split_episodes(source.frames.episode_index, 0.9, 42)
+    ):
+        np.testing.assert_array_equal(
+            np.load(cache / split / "episode_index.npy"),
+            source.frames.episode_index[rows],
+        )
+        dataset = LampMMapDataset(
+            cache, split, ["future_hand_norm", "mask"], pair_stride=2
+        )
+        for index in range(len(dataset)):
+            row = dataset[index]
+            if row["boundary_pair_mask"]:
+                # Both windows predict the same target at the shared absolute time.
+                np.testing.assert_array_equal(
+                    row["future_hand_norm"][0], row["previous_future_hand_norm"][2]
+                )
+    prepare_lamp_cache(
+        source=source, cache_root=tmp_path / "cache", include_episode_index=True
+    )
+    assert source.loads == 2
 
 
 @pytest.mark.parametrize("history_length", [3, 8, 16])
