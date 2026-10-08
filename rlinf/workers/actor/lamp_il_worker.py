@@ -69,6 +69,7 @@ from rlinf.models.embodiment.lamp.vq_action_normalization import (
     vq_hand_action_bounds,
 )
 from rlinf.scheduler import Worker
+from rlinf.utils.drq import crop_bchw_fast
 from rlinf.utils.runner_utils import resolve_training_horizon
 
 
@@ -875,7 +876,7 @@ class LampILWorker(Worker):
             ema_sums = None
             for _micro_step in range(self._accumulation_steps):
                 started = time.perf_counter()
-                batch = self._prepare_batch(next(self._train_iter))
+                batch = self._prepare_batch(next(self._train_iter), train=True)
                 data_seconds += time.perf_counter() - started
                 started = time.perf_counter()
                 loss_fn = self._compiled_loss or self._loss
@@ -943,12 +944,22 @@ class LampILWorker(Worker):
         metrics["__global_step"] = self._global_step
         return metrics
 
-    def _prepare_batch(self, batch: dict[str, torch.Tensor]):
+    def _prepare_batch(
+        self, batch: dict[str, torch.Tensor], *, train: bool = False
+    ) -> dict[str, torch.Tensor]:
+        """Move a batch to the device and optionally crop DP training images."""
+        augment = (
+            train
+            and self.stage == "dp"
+            and bool(self.cfg.actor.get("enable_drq", False))
+        )
         result = {}
         for name, value in batch.items():
             tensor = value.to(self.device, non_blocking=True)
             if name in ("front", "wrist"):
                 tensor = tensor.permute(0, 3, 1, 2).float().div_(255.0)
+                if augment:
+                    tensor = crop_bchw_fast(tensor, pad=4)
             else:
                 tensor = tensor.float()
             result[name] = tensor.contiguous()

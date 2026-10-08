@@ -43,6 +43,8 @@ data:
   pin_memory: true
   persistent_workers: true
 actor:
+  # Random image shifts for offline DP training only (4-pixel edge padding).
+  enable_drq: false
   group_name: ActorGroup
   training_backend: fsdp
   seed: 42

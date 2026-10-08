@@ -102,6 +102,13 @@ Use ``realworld_lamp_dp_vq``, ``realworld_lamp_dp_pca`` or
 for MLP. Resume an unchanged training contract with ``runner.resume_dir``;
 changing the robot specification, H, K or dataset starts a new run.
 
+Offline DP image augmentation is disabled by default (``actor.enable_drq: false``).
+Append ``actor.enable_drq=true`` to the training command to enable DrQ on both
+front and wrist images. Each training microbatch independently crops each image
+after 4-pixel edge padding, preserving its original size. Augmentation happens
+after loading the image cache; labels, state inputs and cached images are unchanged.
+Prior training, validation and online evaluation do not apply this augmentation.
+
 VQ codebook export uses the learned softmax layer weights from prior training.
 This shared path applies to both Dexjoco and RealWorld/Wuji; replacing those
 weights with an equal average changes the decoder inputs and can remove hand

@@ -89,6 +89,12 @@ MLP 没有单独的 prior 阶段。``realworld_lamp_il`` 仅保存共用的真�
 ``realworld_lamp_dp_mlp``；MLP 省略 prior 产物参数。通过 ``runner.resume_dir``
 恢复相同训练契约；改变机器人规格、H、K 或数据集应启动新训练。
 
+离线 DP 图像增强默认关闭（``actor.enable_drq: false``）。
+在训练命令末尾添加 ``actor.enable_drq=true``，即可对前视和腕部图像启用 DrQ。
+每个训练 microbatch 中的每张图像独立采样裁剪位置，先做 4 像素边缘填充，
+再裁剪回原始尺寸。增强在图像缓存读取后执行，不修改标签、状态输入或缓存图像。
+Prior 训练、验证和在线评估均不应用此增强。
+
 VQ 码本导出使用 prior 训练时学到的 softmax 层权重。Dexjoco 与 RealWorld/Wuji
 共用这条链路；将这些权重替换为等权平均会改变 decoder 输入，并可能使导出的
 码本丢失部分手型。
