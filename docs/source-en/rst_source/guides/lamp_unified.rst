@@ -41,6 +41,39 @@ Split whole episodes with seed 42 and a 90/10 ratio. The audited 20-episode,
 Both prior and DP use this split; normalization uses training episodes only.
 History contains measured primitive states, while future targets contain commands.
 
+Multiple Recording Directories
+------------------------------
+
+For the real-world source, ``data.dataset_root`` accepts a single directory or
+an ordered list of demo directories. Point each entry to ``demos`` itself;
+parent directories are not searched recursively.
+
+.. code-block:: yaml
+
+   data:
+     dataset_root:
+       - ./logs/20261007-121050-wuji_demo_data_stack_cube/demos
+       - ./logs/20261007-122724-wuji_demo_data_stack_cube/demos
+       - ./logs/20261007-125144-wuji_demo_data_stack_cube/demos
+
+Episodes are numbered across directories in list order, then by trajectory
+number and filename within each directory. Identical filenames in different
+directories remain separate episodes. Duplicate resolved paths and empty
+sources are rejected. The merged collection is split by episode with seed 42;
+normalization uses only its training split. The fingerprint covers all source
+contents and directory group boundaries. Keep the same ordered list for prior
+and DP training; changing the collection requires a matching prior artifact.
+A one-element list retains the single-directory fingerprint.
+
+Pass a list through Hydra as a quoted override (also accepted by the local
+training launcher):
+
+.. code-block:: bash
+
+   python examples/embodiment/train_lamp_il.py \
+     --config-name realworld_lamp_prior_lamplstm_stack_cube \
+     'data.dataset_root=[./logs/20261007-121050-wuji_demo_data_stack_cube/demos,./logs/20261007-122724-wuji_demo_data_stack_cube/demos,./logs/20261007-125144-wuji_demo_data_stack_cube/demos]'
+
 Train Offline
 -------------
 
@@ -146,3 +179,40 @@ RLPD updates. Short training losses verify the software path, not robot success
 rates. Hardware motion and online task performance require a separate validation.
 See ``docs/lamp_unified_validation.md`` for reproducible checks and limitations,
 and ``docs/lamp_code_guide.md`` for adapter responsibilities.
+
+Online Evaluation Action Logs
+-----------------------------
+
+Run the existing task command:
+
+.. code-block:: bash
+
+   bash evaluations/run_eval.sh realworld realworld_lamp_dp_stack_cube_il_eval
+
+The shared IL evaluation config enables ``runner.debug_actions: true``.
+Each episode is written on the driver node to
+``<runner.logger.log_path>/debug_actions/episode_0001_env_000.jsonl``.
+Records are flushed after each action chunk, preserving completed chunks if
+evaluation is interrupted. An ``episode_end`` record marks normal completion
+and distinguishes environment termination from the rollout limit.
+
+Each ``action_chunk`` contains ``policy.decoded_action_plan`` (the full decoded
+prediction before temporal ensembling or execution-window slicing),
+``policy.core_action_norm``, and ``policy.latent_action`` for LAMPLSTM, PCA or
+VQ priors. MLP has no latent entry; VQ also records ``vq_index``. Values come
+from the same inference/decode that produced the command.
+
+``sent_action_chunk`` is the selected command sequence. ``steps`` contains only
+its executed prefix, with timestamps, ``sent_env_action``, ``executed_action``
+feedback, intervention flags, reward, termination flags, and measured
+``state_before`` / ``state_after``. State fields are ``arm_state`` (6-D
+reset-relative XYZ and Euler angles), ``hand_state_normalized`` (20 measured
+joints in [0,1]), and ``raw_states`` (the original 38-D observation, including
+hand joint positions in radians). These are observation snapshots, not command
+targets or high-frequency hardware telemetry. Actions retain Wuji command
+units: translation scaled by 0.07, Euler increments scaled by 0.5, and
+20 absolute normalized hand targets.
+
+Logging requires ``RealWorldLampAdapter``, one environment and pipeline stage,
+coupled rollout, and ``auto_reset: false``. Append ``runner.debug_actions=false``
+to disable it.

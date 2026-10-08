@@ -153,7 +153,12 @@ def test_chunk_cancels_suffix_and_preserves_measurements(intervene_at, done_at):
     adapter = RealWorldLampAdapter(
         env,
         OmegaConf.create(
-            {"env_type": "realworld", "lamp_robot_spec": spec, "lamp_history_length": 3}
+            {
+                "env_type": "realworld",
+                "lamp_robot_spec": spec,
+                "lamp_history_length": 3,
+                "auto_reset": env.auto_reset,
+            }
         ),
         OmegaConf.create({"robot_spec": spec}),
     )
@@ -548,3 +553,75 @@ def test_wuji_dp_accepts_two_pose_frames_and_rejects_full_arm_state():
         assert output.isfinite().all()
         with pytest.raises(ValueError, match="arm_state_pair"):
             model(images, images, torch.zeros(1, 2, 18), hand)
+
+
+def test_multiple_roots_keep_episode_and_image_boundaries(tmp_path):
+    from rlinf.data.datasets.lamp.offline_dataset import (
+        load_cache_metadata,
+        prepare_lamp_cache,
+    )
+    from rlinf.data.datasets.lamp.realworld import create_source
+
+    roots = [tmp_path / "first", tmp_path / "second"]
+    for index, root in enumerate(roots):
+        root.mkdir()
+        raw = raw_episode(length=3 + index)
+        for obs in ("curr_obs", "next_obs"):
+            raw[obs]["main_images"] += index * 10
+            raw[obs]["extra_view_images"] += index * 10
+        torch.save(raw, root / "trajectory_0_same.pt")
+    cfg = OmegaConf.create({"dataset_root": [str(root) for root in roots]})
+    source = create_source(cfg)
+    frames = source.load_frames()
+    assert frames.episode_index.tolist() == [0] * 3 + [1] * 4
+    images = source.images_for(np.array([3, 2, 3]), 8, label="test")
+    assert images["wrist"][:, 0, 0, 0].tolist() == [10, 2, 10]
+    assert images["front"][:, 0, 0, 0].tolist() == [50, 42, 50]
+    cache = prepare_lamp_cache(
+        source=source,
+        cache_root=tmp_path / "cache",
+        history_length=8,
+        include_images=True,
+        image_size=8,
+    )
+    metadata = load_cache_metadata(cache)
+    assert set(metadata["train_episodes"]).isdisjoint(metadata["validation_episodes"])
+    assert metadata["train_rows"] + metadata["validation_rows"] == 7
+    assert (
+        source.metadata.data_sha256
+        != RealWorldTrajectorySource(roots[::-1]).metadata.data_sha256
+    )
+    assert (
+        source.metadata.data_sha256
+        != RealWorldTrajectorySource(roots[0]).metadata.data_sha256
+    )
+    assert (
+        RealWorldTrajectorySource([roots[0]]).metadata
+        == RealWorldTrajectorySource(roots[0]).metadata
+    )
+    # A content change in either directory invalidates the combined identity.
+    raw["rewards"][-1] = 0
+    torch.save(raw, roots[1] / "trajectory_0_same.pt")
+    assert (
+        source.metadata.data_sha256
+        != RealWorldTrajectorySource(roots).metadata.data_sha256
+    )
+
+
+@pytest.mark.parametrize("roots", [[], [None], [""], 123])
+def test_invalid_dataset_roots_are_rejected(roots):
+    with pytest.raises(ValueError, match="dataset_root"):
+        RealWorldTrajectorySource(roots)
+
+
+def test_duplicate_or_empty_directories_are_rejected(tmp_path):
+    torch.save(raw_episode(), tmp_path / "trajectory_0_fixture.pt")
+    with pytest.raises(ValueError, match="duplicate directories"):
+        RealWorldTrajectorySource([tmp_path, tmp_path / "."])
+    with pytest.raises(ValueError, match="No RLinf"):
+        RealWorldTrajectorySource([tmp_path, tmp_path / "missing"])
+    alias = tmp_path / "alias"
+    alias.mkdir()
+    (alias / "trajectory_0_fixture.pt").symlink_to(tmp_path / "trajectory_0_fixture.pt")
+    with pytest.raises(ValueError, match="Duplicate trajectory"):
+        RealWorldTrajectorySource([tmp_path, alias])

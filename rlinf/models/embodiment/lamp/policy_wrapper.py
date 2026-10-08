@@ -253,6 +253,7 @@ class LampObservationFeatures:
 class LampPlan:
     core_action_norm: torch.Tensor
     physical_plan: torch.Tensor
+    debug_outputs: dict[str, torch.Tensor] = field(default_factory=dict)
 
 
 class LampTemporalEnsembleController:
@@ -640,7 +641,7 @@ class LampPolicy(nn.Module, BasePolicy):
             sample = initial_noise
         sampler = self._compiled_predict or self.core._ddim_sample
         core_action_norm = sampler(sample, features.condition)
-        physical, _ = self.core._decode_core(
+        physical, decode_outputs = self.core._decode_core(
             core_action_norm,
             features.auxiliary.get("decoder_history"),
             features.auxiliary.get("decoder_history_mask"),
@@ -648,6 +649,12 @@ class LampPolicy(nn.Module, BasePolicy):
         return LampPlan(
             core_action_norm=core_action_norm,
             physical_plan=self._normalize_physical_quaternions(physical),
+            debug_outputs={
+                key: value
+                for key, value in decode_outputs.items()
+                if key != "latent_action"
+                or self.spec.hand_prior_type in ("lamplstm", "pca", "vq_codebook")
+            },
         )
 
     def decode_core_action(
@@ -773,6 +780,11 @@ class LampPolicy(nn.Module, BasePolicy):
             "prev_values": zeros,
             "forward_inputs": forward_inputs,
             "core_action_norm": core,
+            "debug_outputs": {
+                **plan.debug_outputs,
+                "core_action_norm": core,
+                "decoded_action_plan": physical,
+            },
         }
 
     def enable_torch_compile(self, mode: str = "max-autotune-no-cudagraphs") -> None:

@@ -7,7 +7,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Iterator
 
@@ -96,16 +98,52 @@ class RealWorldTrajectorySource:
     This adapter neither resamples time nor reconstructs unrecorded commands.
     """
 
-    def __init__(self, root: str | Path, task: str = "wuji_stack_cube") -> None:
-        self.root = Path(root).expanduser().resolve()
-        self.paths = tuple(
-            sorted(
-                self.root.glob("trajectory_*.pt"),
-                key=lambda p: int(re.match(r"trajectory_(\d+)_", p.name).group(1)),
+    def __init__(
+        self, root: str | Path | Sequence[str | Path], task: str = "wuji_stack_cube"
+    ) -> None:
+        """Read one demo directory or an ordered, nonempty list of directories.
+
+        Directory order defines global episode IDs. Duplicate resolved roots or
+        files are rejected to prevent accidental train/validation duplication.
+        """
+        roots = [root] if isinstance(root, (str, Path)) else root
+        if not isinstance(roots, Sequence) or not roots:
+            raise ValueError("dataset_root must be a path or a nonempty list of paths")
+        if any(
+            not isinstance(item, (str, Path)) or not str(item).strip() for item in roots
+        ):
+            raise ValueError("dataset_root entries must be nonempty paths")
+        self.roots = tuple(Path(item).expanduser().resolve() for item in roots)
+        if len(set(self.roots)) != len(self.roots):
+            raise ValueError("dataset_root contains duplicate directories")
+        # The metadata schema retains one root; contents and group boundaries
+        # below identify the full ordered collection for cache/artifact checks.
+        self.root = Path(os.path.commonpath(self.roots))
+        groups = []
+        seen = set()
+        for directory in self.roots:
+            paths = list(directory.glob("trajectory_*.pt"))
+            if not paths:
+                raise ValueError(f"No RLinf .pt trajectories in {directory}")
+            for path in paths:
+                if not re.match(r"trajectory_(\d+)_", path.name):
+                    raise ValueError(f"Invalid trajectory filename: {path}")
+                resolved = path.resolve()
+                if resolved in seen:
+                    raise ValueError(f"Duplicate trajectory path: {path}")
+                seen.add(resolved)
+            groups.append(
+                tuple(
+                    sorted(
+                        paths,
+                        key=lambda path: (
+                            int(re.match(r"trajectory_(\d+)_", path.name).group(1)),
+                            path.name,
+                        ),
+                    )
+                )
             )
-        )
-        if not self.paths:
-            raise ValueError(f"No RLinf .pt trajectories in {self.root}")
+        self.paths = tuple(path for group in groups for path in group)
         self.spec = wuji_robot_spec()
         self.conversion = {
             "version": CONVERSION_VERSION,
@@ -116,6 +154,9 @@ class RealWorldTrajectorySource:
             "cameras": ["extra_view_images[0]", "main_images"],
         }
         digest = hashlib.sha256(json.dumps(self.conversion, sort_keys=True).encode())
+        if len(groups) > 1:
+            digest.update(b"multi_directory_v1")
+            digest.update(json.dumps([len(group) for group in groups]).encode())
         for path in self.paths:
             digest.update(path.name.encode())
             with path.open("rb") as handle:

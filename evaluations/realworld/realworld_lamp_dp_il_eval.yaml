@@ -16,6 +16,7 @@ cluster:
 runner:
   task_type: embodied_eval
   only_eval: true
+  debug_actions: true
   # First Enter resets; second Enter starts policy execution, including round 1.
   pause_between_eval_episodes: true
   success_source: reward_model

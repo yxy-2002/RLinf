@@ -1,0 +1,14 @@
+# Inherit the FiLM recipe; override only variant/stage-specific settings.
+defaults:
+- realworld_lamp_dp_lamplstm
+- _self_
+actor:
+  model:
+    hand_prior:
+      type: lamplstm
+      encoder_condition_mode: concat
+      decoder_condition_mode: concat
+      artifact_path: ./outputs/realworld_lamp_prior_lamplstm_concat/artifact
+runner:
+  logger:
+    experiment_name: realworld_lamp_dp_lamplstm_concat

@@ -1205,8 +1205,11 @@ class EnvWorker(Worker):
         input_channel: Channel,
         rollout_channel: Channel,
         confirmation_channel: Channel | None = None,
+        debug_channel: Channel | None = None,
     ):
         eval_metrics = defaultdict(list)
+        if debug_channel is not None:
+            self.eval_env_list[0].debug_actions = True
 
         for eval_rollout_epoch in range(self.eval_rollout_epoch):
             episode = eval_rollout_epoch + 1
@@ -1256,8 +1259,11 @@ class EnvWorker(Worker):
                         channel=input_channel,
                         tag="eval_rollout_results",
                         batch_size=self.eval_batch_size,
+                        merge_fn=RolloutResult.merge_rollout_results
+                        if debug_channel is not None
+                        else None,
                         infer_batch_size_fn=self._infer_rollout_batch_size
-                        if self.env_decoupled_mode
+                        if self.env_decoupled_mode or debug_channel is not None
                         else None,
                         decoupled_mode=self.env_decoupled_mode,
                     )
@@ -1270,9 +1276,33 @@ class EnvWorker(Worker):
                         raw_chunk_actions = raw_chunk_actions.detach().cpu().numpy()
                     else:
                         raw_chunk_actions = np.asarray(raw_chunk_actions)
+                    debug_start = (
+                        len(self.eval_env_list[stage_id].debug_steps)
+                        if debug_channel is not None
+                        else 0
+                    )
                     env_output, env_info = self.env_evaluate_step(
                         raw_chunk_actions, stage_id
                     )
+                    if debug_channel is not None:
+                        from rlinf.utils.eval_action_debug import jsonable
+
+                        steps = self.eval_env_list[stage_id].debug_steps[debug_start:]
+                        if steps:
+                            debug_channel.put(
+                                jsonable(
+                                    {
+                                        "type": "action_chunk",
+                                        "episode": episode,
+                                        "rank": self._rank,
+                                        "chunk": eval_step,
+                                        "policy": rollout_results.forward_inputs,
+                                        "sent_action_chunk": raw_chunk_actions,
+                                        "steps": steps,
+                                    }
+                                ),
+                                key="records",
+                            )
 
                     for key, value in env_info.items():
                         eval_metrics[key].append(value)
@@ -1299,6 +1329,20 @@ class EnvWorker(Worker):
                         decoupled_mode=self.env_decoupled_mode,
                     )
 
+            if debug_channel is not None:
+                debug_channel.put(
+                    {
+                        "type": "episode_end",
+                        "episode": episode,
+                        "rank": self._rank,
+                        "reason": (
+                            "environment_done"
+                            if self.eval_env_list[0].debug_finished
+                            else "rollout_limit"
+                        ),
+                    },
+                    key="records",
+                )
             self.finish_rollout(mode="eval")
         for stage_id in range(self.stage_num):
             if self.eval_enable_offload:

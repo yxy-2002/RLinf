@@ -5,7 +5,11 @@ defaults:
 algorithm:
   stage: prior
 data:
-  dataset_root: ./logs/20261006-082710-wuji_demo_data_stack_cube/demos
+  dataset_root: 
+    - ./logs/20261006-082710-wuji_demo_data_stack_cube/demos
+    - ./logs/20261007-121050-wuji_demo_data_stack_cube/demos
+    - ./logs/20261007-122724-wuji_demo_data_stack_cube/demos
+    - ./logs/20261007-125144-wuji_demo_data_stack_cube/demos
   num_workers: 0
   persistent_workers: false
   pin_memory: true

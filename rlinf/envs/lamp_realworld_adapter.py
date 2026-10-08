@@ -5,6 +5,8 @@
 
 from __future__ import annotations
 
+import time
+
 import torch
 
 from rlinf.data.datasets.lamp.realworld import (
@@ -13,6 +15,7 @@ from rlinf.data.datasets.lamp.realworld import (
     wuji_robot_spec,
 )
 from rlinf.envs.lamp_adapter import LampEnvAdapter, LampObservationHistory
+from rlinf.utils.eval_action_debug import jsonable
 
 
 class RealWorldLampAdapter(LampEnvAdapter):
@@ -28,6 +31,10 @@ class RealWorldLampAdapter(LampEnvAdapter):
             )
         if int(env.num_envs) != 1:
             raise ValueError("The RealWorld LAMP adapter supports one robot per worker")
+        self.debug_actions = False
+        self.debug_steps = []
+        self.debug_finished = False
+        self._debug_state = None
         self.auto_reset = bool(cfg.get("auto_reset", False))
         self.history = LampObservationHistory(
             self.robot_spec, 1, int(cfg.get("lamp_history_length", 16))
@@ -43,18 +50,52 @@ class RealWorldLampAdapter(LampEnvAdapter):
 
     def _observe(self, raw, *, reset=False):
         arm, hand = measured_states(raw)
+        if self.debug_actions:
+            self._debug_state = jsonable(
+                {
+                    "arm_state": arm[0],
+                    "hand_state_normalized": hand[0],
+                    "raw_states": raw["states"][0],
+                }
+            )
         self.history.update(arm, hand, [0], reset=reset)
         return {**camera_slots(raw), **self.history.observation()}
 
     def reset(self, **kwargs):
+        self.debug_finished = False
+        self.debug_steps = []
         raw, info = self.env.reset(**kwargs)
         return self._observe(raw, reset=True), info
 
     def step(self, actions, **kwargs):
+        before = self._debug_state
+        started = time.time() if self.debug_actions else None
         raw, reward, terminated, truncated, info = self.env.step(
             actions, auto_reset=False, **kwargs
         )
-        return self._observe(raw), reward, terminated, truncated, info
+        obs = self._observe(raw)
+        if self.debug_actions and not self.debug_finished:
+            self.debug_steps.append(
+                jsonable(
+                    {
+                        "step": len(self.debug_steps),
+                        "timestamp_start": started,
+                        "timestamp_end": time.time(),
+                        "state_before": before,
+                        "state_after": self._debug_state,
+                        "sent_env_action": actions[0],
+                        "executed_action": info.get("executed_action"),
+                        "intervene_flag": info.get("intervene_flag", False),
+                        "reward": reward,
+                        "terminated": terminated,
+                        "truncated": truncated,
+                    }
+                )
+            )
+            self.debug_finished = bool(
+                torch.as_tensor(terminated).any() or torch.as_tensor(truncated).any()
+            )
+        return obs, reward, terminated, truncated, info
 
     def chunk_step(self, actions):
         actions = torch.as_tensor(actions, dtype=torch.float32).cpu()

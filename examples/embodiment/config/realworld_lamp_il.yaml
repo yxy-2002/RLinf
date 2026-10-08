@@ -57,3 +57,5 @@ actor:
 runner:
   logger:
     experiment_name: realworld_lamp_il
+    logger_backends:
+    - tensorboard

@@ -15,7 +15,7 @@ runner:
 
 rollout:
   model:
-    model_path: /workspace/yxy_RLinf/RLinf/logs/realworld_stack_cubes/realworld_lamp_dp_lamplstm_film_stack_cube/artifact
+    model_path: /workspace/yxy_RLinf/RLinf/logs/realworld_stack_cubes_20261007/realworld_lamp_dp_lamplstm_concat/artifact
 
 reward:
   model:

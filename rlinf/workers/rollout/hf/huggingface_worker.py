@@ -761,14 +761,22 @@ class MultiStepRolloutWorker(Worker):
                             tag="eval_rollout_results",
                             batch_size=self.eval_batch_size,
                         )
-                        actions, _ = self.predict(env_output["obs"], mode="eval")
+                        actions, result = self.predict(env_output["obs"], mode="eval")
                         if isinstance(actions, torch.Tensor):
                             actions = actions.detach().cpu().contiguous()
+                        if self.cfg.runner.get("debug_actions", False):
+                            actions = RolloutResult(
+                                actions=actions,
+                                forward_inputs=result.get("debug_outputs", {}),
+                            )
                         self.send_rollout_result(
                             output_channel=output_channel,
                             rollout_result=actions,
                             tag="eval_rollout_results",
                             batch_size=self.eval_batch_size,
+                            split_fn=self._split_rollout_result
+                            if isinstance(actions, RolloutResult)
+                            else None,
                         )
 
             if self.enable_offload:

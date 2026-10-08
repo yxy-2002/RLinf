@@ -36,6 +36,34 @@ reader 不构造环境、不导入机器人 SDK，原样保留动作标签和采
 划分为 18 条训练和 2 条验证。prior 与 DP 共用划分，统计量只从训练集计算。
 历史使用 primitive 实测状态，未来目标使用命令动作。
 
+多个采集目录
+------------
+
+真机数据源的 ``data.dataset_root`` 支持单个目录或有序的目录列表。
+每项需要指向 ``demos`` 目录本身，不会递归搜索父目录。
+
+.. code-block:: yaml
+
+   data:
+     dataset_root:
+       - ./logs/20261007-121050-wuji_demo_data_stack_cube/demos
+       - ./logs/20261007-122724-wuji_demo_data_stack_cube/demos
+       - ./logs/20261007-125144-wuji_demo_data_stack_cube/demos
+
+按列表顺序遍历目录，再按轨迹编号和文件名排序，统一分配 episode 编号。
+不同目录的同名文件保留为独立 episode；重复的实际路径和空数据源会报错。
+合并后按 episode 使用 seed 42 划分数据，仅用训练集计算归一化统计量。
+数据指纹覆盖所有源文件内容及目录分组边界。prior 和 DP 必须使用相同顺序的
+目录列表；更换数据集需要匹配的 prior artifact。单元素列表保持原单目录指纹。
+
+Hydra 命令行可用带引号的列表覆盖（本地训练脚本也接受此参数）：
+
+.. code-block:: bash
+
+   python examples/embodiment/train_lamp_il.py \
+     --config-name realworld_lamp_prior_lamplstm_stack_cube \
+     'data.dataset_root=[./logs/20261007-121050-wuji_demo_data_stack_cube/demos,./logs/20261007-122724-wuji_demo_data_stack_cube/demos,./logs/20261007-125144-wuji_demo_data_stack_cube/demos]'
+
 离线训练
 --------
 
@@ -125,3 +153,38 @@ checkpoint 包含 online/demo replay、target Q、优化器、温度、采样状
 不代表机器人成功率。硬件运动和在线任务效果需要另行验收。
 可复现检查和限制见 ``docs/lamp_unified_validation.md``，适配职责见
 ``docs/lamp_code_guide.md``。
+
+在线评估动作日志
+----------------
+
+继续使用现有任务命令：
+
+.. code-block:: bash
+
+   bash evaluations/run_eval.sh realworld realworld_lamp_dp_stack_cube_il_eval
+
+公共 IL 评估配置默认开启 ``runner.debug_actions: true``。
+每个 episode 在 driver 节点写入
+``<runner.logger.log_path>/debug_actions/episode_0001_env_000.jsonl``。
+每个动作 chunk 写入后立即刷新，因此评估中断时已经完成的 chunk 仍可读取。
+``episode_end`` 记录标记正常完成，并区分环境终止与 rollout 步数上限。
+
+每条 ``action_chunk`` 包含 ``policy.decoded_action_plan`` （时间集成或
+执行窗口裁剪前的完整解码预测）、``policy.core_action_norm``，以及使用
+LAMPLSTM、PCA 或 VQ 先验时的 ``policy.latent_action``。
+MLP 不包含 latent 字段；VQ 还记录 ``vq_index``。
+这些数值直接取自生成该动作的同一次推理与解码。
+
+``sent_action_chunk`` 是选定的下发动作序列，``steps`` 仅包含实际执行的前缀。
+每一步记录时间戳、``sent_env_action``、环境反馈的 ``executed_action``、
+干预标记、奖励、终止标记，以及实测 ``state_before`` / ``state_after``。
+状态字段为 ``arm_state`` （6 维相对 reset 的 XYZ 与欧拉角）、
+``hand_state_normalized`` （20 维 [0,1] 实测关节位置）和 ``raw_states``
+（原始 38 维观测，包含以弧度表示的手部关节位置）。
+实际状态来自观测快照，并非指令目标或高频硬件遥测。
+动作保留 Wuji 指令单位：平移缩放系数 0.07、欧拉角增量缩放系数 0.5，
+以及 20 维归一化手部绝对目标。
+
+日志功能要求使用 ``RealWorldLampAdapter``、单环境、单 pipeline stage、
+耦合 rollout 及 ``auto_reset: false``。在命令末尾添加
+``runner.debug_actions=false`` 可关闭记录。

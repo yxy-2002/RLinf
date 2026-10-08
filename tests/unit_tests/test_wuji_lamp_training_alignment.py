@@ -29,11 +29,19 @@ CONFIG_DIR = Path(__file__).resolve().parents[2] / "examples/embodiment/config"
 PAIRS = {
     "prior_lamplstm_stack_cube": "dexjoco_lamp_prior_lamplstm_water_plant",
     "prior_lamplstm_none": "dexjoco_lamp_prior_lamplstm_water_plant",
+    "prior_lamplstm_concat": "dexjoco_lamp_prior_lamplstm_water_plant",
     "prior_pca_stack_cube": "dexjoco_lamp_prior_pca_dim2_water_plant",
     "prior_vq_stack_cube": "dexjoco_lamp_prior_vq_water_plant",
     **{
         f"dp_{variant}": "dexjoco_lamp_dp_lamplstm"
-        for variant in ("lamplstm", "lamplstm_none", "pca", "vq", "mlp")
+        for variant in (
+            "lamplstm",
+            "lamplstm_none",
+            "lamplstm_concat",
+            "pca",
+            "vq",
+            "mlp",
+        )
     },
 }
 
@@ -92,11 +100,11 @@ def test_wuji_training_matches_simulation(variant, reference):
                 value = 20
             elif key == "artifact_path":
                 continue
-            elif "lamplstm_none" in variant and key in (
+            elif variant.endswith(("lamplstm_none", "lamplstm_concat")) and key in (
                 "encoder_condition_mode",
                 "decoder_condition_mode",
             ):
-                value = "none"
+                value = variant.rsplit("_", 1)[-1]
             assert prior[key] == value, key
     if variant.startswith("dp_") and variant != "dp_lamplstm":
         raw = OmegaConf.load(CONFIG_DIR / f"realworld_lamp_{variant}.yaml")
@@ -109,6 +117,8 @@ def test_training_launcher_routes_all_artifacts():
     import shlex
     import subprocess
 
+    if not (CONFIG_DIR.parents[2] / "scripts/train_wuji_lamp.sh").is_file():
+        pytest.skip("Local training launcher is not tracked in Git")
     result = subprocess.run(
         ["bash", "scripts/train_wuji_lamp.sh", "all", "both", "--dry-run"],
         cwd=CONFIG_DIR.parents[2],
@@ -119,7 +129,7 @@ def test_training_launcher_routes_all_artifacts():
     commands = [
         shlex.split(line) for line in result.stdout.splitlines() if line.startswith(" ")
     ]
-    assert len(commands) == 9
+    assert len(commands) == 11
     prior_artifacts = set()
     for command in commands:
         name = command[command.index("--config-name") + 1]
