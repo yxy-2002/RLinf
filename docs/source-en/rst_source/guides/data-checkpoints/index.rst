@@ -18,6 +18,8 @@ resume a stopped run.
      - Checkpoint cadence and resuming a run.
    * - :doc:`LAMP Data and RLPD <../lamp_unified>`
      - Train from offline robot data and convert macro demonstrations.
+   * - :doc:`Trajectory Player <../trajectory_viewer>`
+     - Play robot camera frames alongside actions, states, and rewards.
 
 .. toctree::
    :hidden:
@@ -26,3 +28,4 @@ resume a stopped run.
    Checkpoint Conversion <../convertor>
    Resume Training <../resume>
    LAMP Data and RLPD <../lamp_unified>
+   Trajectory Player <../trajectory_viewer>

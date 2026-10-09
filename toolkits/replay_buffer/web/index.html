@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>RLinf · 真机数据播放器</title>
+  <link rel="stylesheet" href="/style.css">
+  <script src="/app.js" defer></script>
+</head>
+<body>
+<header><div class="brand">RL<span>inf</span><i></i><strong>真机数据播放器</strong></div><span class="local">● 本地 · 只读</span></header>
+<main>
+  <aside class="library">
+    <div class="section-heading"><h2>数据工作区</h2><span class="tag">PT</span></div>
+    <p class="hint">添加一个或多个目录，递归查找采集轨迹。</p>
+    <form id="browse-form"><input id="directory" aria-label="目录路径" placeholder="输入工作区内的目录路径"><button type="submit">打开</button></form>
+    <div id="root" class="path"></div>
+    <div class="folder-toolbar"><button id="parent">↑ 上一级</button><button id="add-directory" class="accent">＋ 添加此目录</button></div>
+    <div id="folders" class="folders"></div>
+    <h3>已选目录 <span id="selected-count">0</span></h3>
+    <div id="selected" class="selected"></div>
+    <button id="scan" class="primary wide">扫描轨迹</button>
+    <div class="section-heading"><h2>轨迹列表</h2><span id="episode-count" class="tag">0</span></div>
+    <input id="search" type="search" aria-label="搜索轨迹" placeholder="按文件名或目录筛选…">
+    <div id="episodes" class="episodes"><p class="hint">选择数据目录后，轨迹会显示在这里。</p></div>
+  </aside>
+  <section class="viewer">
+    <div class="section-heading"><div><span class="eyebrow">TRAJECTORY PLAYER</span><h1 id="title">查看每一次真实交互</h1></div><span id="frame-badge" class="tag">等待载入</span></div>
+    <div id="trajectory-path" class="path">选择左侧目录，开始回放采集数据。</div>
+    <div class="view-options">
+      <label>图像来源 <select id="observation"><option value="curr_obs">curr_obs · 当前观测</option><option value="next_obs">next_obs · 下一观测</option></select></label>
+      <label>Batch <select id="batch"><option value="0">0</option></select></label>
+      <label>显示 <select id="image-scale"><option value="fit">适应窗口 · 无损</option><option value="original">原始尺寸 · 1:1</option></select></label>
+    </div>
+    <div id="cameras" class="cameras"><div class="empty"><span class="empty-icon">▷</span><h2>多视角同步回放</h2><p>图像、动作与状态按同一帧索引展示</p><small>支持拖动进度 · 逐帧查看 · 数值曲线</small></div></div>
+    <section class="transport">
+      <input id="timeline" type="range" min="0" max="0" value="0" aria-label="播放进度" disabled>
+      <div class="time-row"><span id="position">帧 — / —</span><span id="time">按设定 FPS 播放</span></div>
+      <div class="controls"><button id="previous" title="上一帧（←）" disabled>❮</button><button id="play" class="primary" disabled>▶ 播放</button><button id="next" title="下一帧（→）" disabled>❯</button><label>FPS <input id="fps" type="number" min="1" max="120" value="10"></label><select id="speed" aria-label="播放倍速"><option value="0.25">0.25×</option><option value="0.5">0.5×</option><option value="1" selected>1×</option><option value="2">2×</option><option value="4">4×</option></select><label class="check"><input id="loop" type="checkbox">循环</label></div>
+      <div class="hint keyboard">空格 播放 / 暂停　← → 逐帧　·　FPS 请按采集频率设置</div>
+    </section>
+    <section class="plot-panel"><div class="section-heading"><h2>数据曲线</h2><span id="plot-value" class="mono"></span></div><div class="plot-options"><select id="plot-field" aria-label="曲线字段"><option value="">载入轨迹后选择字段</option></select><label>维度 <input id="dimension" type="number" min="0" value="0"></label></div><canvas id="plot" aria-label="数据随帧变化的曲线"></canvas><div id="plot-hint" class="hint">选择数值字段，查看整条轨迹的变化。点击曲线可跳转。</div></section>
+  </section>
+  <aside class="inspector"><div class="section-heading"><h2>当前帧数据</h2><span class="live-dot"></span></div><p class="hint">与画面同步 · 保留原始字段名</p><input id="field-filter" type="search" aria-label="筛选数据字段" placeholder="筛选 actions、states、rewards…"><div id="values"><div class="hint empty-values">载入轨迹后显示所有非图像字段。</div></div><details id="metadata"><summary>轨迹元数据与张量形状</summary><pre id="metadata-content"></pre></details></aside>
+</main>
+<footer><span id="status" role="status" aria-live="polite">正在连接本地工作区…</span></footer>
+</body>
+</html>
