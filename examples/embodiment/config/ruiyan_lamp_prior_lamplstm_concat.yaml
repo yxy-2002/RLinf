@@ -1,0 +1,12 @@
+defaults:
+- ruiyan_lamp_prior_lamplstm_stack_cube
+- _self_
+actor:
+  model:
+    hand_prior:
+      type: lamplstm
+      encoder_condition_mode: concat
+      decoder_condition_mode: concat
+runner:
+  logger:
+    experiment_name: ruiyan_lamp_prior_lamplstm_concat

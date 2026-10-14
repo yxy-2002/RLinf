@@ -19,6 +19,7 @@ package (``pip install RLinf-dexterous-hands``) and adapts it to the
 :class:`EndEffector` interface used by the Franka env.
 """
 
+import time
 from typing import Optional
 
 import numpy as np
@@ -42,6 +43,7 @@ class RuiyanHand(EndEffector):
         default_current: Default command current for all motors.
         default_state: Default hand state used during ``reset()``.
         command_interval_s: Delay after each motor command (seconds).
+        require_feedback: Reject missing or stale measured feedback.
     """
 
     _NUM_DOFS = 6
@@ -63,9 +65,11 @@ class RuiyanHand(EndEffector):
         default_current: int = 800,
         default_state: Optional[list[float]] = None,
         command_interval_s: float = 0.001,
+        require_feedback: bool = False,
     ):
         from rlinf_dexhand.ruiyan import RuiyanHandDriver
 
+        self._require_feedback = require_feedback
         self._driver = RuiyanHandDriver(
             port=port,
             baudrate=baudrate,
@@ -109,6 +113,15 @@ class RuiyanHand(EndEffector):
     def initialize(self) -> None:
         """Open the serial port and start the background control loop."""
         self._driver.initialize()
+        if self._require_feedback:
+            deadline = time.monotonic() + 1.0
+            while not self._driver.get_detailed_state()["feedback_valid"]:
+                if time.monotonic() >= deadline:
+                    self._driver.shutdown()
+                    raise RuntimeError(
+                        "Ruiyan did not provide initial measured feedback"
+                    )
+                time.sleep(0.01)
 
     def shutdown(self) -> None:
         """Stop the background loop and close the serial port."""
@@ -120,6 +133,11 @@ class RuiyanHand(EndEffector):
 
     def get_state(self) -> np.ndarray:
         """Return the latest finger positions (normalised ``[0, 1]``)."""
+        if self._require_feedback:
+            state = self._driver.get_detailed_state()
+            if not state["feedback_valid"]:
+                raise RuntimeError("Ruiyan measured feedback is missing or stale")
+            return np.asarray(state["positions"], dtype=np.float32)
         return self._driver.get_state()
 
     # ------------------------------------------------------------------

@@ -265,6 +265,18 @@ class RealWorldEnv(gym.Env):
                 state["hand_position"], side
             )
 
+        if self.override_cfg.get("end_effector_type") == "ruiyan_hand":
+            hand = np.asarray(state["hand_position"])
+            if (
+                hand.shape[-1] != 6
+                or not np.isfinite(hand).all()
+                or ((hand < 0) | (hand > 1)).any()
+            ):
+                raise ValueError(
+                    "Ruiyan requires six finite normalized measured positions"
+                )
+            obs["hand_state_normalized"] = hand.copy()
+
         frames = raw_obs["frames"]
         if self.main_image_key not in frames:
             raise KeyError(

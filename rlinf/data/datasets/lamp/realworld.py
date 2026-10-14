@@ -10,6 +10,7 @@ import json
 import os
 import re
 from collections.abc import Sequence
+from dataclasses import replace
 from pathlib import Path
 from typing import Iterator
 
@@ -54,28 +55,57 @@ def wuji_robot_spec() -> LampRobotSpec:
     )
 
 
-def measured_states(observation: dict) -> tuple[torch.Tensor, torch.Tensor]:
-    """Extract 6-D EE pose and normalized measured hand state for all LAMP paths.
+def ruiyan_robot_spec() -> LampRobotSpec:
+    """Describe the six normalized Ruiyan motors in controller order."""
+    names = ("thumb_rotation", "thumb_bend", "index", "middle", "ring", "pinky")
+    return replace(
+        wuji_robot_spec(),
+        name="franka_ruiyan_left_relative_frame_v1",
+        hand_action_dim=6,
+        hand_state_dim=6,
+        hand_action_names=names,
+        hand_state_names=names,
+        hand_action_units=("normalized_0_1",) * 6,
+        hand_action_low=(0.0,) * 6,
+        hand_action_high=(1.0,) * 6,
+    )
 
-    Raw ``states[:, :20]`` remains radians in recorded files for provenance;
-    model inputs always use the explicit measured ``hand_state_normalized``.
-    Arm inputs select ``states[:, 23:29]``: reset-relative XYZ and XYZ Euler
-    angles. Recorded force, torque and velocity remain available in the file.
-    """
+
+def realworld_robot_spec(robot_type: str = "wuji") -> LampRobotSpec:
+    """Select an explicit supported robot contract."""
+    if robot_type == "wuji":
+        return wuji_robot_spec()
+    if robot_type == "ruiyan":
+        return ruiyan_robot_spec()
+    raise ValueError(f"Unsupported RealWorld robot: {robot_type}")
+
+
+def measured_states(
+    observation: dict, spec: LampRobotSpec | None = None
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Extract measured normalized hand and reset-relative arm state."""
+    spec = spec or wuji_robot_spec()
+    if spec not in (wuji_robot_spec(), ruiyan_robot_spec()):
+        raise ValueError("Unsupported RealWorld robot spec")
+    width = spec.hand_state_dim
     states = torch.as_tensor(observation["states"], dtype=torch.float32)
-    if states.ndim != 2 or states.shape[-1] != 38 or not states.isfinite().all():
-        raise ValueError("Recorded Wuji states must be finite [B,38] tensors")
+    if (
+        states.ndim != 2
+        or states.shape[-1] != width + 18
+        or not states.isfinite().all()
+    ):
+        raise ValueError(f"Recorded states must be finite [B,{width + 18}] tensors")
     if "hand_state_normalized" not in observation:
         raise ValueError(
-            "Wuji model observations require hand_state_normalized; "
-            "migrate demos with toolkits.dexhand.normalize_demo_hand_state"
+            "Model observations require hand_state_normalized; "
+            "migrate Wuji demos with toolkits.dexhand.normalize_demo_hand_state"
         )
     hand = torch.as_tensor(observation["hand_state_normalized"], dtype=torch.float32)
-    if hand.shape != (states.shape[0], 20) or not hand.isfinite().all():
-        raise ValueError("Wuji hand_state_normalized must be finite [B,20]")
+    if hand.shape != (states.shape[0], width) or not hand.isfinite().all():
+        raise ValueError(f"hand_state_normalized must be finite [B,{width}]")
     if ((hand < 0) | (hand > 1)).any():
-        raise ValueError("Wuji hand_state_normalized must be in [0,1]")
-    return states[:, 23:29], hand
+        raise ValueError("hand_state_normalized must be in [0,1]")
+    return states[:, width + 3 : width + 9], hand
 
 
 def camera_slots(observation: dict) -> dict[str, torch.Tensor]:
@@ -83,7 +113,9 @@ def camera_slots(observation: dict) -> dict[str, torch.Tensor]:
     wrist = torch.as_tensor(observation["main_images"])
     extra = torch.as_tensor(observation["extra_view_images"])
     if wrist.ndim != 4 or extra.ndim != 5 or extra.shape[1] != 1:
-        raise ValueError("Wuji records require wrist [B,H,W,3] and one extra camera")
+        raise ValueError(
+            "RealWorld records require wrist [B,H,W,3] and one extra camera"
+        )
     if wrist.dtype != torch.uint8 or extra.dtype != torch.uint8:
         raise ValueError("Recorded cameras must contain uint8 RGB pixels")
     if wrist.shape[-1] != 3 or extra[:, 0].shape != wrist.shape:
@@ -99,7 +131,11 @@ class RealWorldTrajectorySource:
     """
 
     def __init__(
-        self, root: str | Path | Sequence[str | Path], task: str = "wuji_stack_cube"
+        self,
+        root: str | Path | Sequence[str | Path],
+        task: str | None = None,
+        *,
+        robot_type: str = "wuji",
     ) -> None:
         """Read one demo directory or an ordered, nonempty list of directories.
 
@@ -144,12 +180,14 @@ class RealWorldTrajectorySource:
                 )
             )
         self.paths = tuple(path for group in groups for path in group)
-        self.spec = wuji_robot_spec()
+        self.spec = realworld_robot_spec(robot_type)
         self.conversion = {
             "version": CONVERSION_VERSION,
             "period_seconds": 0.1,
             "label": "recorded_end_step_hand_snapshot",
-            "hand_state": "hand_state_normalized_urdf_0_1_v1",
+            "hand_state": "hand_state_normalized_urdf_0_1_v1"
+            if robot_type == "wuji"
+            else "hand_state_normalized_motor_0_1_v1",
             "robot_spec": self.spec.to_dict(),
             "cameras": ["extra_view_images[0]", "main_images"],
         }
@@ -163,7 +201,7 @@ class RealWorldTrajectorySource:
                 for chunk in iter(lambda: handle.read(1024 * 1024), b""):
                     digest.update(chunk)
         self.metadata = LampSourceMetadata(
-            task=task,
+            task=task or f"{robot_type}_stack_cube",
             root=self.root,
             data_sha256=digest.hexdigest(),
             media_sha256=digest.hexdigest(),
@@ -177,25 +215,31 @@ class RealWorldTrajectorySource:
         for episode, path in enumerate(self.paths):
             payload = torch.load(path, map_location="cpu", weights_only=True)
             actions = payload["actions"]
-            if actions.ndim != 3 or actions.shape[1:] != (1, 26):
-                raise ValueError(f"{path.name}: actions must have shape [T,1,26]")
+            if actions.ndim != 3 or actions.shape[1:] != (1, self.spec.action_dim):
+                raise ValueError(
+                    f"{path.name}: actions must have shape [T,1,{self.spec.action_dim}]"
+                )
             if not len(actions) or not actions.isfinite().all():
                 raise ValueError(f"{path.name}: empty or nonfinite actions")
             length = len(actions)
             for key in ("curr_obs", "next_obs"):
                 obs = payload[key]
-                if obs["states"].shape != (length, 1, 38):
+                if obs["states"].shape != (length, 1, self.spec.hand_state_dim + 18):
                     raise ValueError(f"{path.name}: malformed {key} states")
                 if "hand_state_normalized" not in obs:
                     raise ValueError(
                         f"{path.name}: missing hand_state_normalized; "
                         "migrate demos with toolkits.dexhand.normalize_demo_hand_state"
                     )
-                if obs["hand_state_normalized"].shape != (length, 1, 20):
+                if obs["hand_state_normalized"].shape != (
+                    length,
+                    1,
+                    self.spec.hand_state_dim,
+                ):
                     raise ValueError(
                         f"{path.name}: malformed {key} hand_state_normalized"
                     )
-                measured_states({k: v[:, 0] for k, v in obs.items()})
+                measured_states({k: v[:, 0] for k, v in obs.items()}, self.spec)
                 camera_slots({k: v[:, 0] for k, v in obs.items()})
             for key in ("rewards", "terminations", "truncations", "dones"):
                 if payload[key].shape != (length, 1, 1):
@@ -228,7 +272,8 @@ class RealWorldTrajectorySource:
             episodes, arms, hands, actions = [], [], [], []
             for episode, trajectory in self.trajectories():
                 arm, hand = measured_states(
-                    {key: value[:, 0] for key, value in trajectory["curr_obs"].items()}
+                    {key: value[:, 0] for key, value in trajectory["curr_obs"].items()},
+                    self.spec,
                 )
                 episodes.append(np.full(len(arm), episode, dtype=np.int64))
                 arms.append(arm.numpy().copy())
@@ -295,5 +340,7 @@ class RealWorldTrajectorySource:
 def create_source(cfg) -> RealWorldTrajectorySource:
     """Construct a source through data.source_factory."""
     return RealWorldTrajectorySource(
-        cfg["dataset_root"], cfg.get("task_name", "wuji_stack_cube")
+        cfg["dataset_root"],
+        cfg.get("task_name"),
+        robot_type=cfg.get("robot_type", "wuji"),
     )

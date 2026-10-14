@@ -1,0 +1,87 @@
+# Slots side/back name the legacy OUTPUT roles, not selected PSI2 sensors.
+# Selected sensor ADC endpoints come from mapping_file.
+# Measured thumb poses span the full output range; four-finger clipping is unchanged.
+left_glove:
+  calibration:
+    thumb:
+      rotate:
+        calibration:
+          min: 3400
+          max: 3350
+        clip:
+          source:
+            min: 0.7
+            max: 1.0
+          target:
+            min: 0.0
+            max: 1.0
+      back:
+        calibration:
+          min: 996.0
+          max: 1983.0
+        clip:
+          source:
+            min: 0.0
+            max: 1.0
+          target:
+            min: 0.0
+            max: 1.0
+      side:
+        calibration:
+          min: 2878.0
+          max: 2545.0
+        clip:
+          source:
+            min: 0.0
+            max: 1.0
+          target:
+            min: 0.0
+            max: 1.0
+    index:
+      back:
+        calibration:
+          min: 3100
+          max: 1200
+        clip:
+          source:
+            min: 0.2
+            max: 0.8
+          target:
+            min: 0.0
+            max: 1.0
+    middle:
+      back:
+        calibration:
+          min: 3100
+          max: 1200
+        clip:
+          source:
+            min: 0.2
+            max: 0.8
+          target:
+            min: 0.0
+            max: 1.0
+    ring:
+      back:
+        calibration:
+          min: 3100
+          max: 1200
+        clip:
+          source:
+            min: 0.2
+            max: 0.8
+          target:
+            min: 0.0
+            max: 1.0
+    pinky:
+      back:
+        calibration:
+          min: 3100
+          max: 1200
+        clip:
+          source:
+            min: 0.2
+            max: 0.8
+          target:
+            min: 0.0
+            max: 1.0

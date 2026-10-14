@@ -1,0 +1,15 @@
+defaults:
+- ruiyan_lamp_il
+- _self_
+runner:
+  max_steps: 1
+  local_update_steps: 1
+  save_interval: 1
+  logger:
+    experiment_name: ruiyan_lamp_prior_pca_stack_cube
+actor:
+  torch_compile: false
+  model:
+    hand_prior:
+      type: pca
+      latent_dim: 2

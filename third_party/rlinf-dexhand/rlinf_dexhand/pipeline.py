@@ -10,6 +10,7 @@ import yaml
 from .glove.driver import PSIGloveDriver
 
 COMBINATIONS = {
+    ("psiglove_2", "channel_linear", "ruiyanhand"),
     ("psiglove_1", "channel_linear", "ruiyanhand"),
     ("psiglove_2", "wuji_tier2", "wuji1hand"),
 }
@@ -57,7 +58,9 @@ def make_retargeter(cfg, calibrating=False):
     if cfg["retargeting"]["type"] == "channel_linear":
         from .retargeting.channel_linear import ChannelLinear
 
-        return ChannelLinear(cfg["glove"]["side"], **args)
+        return ChannelLinear(
+            cfg["glove"]["side"], glove_type=cfg["glove"]["type"], **args
+        )
     from .retargeting.wuji import WujiTier2
 
     return WujiTier2(cfg["glove"]["side"], calibrating=calibrating, **args)

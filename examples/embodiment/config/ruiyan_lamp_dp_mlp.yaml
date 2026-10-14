@@ -1,0 +1,12 @@
+defaults:
+- ruiyan_lamp_dp_lamplstm
+- _self_
+actor:
+  model:
+    hand_prior:
+      type: mlp
+      latent_dim: 6
+      artifact_path: null
+runner:
+  logger:
+    experiment_name: ruiyan_lamp_dp_mlp

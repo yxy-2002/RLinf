@@ -20,9 +20,9 @@ reader 不构造环境、不导入机器人 SDK，原样保留动作标签和采
    * - 命令
      - 26 维：6 维机械臂增量，随后为 20 维归一化手部命令
    * - 腕部状态
-     - ``states[20:38]``，18 个测量值
+     - ``states[23:29]``，6 个相对 reset 的 XYZ/Euler 值
    * - 手部历史
-     - ``states[:20]``，单位 rad，包含 reset 初始测量
+     - ``hand_state_normalized``，20 个归一化实测值
    * - 全局图像
      - ``extra_view_images[:, 0]``
    * - 腕部图像
@@ -256,3 +256,135 @@ Wuji 归一化关节和 Allegro 弧度值单位不同。
 日志功能要求单环境、单 pipeline stage、
 耦合 rollout 及 ``auto_reset: false``。在命令末尾添加
 ``runner.debug_actions=false`` 可关闭记录。
+
+Ruiyan Stack-Cube 全流程
+-----------------------
+
+使用 ``ruiyan_*`` 配置运行左手 Ruiyan 和 PSI2 手套，沿用现有机械臂、相机、
+裁剪区域和 RelativeFrame 控制设置。奖励采集使用单节点；demo 采集、奖励训练
+和策略训练保留两节点部署。按现有节点编号启动 Ray，并在两台机器上准备配置指定的 Python 环境。
+
+手部顺序为 ``thumb_rotation, thumb_bend, index, middle, ring, pinky``。
+动作包含 6 维机械臂增量与 6 维归一化手部目标，共 12 维。
+原始状态为 24 维，机械臂位姿取 ``states[9:15]``，手部历史使用
+``hand_state_normalized`` 中的 6 维实测值，范围为 ``[0,1]``。
+机器人约定见 ``robot/ruiyan_lamp.yaml``。新配置遇到缺失或过期的 Ruiyan 反馈会报错。
+原有 Wuji 数据继续使用其自身的规格和归一化方式。
+
+PSI2 使用 ``third_party/rlinf-dexhand/configs/psiglove_2_ruiyan_left.yaml``。
+在该文件设置手套串口，默认 ``/dev/ttyACM1``、115200 波特率；通过
+``env.eval.override_cfg.end_effector_config.port`` 覆盖机械手串口，
+默认 ``/dev/ttyUSB0``、460800 波特率。pipeline 使用 Ruiyan 专用 PSI2 标定副本中的
+``master_hand.left_hand_limits`` ADC 上下限。通过 ``retargeting.source_channels`` 显式选择六路信号，
+其中可以选择 ``thumb_back2``。不配置时保留旧选路以兼容已有调用，但这不代表
+PSI1/PSI2 的同名信号已确认具有相同动作含义。算法保留六路线性映射、source/target 裁剪、
+delta 为 0.1 的低通滤波和 10 帧滑动平均。
+这些标定值与操作者有关，采集前应验证全部六路通道。新配置的复位为六维零，限位为 ``[0,1]``。
+
+将下列路径替换为 Ruiyan 数据和模型路径。必填路径默认设为 ``???``。
+奖励图像和 demo 使用独立的 Ruiyan 实验名称。奖励 checkpoint 为图像分类模型，网络结构保持不变。
+
+.. code-block:: bash
+
+   export REPO_PATH="$PWD"
+   export EMBODIED_PATH="$REPO_PATH/examples/embodiment"
+   export PYTHONPATH="$REPO_PATH/third_party/rlinf-dexhand:$REPO_PATH:${PYTHONPATH:-}"
+
+   bash examples/reward/realworld_collect_process_dataset.sh ruiyan_reward_data_stack_cube
+   bash examples/reward/run_reward_training.sh ruiyan_reward_training_stack_cube \
+     data.train_data_paths=/path/to/train.pt data.val_data_paths=/path/to/val.pt
+   bash examples/embodiment/collect_data.sh ruiyan_demo_data_stack_cube \
+     reward.model.model_path=/path/to/reward/full_weights.pt
+
+   DATASET_ROOT=/path/to/demos bash scripts/train_ruiyan_lamp.sh all both --dry-run
+   DATASET_ROOT=/path/to/demos bash scripts/train_ruiyan_lamp.sh all both
+
+   bash evaluations/run_eval.sh realworld ruiyan_lamp_dp_stack_cube_il_eval \
+     rollout.model.model_path=/path/to/dp/artifact \
+     reward.model.model_path=/path/to/reward/full_weights.pt
+
+训练脚本支持 ``lamplstm_film``、``lamplstm_none``、``lamplstm_concat``、
+``pca``、``vq``、``mlp`` 和 ``all``；阶段为 ``prior``、``dp`` 和 ``both``。
+MLP 没有独立 prior 阶段。``all both`` 运行五组 prior/DP 和一个 MLP DP。
+通过 ``OUTPUT_ROOT`` 设置输出目录、``RESNET_PATH`` 指定本地 ResNet 权重；
+单独运行非 MLP 的 DP 时可用 ``PRIOR_ARTIFACT`` 指定已有 prior。
+所有阶段必须使用相同的数据及划分。三个 LSTM 变体使用 6 维实测历史，所有变体输出 12 维物理动作。
+Wuji artifact 与 Ruiyan 不兼容，即使改名也会被拒绝。
+
+在线训练前，将 ``ruiyan_lamp_rlpd`` 解析后的 ``actor.model`` 部分导出为
+``residual_model.yaml``，使用与在线运行一致的基础 DP artifact 和模型选项。
+转换时仅选择训练集 episode ID。这些 LSTM 配方使用历史长度 8；如修改训练历史长度，
+应同时修改转换参数和环境配置。
+
+.. code-block:: bash
+
+   python toolkits/convert_lamp_demos.py --robot-type ruiyan \
+     --source /path/to/demos --model-config /path/to/residual_model.yaml \
+     --output /path/to/ruiyan_demo_buffer --episodes 0 1 2 --history-length 8
+   python examples/embodiment/train_async.py --config-name ruiyan_lamp_rlpd \
+     actor.model.model_path=/path/to/dp/artifact \
+     reward.model.model_path=/path/to/reward/full_weights.pt \
+     algorithm.demo_buffer.load_path=/path/to/ruiyan_demo_buffer
+
+在线配置使用一致的 actor/rollout 机器人约定，记录 12 维实际执行动作、有效前缀和人工干预标记。
+评估配置可加载六种兼容的 DP artifact。在线恢复使用现有 ``runner.resume_dir`` 机制。
+
+使用以下命令进行无硬件验证。portable 冒烟测试覆盖六种 Ruiyan 变体的 prior/DP 更新、
+artifact 重载、residual actor/critic 更新和 residual 状态重载。
+真机验收仍需完成六路运动检查、短程采集、策略执行和在线训练；离线测试不代表真机已验收。
+
+.. code-block:: bash
+
+   OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 python -m pytest -q \
+     tests/unit_tests/test_ruiyan_lamp.py tests/unit_tests/test_psi2_ruiyan.py
+   OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 python -m pytest -q \
+     tests/unit_tests/test_lamp_portable.py -k real_il_worker
+
+控制前辨认 PSI2 通道
+~~~~~~~~~~~~~~~~~~~
+
+选择两个拇指输入前，先运行仅连接手套的诊断工具。每次中立位采样都保持相同的张开姿态。
+``thumb_rotation`` 动作是保持拇指伸直并向小指方向收拢；``thumb_bend`` 动作是固定
+拇指根部朝向并弯曲拇指。其他手指尽量保持不动。按 Enter 后记录的是保持不动的姿态，
+不是动作过程。
+
+.. code-block:: bash
+
+   python -m toolkits.dexhand.diagnose_ruiyan_channels \
+     --config third_party/rlinf-dexhand/configs/psiglove_2_ruiyan_left.yaml \
+     --motions thumb_rotation thumb_bend --repeats 3 \
+     --output /tmp/psi2_ruiyan_channels.json
+   python -m toolkits.dexhand.diagnose_ruiyan_channels \
+     --input /tmp/psi2_ruiyan_channels.json
+
+省略 ``--motions`` 可检查全部六个输出。用 ``--port`` 仅覆盖手套串口。
+脚本不会打开机械手或机械臂驱动。记录保留全部 22 路 ADC，分析报告归一化响应、
+手套模型角度变化估计、噪声、重复偏差和其他动作串扰。角度估计来自现有映射，
+不是人体关节角的真值。排序存在歧义时，需要重新采集隔离动作。
+
+``source_channels`` 字典必须包含六个键：``thumb_rotation``、``thumb_bend``、
+``index``、``middle``、``ring``、``pinky``。值为互不重复的 PSI2 通道名称，
+确认后可选用 ``thumb_back2``。如果闭合动作使归一化信号减小，将对应输出名称加入
+``inverted_outputs``。实现直接读取选定的六路信号，不再将 PSI2 转换成 21 路 PSI1 向量，
+裁剪和滤波保持不变。随配置提供的拇指选路已依据下述 2026-10-14 动作标签采样更新；
+手套或佩戴方式变化后需要重新诊断。候选排序不代替机械手运动验证。
+
+实测拇指选路（2026-10-14）
+~~~~~~~~~~~~~~~~~~~~~~~~~
+
+左手记录对每种拇指动作采集了三次中立位/终点。``thumb_rotation`` 选择
+``thumb_rotate``，定向 ADC 端点为 ``2878 -> 2545``；``thumb_bend`` 选择
+``thumb_tip``，端点为 ``996 -> 1983``。端点取三个姿态中位值的中位数。
+收拢端点递减已实现方向反转，因此 ``inverted_outputs`` 为空。
+两路拇指的 source 裁剪区间均为 ``[0,1]``，使用完整实测范围，不沿用 PSI1 的弯曲裁剪区间。
+
+Ruiyan 专用文件为相对 pipeline 的 ``calibrations/psiglove_2_ruiyan_left_mapping.yaml``
+和 ``calibrations/psiglove_2_ruiyan_left_linear.yaml``。mapping 保存了采样文件的
+SHA-256 和实测端点。Wuji 标定保持不变。四指继续选择 ``index_back``、
+``middle_back``、``ring_back``、``pinky_back``；这份采样并未验证四指。
+
+``thumb_back2`` 确实响应收拢动作，仍可被选用。本次采样中，``thumb_rotate``
+的重复端点更稳定。``thumb_tip`` 比 ``thumb_back`` 更能区分弯曲与收拢，但仍有联动：
+将记录的收拢终点回放至滤波稳定后，弯曲输出为 ``0.31–0.68``；
+弯曲终点对应的收拢输出为 ``0–0.09``。这些是回放的命令值，并非机械手实测运动。
+六路直映射算法没有补偿这种联动。

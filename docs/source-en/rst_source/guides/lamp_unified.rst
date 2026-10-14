@@ -22,9 +22,9 @@ recorded action labels and sampling times; it does not relabel or resample them.
    * - Command
      - 26 values: 6 arm increments followed by 20 normalized hand commands
    * - Arm state
-     - ``states[20:38]`` (18 measured values)
+     - ``states[23:29]`` (6 reset-relative XYZ/Euler values)
    * - Hand history
-     - ``states[:20]`` in radians, including the reset measurement
+     - ``hand_state_normalized`` (20 normalized measured values)
    * - Global image
      - ``extra_view_images[:, 0]``
    * - Wrist image
@@ -291,3 +291,157 @@ Simulator wall-clock gaps do not advance physics when realtime pacing is off.
 Logging requires one environment and pipeline stage,
 coupled rollout, and ``auto_reset: false``. Append ``runner.debug_actions=false``
 to disable it.
+
+Ruiyan Stack-Cube Workflow
+-------------------------
+
+Use the ``ruiyan_*`` configurations for a left Ruiyan hand and PSI2 glove.
+Keep the existing arm, cameras, crop and RelativeFrame controller settings.
+Reward collection uses one node; demo collection, reward training and policy
+training retain the two-node placement. Start Ray with the existing node ranks
+and use the configured Python environments on both hosts.
+
+The hand order is ``thumb_rotation, thumb_bend, index, middle, ring, pinky``.
+Commands contain 6 arm increments and 6 normalized hand targets (12 values).
+Raw states contain 24 values; the arm pose is ``states[9:15]`` and hand history
+comes from the six measured ``hand_state_normalized`` values in ``[0,1]``.
+The robot contract is ``robot/ruiyan_lamp.yaml``. Missing or stale Ruiyan feedback
+fails explicitly in the new configurations. Existing Wuji datasets keep their
+own specification and normalization.
+
+PSI2 uses ``third_party/rlinf-dexhand/configs/psiglove_2_ruiyan_left.yaml``.
+Set its glove port (default ``/dev/ttyACM1``, 115200 baud); override
+``env.eval.override_cfg.end_effector_config.port`` for the hand
+(default ``/dev/ttyUSB0``, 460800 baud). The pipeline uses a Ruiyan-specific copy of the PSI2
+``master_hand.left_hand_limits`` ADC calibration. Select six signals explicitly with ``retargeting.source_channels``;
+``thumb_back2`` is available. Without this setting, the legacy selection is retained
+for compatibility, but same-named PSI1/PSI2 signals are not verified equivalents.
+The algorithm preserves the six-output linear mapping,
+source/target clipping, delta-0.1 low-pass filter and 10-sample average.
+These calibration values are operator-specific; verify all six channels before
+collection. The new hand reset is six zeros and limits are ``[0,1]``.
+
+Replace the paths below with Ruiyan data and artifacts. Required paths default
+to ``???``. Reward images and demo outputs use separate Ruiyan experiment names.
+The reward checkpoint is an image classifier and retains the existing network.
+
+.. code-block:: bash
+
+   export REPO_PATH="$PWD"
+   export EMBODIED_PATH="$REPO_PATH/examples/embodiment"
+   export PYTHONPATH="$REPO_PATH/third_party/rlinf-dexhand:$REPO_PATH:${PYTHONPATH:-}"
+
+   bash examples/reward/realworld_collect_process_dataset.sh ruiyan_reward_data_stack_cube
+   bash examples/reward/run_reward_training.sh ruiyan_reward_training_stack_cube \
+     data.train_data_paths=/path/to/train.pt data.val_data_paths=/path/to/val.pt
+   bash examples/embodiment/collect_data.sh ruiyan_demo_data_stack_cube \
+     reward.model.model_path=/path/to/reward/full_weights.pt
+
+   DATASET_ROOT=/path/to/demos bash scripts/train_ruiyan_lamp.sh all both --dry-run
+   DATASET_ROOT=/path/to/demos bash scripts/train_ruiyan_lamp.sh all both
+
+   bash evaluations/run_eval.sh realworld ruiyan_lamp_dp_stack_cube_il_eval \
+     rollout.model.model_path=/path/to/dp/artifact \
+     reward.model.model_path=/path/to/reward/full_weights.pt
+
+The launcher supports ``lamplstm_film``, ``lamplstm_none``, ``lamplstm_concat``,
+``pca``, ``vq``, ``mlp`` and ``all``; stages are ``prior``, ``dp`` and ``both``.
+MLP has no prior stage. ``all both`` runs five prior/DP pairs and one MLP DP.
+Set ``OUTPUT_ROOT`` for output placement, ``RESNET_PATH`` for local ResNet weights,
+and ``PRIOR_ARTIFACT`` when running a single non-MLP DP against an existing prior.
+All stages must use the same training data and split. The three LSTM variants
+use 6-D measured histories; all variants produce 12-D physical commands.
+A Wuji artifact is incompatible and is rejected, even if manually renamed.
+
+For online training, export the resolved ``actor.model`` section of
+``ruiyan_lamp_rlpd`` as ``residual_model.yaml``, with the same base DP artifact
+and model options used by the online run. Select only training episode IDs for
+conversion. Keep decoder history length at 8 for these LSTM recipes; if you
+change the trained history length, update both conversion and environment settings.
+
+.. code-block:: bash
+
+   python toolkits/convert_lamp_demos.py --robot-type ruiyan \
+     --source /path/to/demos --model-config /path/to/residual_model.yaml \
+     --output /path/to/ruiyan_demo_buffer --episodes 0 1 2 --history-length 8
+   python examples/embodiment/train_async.py --config-name ruiyan_lamp_rlpd \
+     actor.model.model_path=/path/to/dp/artifact \
+     reward.model.model_path=/path/to/reward/full_weights.pt \
+     algorithm.demo_buffer.load_path=/path/to/ruiyan_demo_buffer
+
+The online configuration uses the same actor/rollout robot contract and records
+12-D executed commands, valid prefixes and intervention flags. The evaluation
+configuration loads any of the six compatible DP artifacts. Resume online
+training through the existing ``runner.resume_dir`` mechanism.
+
+Validate without hardware with the following commands. The portable smoke tests
+exercise all six Ruiyan variants through prior/DP updates, artifact reload,
+residual actor/critic updates and residual state reload. Hardware acceptance
+still requires six-channel motion checks, short collection, policy execution
+and an online training run; no hardware results are implied by these tests.
+
+.. code-block:: bash
+
+   OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 python -m pytest -q \
+     tests/unit_tests/test_ruiyan_lamp.py tests/unit_tests/test_psi2_ruiyan.py
+   OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 python -m pytest -q \
+     tests/unit_tests/test_lamp_portable.py -k real_il_worker
+
+Identify PSI2 Channels Before Control
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Run this glove-only diagnostic before choosing the two thumb inputs. Hold the
+same neutral open posture for each neutral capture. For ``thumb_rotation``,
+move the straight thumb toward the little finger; for ``thumb_bend``, hold the
+thumb base orientation and bend the thumb. Keep other fingers still. Each
+capture begins after Enter and records a held pose, not the movement itself.
+
+.. code-block:: bash
+
+   python -m toolkits.dexhand.diagnose_ruiyan_channels \
+     --config third_party/rlinf-dexhand/configs/psiglove_2_ruiyan_left.yaml \
+     --motions thumb_rotation thumb_bend --repeats 3 \
+     --output /tmp/psi2_ruiyan_channels.json
+   python -m toolkits.dexhand.diagnose_ruiyan_channels \
+     --input /tmp/psi2_ruiyan_channels.json
+
+Omit ``--motions`` to check all six outputs. Use ``--port`` to override only the
+glove device. No hand or robot driver is opened. The recording preserves all
+22 ADC channels; analysis reports normalized response, estimated glove-model
+angle change, noise, repeat variation and cross-motion response. Angle estimates
+come from the existing mapping, not anatomical ground truth. An ambiguous
+ranking requires another isolated-motion recording.
+
+Set ``source_channels`` as a dictionary with all six keys: ``thumb_rotation``,
+``thumb_bend``, ``index``, ``middle``, ``ring``, ``pinky``. Values are unique PSI2
+channel names, including ``thumb_back2`` if identified. Set ``inverted_outputs``
+to the output names whose normalized signal decreases during closing.
+The implementation reads those six channels directly; it does not convert PSI2
+to a 21-channel PSI1 vector. Clipping and filters remain unchanged. The shipped thumb selection uses the labelled 2026-10-14 recording described below;
+repeat the diagnostic when the glove or fit changes. A ranking does not replace
+robot motion verification.
+
+Measured Thumb Selection (2026-10-14)
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+The left-hand capture contains three neutral/active repeats per thumb motion.
+``thumb_rotation`` now selects ``thumb_rotate`` with directed ADC endpoints
+``2878 -> 2545``; ``thumb_bend`` selects ``thumb_tip`` with endpoints
+``996 -> 1983``. Endpoints are medians of the three per-pose medians.
+The descending rotation endpoints already invert its direction, so
+``inverted_outputs`` is empty. Both thumb source clipping intervals are ``[0,1]``
+to use the measured range without the old PSI1 bend clipping.
+
+The Ruiyan-only files are ``calibrations/psiglove_2_ruiyan_left_mapping.yaml``
+and ``calibrations/psiglove_2_ruiyan_left_linear.yaml``, relative to the pipeline.
+The mapping records the capture SHA-256 and measured endpoints. Wuji's calibration
+is unchanged. The other four inputs remain ``index_back``, ``middle_back``,
+``ring_back`` and ``pinky_back``; this capture does not validate those fingers.
+
+``thumb_back2`` responds to opposition and remains selectable. In this capture,
+``thumb_rotate`` had more stable repeated endpoints. ``thumb_tip`` separates
+bending from opposition better than ``thumb_back``, but is still coupled:
+settled replay of the recorded opposition endpoints produces bend commands of
+``0.31–0.68``. Recorded bending endpoints produce rotation commands of
+``0–0.09``. These are replayed command values, not measured robot motion.
+The direct six-signal algorithm does not compensate for this coupling.

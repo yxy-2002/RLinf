@@ -10,7 +10,7 @@
 
 ## 手套配置要求
 
-`GloveExpert` 必须传入完整的 `pipeline_config`，不再自动使用 PSI1/Ruiyan 默认构造。仅支持 `psiglove_1 + channel_linear + ruiyanhand` 和 `psiglove_2 + wuji_tier2 + wuji1hand`，左右手必须一致；错误配置在启动读取线程前报错。
+`GloveExpert` 必须传入完整的 `pipeline_config`，不再自动使用 PSI1/Ruiyan 默认构造。支持 `psiglove_1 + channel_linear + ruiyanhand`、`psiglove_2 + channel_linear + ruiyanhand` 和 `psiglove_2 + wuji_tier2 + wuji1hand`，左右手必须一致；错误配置在启动读取线程前报错。
 
 Ruiyan 可复制 `third_party/rlinf-dexhand/configs/psiglove_1_ruiyan_left.yaml` 并修改 `glove.port`，再将路径填入 `glove_config.pipeline_config`。原来的 `left_port`/`right_port`/`config_file` 参数已移除。Wuji 按下文配置 PSI2 pipeline。手套运行中的丢帧缓存回退行为不变。
 
@@ -95,3 +95,7 @@ RLINF_TEST_WUJI_ROS1=1 PYTHONPATH=.:third_party/rlinf-dexhand \
 ```
 
 SDK 未安装时可用 `catkin_make -DWUJI_WITH_SDK=OFF` 编译仅含假硬件的驱动。无 ROS 的测试检查关节契约、接管和模型资源；ROS 测试使用独立 master 验证真实 topic/service、保持、恢复和退出。历史记录见 [VALIDATION.md](../../third_party/rlinf-dexhand/VALIDATION.md)。
+
+Ruiyan 的 PSI2 pipeline 见 `third_party/rlinf-dexhand/configs/psiglove_2_ruiyan_left.yaml`。完整采集、六种 LAMP 训练、推理和 RLPD 流程见 [LAMP 指南](../../docs/source-zh/rst_source/guides/lamp_unified.rst)。
+
+PSI2→Ruiyan 通道辨认：运行 `python -m toolkits.dexhand.diagnose_ruiyan_channels --help`。工具只读手套并记录全部 22 路，通过分开采集拇指收拢和弯曲动作来选择 `retargeting.source_channels`；不再通过丢弃 `back2` 对齐 PSI1。类接口未指定选路时仍使用旧默认值；随附 PSI2→Ruiyan pipeline 已依据 2026-10-14 采样显式选用 `thumb_rotate` 控制收拢、`thumb_tip` 控制弯曲，并引用独立实测标定。其他四指仍需单独验证。

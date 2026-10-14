@@ -1,7 +1,7 @@
 # Copyright 2026 The RLinf Authors.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Original PSI 21-channel to Ruiyan mapping, numerically unchanged."""
+"""Six-sensor Ruiyan mapping for PSI1/PSI2, with unchanged PSI1 numerics."""
 
 from collections import deque
 from pathlib import Path
@@ -10,13 +10,60 @@ from types import SimpleNamespace
 import numpy as np
 import yaml
 
-from ..glove.psi_glove_driver.controller import PSIGloveJointType
 from ..types import HandSpec, HandTarget
+
+OUTPUT_SENSORS = {
+    "thumb_rotation": ("thumb", "side"),
+    "thumb_bend": ("thumb", "back"),
+    "index": ("index", "back"),
+    "middle": ("middle", "back"),
+    "ring": ("ring", "back"),
+    "pinky": ("pinky", "back"),
+}
+DEFAULT_SOURCE_CHANNELS = {
+    output: f"{finger}_{channel}"
+    for output, (finger, channel) in OUTPUT_SENSORS.items()
+}
 
 
 class ChannelLinear:
-    def __init__(self, side, calibration_file=None):
+    def __init__(
+        self,
+        side: str,
+        calibration_file: str | Path | None = None,
+        *,
+        glove_type: str = "psiglove_1",
+        mapping_file: str | Path | None = None,
+        source_channels: dict[str, str] | None = None,
+        inverted_outputs: list[str] | None = None,
+    ) -> None:
+        """Use PSI1 clipping/filtering with optional PSI2 ADC calibration."""
+        from ..glove.driver import channel_names
+
+        self.glove_type = glove_type
+        self.channel_names = channel_names(glove_type)
         self.side = side
+        self.source_channels = dict(
+            DEFAULT_SOURCE_CHANNELS if source_channels is None else source_channels
+        )
+        if set(self.source_channels) != set(OUTPUT_SENSORS):
+            raise ValueError("source_channels must specify all six Ruiyan outputs")
+        if any(
+            name not in self.channel_names for name in self.source_channels.values()
+        ):
+            raise ValueError("source_channels contains an unknown glove channel")
+        if len(set(self.source_channels.values())) != 6:
+            raise ValueError("source_channels must select six distinct signals")
+        self.inverted_outputs = set(inverted_outputs or [])
+        if not self.inverted_outputs.issubset(OUTPUT_SENSORS):
+            raise ValueError("inverted_outputs contains an unknown Ruiyan output")
+        if (
+            glove_type == "psiglove_1"
+            and self.source_channels != DEFAULT_SOURCE_CHANNELS
+        ):
+            raise ValueError(
+                "Custom source_channels currently require PSI2 ADC calibration"
+            )
         self.path = (
             Path(calibration_file)
             if calibration_file
@@ -24,6 +71,31 @@ class ChannelLinear:
             / "glove/psi_glove_driver/default_config.yaml"
         )
         self.config = yaml.safe_load(self.path.read_text())
+        if glove_type == "psiglove_2":
+            if not mapping_file:
+                raise ValueError("PSI2 channel_linear requires mapping_file")
+            mapping = yaml.safe_load(Path(mapping_file).read_text())
+            limits = mapping["master_hand"][f"{side}_hand_limits"]
+            for output, (finger, channel) in OUTPUT_SENSORS.items():
+                source_finger, source_channel = self.source_channels[output].split(
+                    "_", 1
+                )
+                matches = [
+                    item
+                    for item in limits[source_finger]
+                    if item["name"] == source_channel
+                ]
+                if len(matches) != 1:
+                    raise ValueError(f"Expected one calibration for {finger}_{channel}")
+                bounds = {key: matches[0][key] for key in ("min", "max")}
+                if (
+                    not all(np.isfinite(v) for v in bounds.values())
+                    or bounds["min"] == bounds["max"]
+                ):
+                    raise ValueError(f"Invalid calibration for {finger}_{channel}")
+                self.config[f"{side}_glove"]["calibration"][finger][channel][
+                    "calibration"
+                ] = bounds
         self.spec = HandSpec(
             "ruiyanhand",
             side,
@@ -59,17 +131,18 @@ class ChannelLinear:
         return self.processor._process_status(status, self.side)
 
     def update(self, sample):
-        from ..glove.driver import channel_names
-
         sample.require_valid()
         if (
-            sample.glove_type != "psiglove_1"
+            sample.glove_type != self.glove_type
             or sample.side != self.side
-            or tuple(sample.channel_names) != channel_names("psiglove_1")
-            or len(sample.adc) != 21
+            or tuple(sample.channel_names) != self.channel_names
+            or len(sample.adc) != len(self.channel_names)
         ):
-            raise ValueError("channel_linear requires matching psiglove_1 sample")
-        values = self.update_values(sample.adc)
+            raise ValueError("channel_linear requires matching glove sample")
+        adc = dict(zip(sample.channel_names, sample.adc))
+        values = self._process_selected(
+            {output: adc[channel] for output, channel in self.source_channels.items()}
+        )
         self.spec.validate(values)
         return HandTarget(self.spec, tuple(values), sample.sequence, sample.timestamp)
 
@@ -111,76 +184,36 @@ class ChannelLinear:
         return float(final_value)
 
     def _process_status(self, status, hand_type: str) -> list:
-        """Process status message with calibration and filtering.
+        """Preserve the legacy PSI1 status entry point for callers and tests."""
+        if hand_type != self.side:
+            raise ValueError("Status side differs from configured glove")
+        values = {
+            output: getattr(status, finger)[3 if channel == "side" else 2]
+            for output, (finger, channel) in OUTPUT_SENSORS.items()
+        }
+        return self._process_selected(values)
 
-        Returns:
-            Processed joint positions
-            ``[thumb_side, thumb_back, index_back, middle_back, ring_back, pinky_back]``.
-        """
-        cfg = self.config[f"{hand_type}_glove"]["calibration"]
-
-        positions = [
-            self._minmax_linear_map(
-                cfg["thumb"]["side"]["calibration"]["min"],
-                cfg["thumb"]["side"]["calibration"]["max"],
-                status.thumb[PSIGloveJointType.side],
-                cfg["thumb"]["side"]["clip"]["source"]["min"],
-                cfg["thumb"]["side"]["clip"]["source"]["max"],
-                cfg["thumb"]["side"]["clip"]["target"]["min"],
-                cfg["thumb"]["side"]["clip"]["target"]["max"],
-            ),
-            self._minmax_linear_map(
-                cfg["thumb"]["back"]["calibration"]["min"],
-                cfg["thumb"]["back"]["calibration"]["max"],
-                status.thumb[PSIGloveJointType.back],
-                cfg["thumb"]["back"]["clip"]["source"]["min"],
-                cfg["thumb"]["back"]["clip"]["source"]["max"],
-                cfg["thumb"]["back"]["clip"]["target"]["min"],
-                cfg["thumb"]["back"]["clip"]["target"]["max"],
-            ),
-            self._minmax_linear_map(
-                cfg["index"]["back"]["calibration"]["min"],
-                cfg["index"]["back"]["calibration"]["max"],
-                status.index[PSIGloveJointType.back],
-                cfg["index"]["back"]["clip"]["source"]["min"],
-                cfg["index"]["back"]["clip"]["source"]["max"],
-                cfg["index"]["back"]["clip"]["target"]["min"],
-                cfg["index"]["back"]["clip"]["target"]["max"],
-            ),
-            self._minmax_linear_map(
-                cfg["middle"]["back"]["calibration"]["min"],
-                cfg["middle"]["back"]["calibration"]["max"],
-                status.middle[PSIGloveJointType.back],
-                cfg["middle"]["back"]["clip"]["source"]["min"],
-                cfg["middle"]["back"]["clip"]["source"]["max"],
-                cfg["middle"]["back"]["clip"]["target"]["min"],
-                cfg["middle"]["back"]["clip"]["target"]["max"],
-            ),
-            self._minmax_linear_map(
-                cfg["ring"]["back"]["calibration"]["min"],
-                cfg["ring"]["back"]["calibration"]["max"],
-                status.ring[PSIGloveJointType.back],
-                cfg["ring"]["back"]["clip"]["source"]["min"],
-                cfg["ring"]["back"]["clip"]["source"]["max"],
-                cfg["ring"]["back"]["clip"]["target"]["min"],
-                cfg["ring"]["back"]["clip"]["target"]["max"],
-            ),
-            self._minmax_linear_map(
-                cfg["pinky"]["back"]["calibration"]["min"],
-                cfg["pinky"]["back"]["calibration"]["max"],
-                status.pinky[PSIGloveJointType.back],
-                cfg["pinky"]["back"]["clip"]["source"]["min"],
-                cfg["pinky"]["back"]["clip"]["source"]["max"],
-                cfg["pinky"]["back"]["clip"]["target"]["min"],
-                cfg["pinky"]["back"]["clip"]["target"]["max"],
-            ),
-        ]
-
-        # Apply low-pass filter
-        positions = self.hand_low_pass_filters[hand_type].filter(positions)
-
-        # Append to queue and compute average (additional smoothing)
-        self.hand_joint_position_queues[hand_type].append(positions)
-        positions = np.mean(self.hand_joint_position_queues[hand_type], axis=0).tolist()
-
-        return positions
+    def _process_selected(self, values: dict[str, float]) -> list[float]:
+        """Map six explicitly selected signals, then apply the legacy filters."""
+        cfg = self.config[f"{self.side}_glove"]["calibration"]
+        positions = []
+        for output, (finger, channel) in OUTPUT_SENSORS.items():
+            entry = cfg[finger][channel]
+            calibration, clip = entry["calibration"], entry["clip"]
+            value = values[output]
+            if output in self.inverted_outputs:
+                value = calibration["min"] + calibration["max"] - value
+            positions.append(
+                self._minmax_linear_map(
+                    calibration["min"],
+                    calibration["max"],
+                    value,
+                    clip["source"]["min"],
+                    clip["source"]["max"],
+                    clip["target"]["min"],
+                    clip["target"]["max"],
+                )
+            )
+        positions = self.hand_low_pass_filters[self.side].filter(positions)
+        self.hand_joint_position_queues[self.side].append(positions)
+        return np.mean(self.hand_joint_position_queues[self.side], axis=0).tolist()

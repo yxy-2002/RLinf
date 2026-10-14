@@ -1,0 +1,13 @@
+defaults:
+- ruiyan_lamp_dp_lamplstm
+- _self_
+actor:
+  model:
+    hand_prior:
+      type: lamplstm
+      encoder_condition_mode: concat
+      decoder_condition_mode: concat
+      artifact_path: ???
+runner:
+  logger:
+    experiment_name: ruiyan_lamp_dp_lamplstm_concat

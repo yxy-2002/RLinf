@@ -1,0 +1,54 @@
+name: franka_ruiyan_left_relative_frame_v1
+arm_action_dim: 6
+hand_action_dim: 6
+arm_state_dim: 6
+hand_state_dim: 6
+action_representation: incremental
+action_frame: realworld_relative_frame_pre_step_adjoint_v1
+arm_action_units:
+- scaled_translation_0.07
+- scaled_translation_0.07
+- scaled_translation_0.07
+- scaled_euler_0.5
+- scaled_euler_0.5
+- scaled_euler_0.5
+hand_action_units:
+- normalized_0_1
+- normalized_0_1
+- normalized_0_1
+- normalized_0_1
+- normalized_0_1
+- normalized_0_1
+hand_action_names: &id001
+- thumb_rotation
+- thumb_bend
+- index
+- middle
+- ring
+- pinky
+arm_state_semantics: relative_reset_xyz_euler_v1
+hand_state_semantics: measured_joint_positions_normalized_0_1
+arm_state_names:
+- relative_tcp_position_x
+- relative_tcp_position_y
+- relative_tcp_position_z
+- relative_tcp_euler_x
+- relative_tcp_euler_y
+- relative_tcp_euler_z
+hand_state_names: *id001
+quaternion_offset: null
+hand_action_low:
+- 0.0
+- 0.0
+- 0.0
+- 0.0
+- 0.0
+- 0.0
+hand_action_high:
+- 1.0
+- 1.0
+- 1.0
+- 1.0
+- 1.0
+- 1.0
+hand_normalization: linear_bounds_minus_one_one_v1

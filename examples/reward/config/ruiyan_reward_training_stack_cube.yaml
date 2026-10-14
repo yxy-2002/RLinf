@@ -1,0 +1,33 @@
+defaults:
+- dexhand_reward_training
+- _self_
+cluster:
+  num_nodes: 2
+  component_placement:
+    actor:
+      node_group: reward_gpu
+      placement: 0
+  node_groups:
+  - label: controller
+    node_ranks: 0
+    ignore_hardware: true
+    env_configs:
+    - node_ranks: 0
+      env_vars:
+      - RLINF_COMM_NET_DEVICES: enp3s0
+      - GLOO_SOCKET_IFNAME: enp3s0
+      - NCCL_SOCKET_IFNAME: enp3s0
+  - label: reward_gpu
+    node_ranks: 1
+    env_configs:
+    - node_ranks: 1
+      env_vars:
+      - RLINF_COMM_NET_DEVICES: enp5s0
+      - GLOO_SOCKET_IFNAME: enp5s0
+      - NCCL_SOCKET_IFNAME: enp5s0
+runner:
+  logger:
+    experiment_name: ruiyan-stack-cube-resnet18
+data:
+  train_data_paths: ???
+  val_data_paths: ???

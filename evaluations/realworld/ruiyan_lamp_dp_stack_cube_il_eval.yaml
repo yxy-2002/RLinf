@@ -1,0 +1,17 @@
+defaults:
+- ruiyan_demo_data_stack_cube
+- ruiyan_lamp_dp_il_eval
+- _self_
+hydra:
+  searchpath:
+  - file://${oc.env:EMBODIED_PATH}/config/
+runner:
+  logger:
+    log_path: ./logs/eval/ruiyan_lamp
+    experiment_name: ruiyan_lamp_dp_stack_cube_il_eval
+rollout:
+  model:
+    model_path: ???
+reward:
+  model:
+    model_path: ???

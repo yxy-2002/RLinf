@@ -1,0 +1,13 @@
+defaults:
+- ruiyan_demo_data
+- env/dexhand/ruiyan_stack_cube
+- _self_
+runner:
+  num_data_episodes: 5
+  logger:
+    log_path: ./logs
+    experiment_name: ruiyan-demo-data-stack-cube
+  pause_between_episodes: true
+reward:
+  model:
+    model_path: ???

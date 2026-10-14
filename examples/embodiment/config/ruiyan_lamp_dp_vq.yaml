@@ -1,0 +1,12 @@
+defaults:
+- ruiyan_lamp_dp_lamplstm
+- _self_
+actor:
+  model:
+    hand_prior:
+      type: vq
+      latent_dim: 1
+      artifact_path: ???
+runner:
+  logger:
+    experiment_name: ruiyan_lamp_dp_vq

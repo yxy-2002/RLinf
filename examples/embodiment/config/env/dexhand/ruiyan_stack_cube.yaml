@@ -1,0 +1,56 @@
+# @package _global_
+env:
+  eval:
+    max_episode_steps: 400
+    override_cfg:
+      max_num_steps: 400
+      target_ee_pose:
+      - 0.55416144
+      - 0.14182557
+      - 0.37127433
+      - 2.2179049
+      - -0.66989541
+      - -0.40690985
+      camera_crop_regions:
+        '105322251046':
+        - 0.154167
+        - 0.214062
+        - 0.779167
+        - 0.940625
+      ee_pose_limit_min_offset:
+      - -0.4
+      - -0.4
+      - -0.2
+      - -0.003
+      - -0.003
+      - -0.003
+      ee_pose_limit_max_offset:
+      - 0.4
+      - 0.4
+      - 0.4
+      - 0.003
+      - 0.003
+      - 0.003
+      hand_reset_state:
+      - 0.0
+      - 0.0
+      - 0.0
+      - 0.0
+      - 0.0
+      - 0.0
+    retargeting:
+      type: channel_linear
+      joint_lower_limits:
+      - 0.0
+      - 0.0
+      - 0.0
+      - 0.0
+      - 0.0
+      - 0.0
+      joint_upper_limits:
+      - 1.0
+      - 1.0
+      - 1.0
+      - 1.0
+      - 1.0
+      - 1.0

@@ -80,7 +80,7 @@ def convert_demo_trajectories(
                 if t == 0
                 else {name: value[t - 1] for name, value in raw["next_obs"].items()}
             )
-            arm, hand = measured_states(frame)
+            arm, hand = measured_states(frame, source.spec)
             history.update(arm, hand, [0], reset=t == 0)
             # Image tensors reference the source until selected macro frames
             # are stacked below; only small state histories are copied here.

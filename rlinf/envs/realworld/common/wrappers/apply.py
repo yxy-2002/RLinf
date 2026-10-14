@@ -118,15 +118,30 @@ def apply_single_arm_wrappers(env: gym.Env, cfg: Mapping[str, Any]) -> gym.Env:
             glove_cfg = cfg.get("glove_config", {})
             retarget_cfg = cfg.get("retargeting", {})
             expected = (
-                ("psiglove_2", "wuji_tier2")
+                {("psiglove_2", "wuji_tier2")}
                 if end_effector_type == "wuji_hand"
-                else ("psiglove_1", "channel_linear")
+                else {
+                    ("psiglove_1", "channel_linear"),
+                    ("psiglove_2", "channel_linear"),
+                }
             )
             if (
                 glove_cfg.get("type", "psiglove_1"),
                 retarget_cfg.get("type", "channel_linear"),
-            ) != expected:
+            ) not in expected:
                 raise ValueError(f"{end_effector_type} requires {expected}")
+            from rlinf_dexhand.pipeline import load_config
+
+            pipeline = load_config(
+                glove_cfg.get("pipeline_config"), scale_file=glove_cfg.get("scale_file")
+            )
+            if (pipeline["glove"]["type"], pipeline["retargeting"]["type"]) != (
+                glove_cfg.get("type", "psiglove_1"),
+                retarget_cfg.get("type", "channel_linear"),
+            ):
+                raise ValueError(
+                    "Environment and pipeline glove/retargeting types differ"
+                )
             DexHandIntervention = _load_dexhand_intervention()
             env = DexHandIntervention(
                 env,

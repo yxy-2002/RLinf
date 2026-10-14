@@ -12,6 +12,7 @@ import torch
 from rlinf.data.datasets.lamp.realworld import (
     camera_slots,
     measured_states,
+    ruiyan_robot_spec,
     wuji_robot_spec,
 )
 from rlinf.envs.lamp_adapter import LampEnvAdapter, LampObservationHistory
@@ -25,10 +26,16 @@ class RealWorldLampAdapter(LampEnvAdapter):
 
     def __init__(self, env, cfg, model_cfg) -> None:
         super().__init__(env, cfg, model_cfg)
-        if self.robot_spec != wuji_robot_spec():
+        if self.robot_spec not in (wuji_robot_spec(), ruiyan_robot_spec()):
             raise ValueError(
-                "This adapter requires the recorded Wuji command specification"
+                "This adapter requires a supported RealWorld command specification"
             )
+        hand_type = cfg.get("override_cfg", {}).get("end_effector_type")
+        expected = (
+            "ruiyan_hand" if self.robot_spec == ruiyan_robot_spec() else "wuji_hand"
+        )
+        if hand_type is not None and hand_type != expected:
+            raise ValueError("Environment hand and LAMP robot spec differ")
         if int(env.num_envs) != 1:
             raise ValueError("The RealWorld LAMP adapter supports one robot per worker")
         self.debug_actions = False
@@ -49,7 +56,7 @@ class RealWorldLampAdapter(LampEnvAdapter):
         self.env.unwrapped.resume_evaluation()
 
     def _observe(self, raw, *, reset=False):
-        arm, hand = measured_states(raw)
+        arm, hand = measured_states(raw, self.robot_spec)
         if self.debug_actions:
             self._debug_state = jsonable(
                 {

@@ -1,0 +1,40 @@
+defaults:
+- /env/realworld_dex_pnp@env.eval
+- /env/dexhand/ruiyan_psi2
+- override hydra/job_logging: stdout
+- _self_
+hydra:
+  run:
+    dir: .
+  output_subdir: null
+runner:
+  task_type: embodied
+  logger:
+    log_path: null
+    project_name: rlinf
+    experiment_name: ruiyan-reward-data
+    logger_backends:
+    - tensorboard
+  label_source: spacemouse_right
+  camera_keys:
+  - wrist_1
+  - global
+  num_success_frames: 200
+  val_split: 0.1
+  random_seed: 42
+  fps: 10
+env:
+  eval:
+    max_episode_steps: 10000
+    preserve_env_truncations: true
+    auto_reset: false
+    ignore_terminations: false
+    keyboard_reward_wrapper: null
+    right_button_labels_only: true
+    hand_teleop_frequency: 60
+    override_cfg:
+      enable_pose_reward: false
+      use_reward_model: false
+      max_num_steps: 10000
+    data_collection:
+      enabled: false

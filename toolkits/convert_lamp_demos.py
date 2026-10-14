@@ -76,11 +76,12 @@ def main() -> None:
         help="Explicit training episode IDs; never include validation episodes",
     )
     parser.add_argument("--history-length", type=int, default=16)
+    parser.add_argument("--robot-type", choices=("wuji", "ruiyan"), default="wuji")
     args = parser.parse_args()
     config = OmegaConf.load(args.model_config)
     policy = get_model(config)
     convert(
-        RealWorldTrajectorySource(args.source),
+        RealWorldTrajectorySource(args.source, robot_type=args.robot_type),
         policy,
         args.output,
         base_path=Path(config.model_path),

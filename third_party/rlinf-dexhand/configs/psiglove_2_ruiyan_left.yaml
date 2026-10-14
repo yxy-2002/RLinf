@@ -1,0 +1,23 @@
+# Thumb selection measured on 2026-10-14; see mapping_file provenance.
+# thumb_rotate endpoints descend from neutral to active, so no extra inversion.
+schema_version: 1
+glove:
+  type: psiglove_2
+  side: left
+  port: /dev/ttyACM0
+  baudrate: 115200
+retargeting:
+  type: channel_linear
+  mapping_file: calibrations/psiglove_2_ruiyan_left_mapping.yaml
+  calibration_file: calibrations/psiglove_2_ruiyan_left_linear.yaml
+  source_channels:
+    thumb_rotation: thumb_rotate
+    thumb_bend: thumb_tip
+    index: index_back
+    middle: middle_back
+    ring: ring_back
+    pinky: pinky_back
+  inverted_outputs: []
+hand:
+  type: ruiyanhand
+  side: left

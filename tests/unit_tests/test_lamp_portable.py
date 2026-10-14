@@ -218,7 +218,10 @@ class SyntheticAdapter(LampEnvAdapter):
         idx = torch.arange(2) if env_idx is None else torch.as_tensor(env_idx)
         self.steps[idx] = 0
         self.history.update(
-            torch.zeros(len(idx), 9), torch.zeros(len(idx), 18), idx, reset=True
+            torch.zeros(len(idx), self.robot_spec.arm_state_dim),
+            torch.zeros(len(idx), self.robot_spec.hand_state_dim),
+            idx,
+            reset=True,
         )
         return self._obs(), {}
 
@@ -228,7 +231,11 @@ class SyntheticAdapter(LampEnvAdapter):
         self.steps[idx] += 1
         # Measured states intentionally differ from issued commands.
         measured = self.steps[idx, None].float()
-        self.history.update(measured.expand(-1, 9), measured.expand(-1, 18), idx)
+        self.history.update(
+            measured.expand(-1, self.robot_spec.arm_state_dim),
+            measured.expand(-1, self.robot_spec.hand_state_dim),
+            idx,
+        )
         terminated = self.steps >= torch.tensor([2, 9])
         return (
             self._obs(),
@@ -362,10 +369,19 @@ def test_vq_bounds_are_spec_driven():
         )
 
 
-@pytest.mark.parametrize("prior", ["lamplstm", "pca", "vq", "mlp"])
-def test_real_il_worker_to_residual_step_without_hardware(tmp_path, monkeypatch, prior):
+@pytest.mark.parametrize("robot", ["synthetic", "ruiyan"])
+@pytest.mark.parametrize(
+    "prior", ["lamplstm", "lamplstm_none", "lamplstm_concat", "pca", "vq", "mlp"]
+)
+def test_real_il_worker_to_residual_step_without_hardware(
+    tmp_path, monkeypatch, prior, robot
+):
     """Exercise production target construction, losses, export and reload."""
-    spec = synthetic_spec()
+    from rlinf.data.datasets.lamp.realworld import ruiyan_robot_spec
+
+    spec = ruiyan_robot_spec() if robot == "ruiyan" else synthetic_spec()
+    mode = prior.removeprefix("lamplstm_") if prior.startswith("lamplstm_") else "film"
+    prior = "lamplstm" if prior.startswith("lamplstm") else prior
     cache = prepare_lamp_cache(
         source=ArraySource(tmp_path, spec),
         cache_root=tmp_path / "cache",
@@ -388,6 +404,8 @@ def test_real_il_worker_to_residual_step_without_hardware(tmp_path, monkeypatch,
                 "model": {
                     "hand_prior": {
                         "type": prior,
+                        "encoder_condition_mode": mode,
+                        "decoder_condition_mode": mode,
                         "latent_dim": 2,
                         "history_length": 3,
                         "action_hidden_dim": 8,
@@ -469,7 +487,7 @@ def test_real_il_worker_to_residual_step_without_hardware(tmp_path, monkeypatch,
     validate_lamp_environment(env_cfg, worker.cfg.actor.model)
     obs, _ = env.reset()
     actions, extra = residual.predict_action_batch(obs, mode="eval")
-    assert actions.shape == (2, 3, 26)
+    assert actions.shape == (2, 3, spec.action_dim)
     retained = extra["forward_inputs"]["action"]
     next_obs, rewards, terminations, _, infos = env.chunk_step(actions)
     executed = infos[-1]["executed_action"]
@@ -554,6 +572,9 @@ def test_real_il_worker_to_residual_step_without_hardware(tmp_path, monkeypatch,
             execution_horizon=3,
             contract_digest=bad_digest,
         )
+    checkpoint = tmp_path / "residual.pt"
+    torch.save(residual.state_dict(), checkpoint)
+    residual.load_state_dict(torch.load(checkpoint, weights_only=True))
     saved = copy.deepcopy(residual.state_dict())
     saved["contract_digest"][0] ^= 1
     with pytest.raises(RuntimeError, match="contract"):
