@@ -126,6 +126,19 @@ class DataCollector(Worker):
         self._quit = True
         self._episode_resume.set()
 
+    def collection_outputs(self) -> dict:
+        """Locate files on this node after run() has closed the output writers."""
+        import ray
+
+        directories = [os.path.abspath(self.buffer.auto_save_path)]
+        dc_cfg = self.cfg.env.eval.get("data_collection")
+        if dc_cfg and dc_cfg.get("enabled", False):
+            directories.append(os.path.abspath(dc_cfg.save_dir))
+        return {
+            "node_id": ray.get_runtime_context().get_node_id(),
+            "directories": list(dict.fromkeys(directories)),
+        }
+
     async def waiting_episode(self) -> int | None:
         """Return the completed episode awaiting driver confirmation, if any."""
         return self._waiting_episode
@@ -447,6 +460,11 @@ def main(cfg):
             wait_for_collection(collector, run_handle, stop_requested)
         else:
             run_handle.wait()
+        if cfg.runner.get("sync_data_to_nodes", False):
+            from rlinf.utils.collection_sync import sync_collection_data
+
+            # run() returns only after both writers close, also on graceful stop.
+            sync_collection_data(collector.collection_outputs().wait(), cluster)
     finally:
         for sig, handler in previous_handlers.items():
             signal.signal(sig, handler)

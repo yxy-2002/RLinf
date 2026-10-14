@@ -45,6 +45,7 @@ runner:
   pause_between_episodes: false # Wait for Enter on the GPU/driver before the next reset.
   record_task_description: false
   success_source: reward_model
+  sync_data_to_nodes: true # Replicate closed demos and collected_data to all nodes.
   logger:
     log_path: null
     project_name: rlinf

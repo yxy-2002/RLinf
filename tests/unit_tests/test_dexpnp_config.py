@@ -47,6 +47,13 @@ def test_default_motion_config():
     assert cfg.step_frequency == 10
 
 
+def test_camera_capture_default_and_explicit_override():
+    values = task_defaults()
+    assert values.pop("camera_fps") == 30
+    assert DexpnpConfig(**values).camera_fps == 30
+    assert DexpnpConfig(**values, camera_fps=15).camera_fps == 15
+
+
 @pytest.mark.parametrize(
     "name,split",
     [

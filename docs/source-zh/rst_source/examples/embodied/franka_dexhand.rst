@@ -125,6 +125,12 @@ RL 训练使用 ``examples/embodiment/config/realworld_dexpnp_rlpd_cnn_async.yam
 - reward ``model.model_path``
 - ``end_effector_config`` 与 ``glove_config`` 中的串口参数
 
+使用 ``DexpnpEnv`` 的灵巧手入口在 reward 数据采集、demo 采集、训练和评估中
+统一默认使用 ``override_cfg.camera_fps: 30``。这是相机拍摄帧率，与数据记录
+``fps`` 独立。reward 训练数据和在线推理应保持相同帧率，因为改变帧率可能
+影响曝光和图像外观。如需调整，显式覆盖 ``env.train.override_cfg.camera_fps``
+或 ``env.eval.override_cfg.camera_fps``。
+
 如果需要自定义相机命名或 crop，请直接在 ``override_cfg`` 中按序列号 serial
 填写；本 PR 默认不提交任何特定 serial 的配置，避免影响其他项目。不配置
 ``camera_names`` 时，默认命名会按照 ``camera_serials`` 列表顺序分配：第一个
@@ -190,12 +196,22 @@ Python 将偏移加到 ``target_ee_pose`` 上。也可以指定绝对值
 
 Wuji 采集可配置 ``env.eval.retargeting.joint_lower_limits`` 和
 ``joint_upper_limits``，训练时使用 ``env.train``。两者默认均为 ``null``，
-可只配置一侧。每个配置列表必须包含 20 个有限弧度值，按 finger1 的 joint1–4、
-finger2 至 finger5 的顺序排列。自定义范围与手部物理限位取交集，交集为空时报错。
+可只配置一侧。每个配置列表必须包含 20 个有限的 ``[0, 1]`` 归一化值，
+与 ``hand_reset_state`` 和 action 使用相同坐标，按 finger1 的 joint1–4、
+finger2 至 finger5 的顺序排列。内部通过
+``q = physical_lower + a * (physical_upper - physical_lower)`` 转换限位。
+值超出范围或下限高于上限时报错。若要禁止某个关节比 reset 更伸展，
+将该关节的归一化 reset 值复制到下限；下限为零时允许完整物理范围。
+已有的弧度限位配置需要转换为归一化值，程序不会自动识别单位。
 retargeting 输出以及相对/绝对控制换算后的目标都会裁剪；限速后的最终主动控制
 指令也会裁剪，因此起始状态在范围外时关节限位优先于单步限速。
 这些限制在手部干预激活期间生效，不改变 reset 姿态和松开按键后的保持行为。
-睿研使用 6 个 ``[0, 1]`` 归一化值，而非弧度。
+睿研使用 6 个 ``[0, 1]`` 归一化值。
+
+在 ``intervention_mode: relative`` 和 ``release_behavior: hold`` 模式下，
+按键时以最近的保持指令为手套增量基准，并保留驱动轨迹，不会用可能因负载
+而滞后的实测反馈替换目标。若保持指令位于任务允许范围外，仍优先应用任务限位。
+绝对模式和松开后交还策略控制的模式保留原有接管行为。
 
 .. code-block:: yaml
 

@@ -94,3 +94,28 @@ PYTHONPATH=. python examples/reward/preprocess_reward_dataset.py \
 ```
 
 输出 `train.pt`、`val.pt`，继续使用现有训练命令。若直接处理的是已有 `train.pt` / `val.pt`，不必再次划分。审核过多样本可能导致无法形成均含正负样本的两个回合集合，此时需要补采数据。
+
+多批审核数据可以一次输入多个目录，统一按 episode 划分：
+
+```bash
+PYTHONPATH=. python examples/reward/preprocess_reward_dataset.py \
+  --raw-format labeled_frames \
+  --raw-data-path /path/to/review_A /path/to/review_B \
+  --output-dir logs/reward_data/merged_reward \
+  --val-split 0.2 --seed 42
+```
+
+输入应为含 `episode_*.pt` 的审核目录，不要直接拼接已有的 `train.pt`、`val.pt`。
+工具要求各批次的相机顺序和预处理（含裁剪）一致，保留全部审核帧，并为不同来源的
+同名 episode 分配唯一编号；`metadata.episode_sources` 记录编号对应的源文件和原始
+`episode_id`。训练集和验证集按完整 episode 划分，均须包含正负样本。
+`--val-split` 是 episode 比例，不保证帧数恰好为 8:2。选择新的输出目录以免覆盖旧划分。
+仅 `labeled_frames` 支持多目录；旧 `pickle` 格式仍只接收一个目录。
+
+若需要按帧随机划分，增加 `--split-by frame --val-split 0.1 --seed 42`。
+该模式分别从成功、失败样本中随机选取约 10% 作为验证集（各类别四舍五入，
+且两边至少各保留一帧），保留全部样本和来源信息，同一帧的多相机视图一起划分。
+每个类别至少需要两帧；单条轨迹也可拆分。`metadata.split_by` 记录拆分模式。
+同一轨迹及相邻帧可出现在两边，因此验证指标衡量同批采集数据的分类效果，
+不能据此判断对全新轨迹的泛化能力。默认仍为 `--split-by episode`；
+`--split-by frame` 仅支持 `labeled_frames`。

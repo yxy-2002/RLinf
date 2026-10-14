@@ -27,6 +27,7 @@ class DexpnpConfig(FrankaRobotConfig):
     Direct callers must supply either an absolute value or its YAML offset.
     """
 
+    camera_fps: int = 30
     reset_ee_pose: np.ndarray | None = None
     ee_pose_limit_min: np.ndarray | None = None
     ee_pose_limit_max: np.ndarray | None = None

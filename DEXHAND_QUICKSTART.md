@@ -15,9 +15,38 @@
 
 两个回合上限必须一致：`env.eval.max_episode_steps` 是外层限制，`env.eval.override_cfg.max_num_steps` 是底层限制。相机名称及模型顺序保持 `[wrist_1, global]`，训练与推理的模型结构、图像大小和归一化配置保持一致。
 
-## 0、先把相机的位置与crop参数确定了
+## 0. 确定相机位置与 crop 参数
 
-确定相机config的文件位置，把对应的crop参数写进去；不确定RLinf中合法的crop参数是[0，1]比例还是绝对像素值，需确定
+灵巧手 reward、demo、训练和评估入口统一继承相机默认帧率
+`camera_fps: 30`，定义于 `env/realworld_dex_pnp.yaml`；这与 10 Hz 的数据记录
+频率独立。需要覆盖时使用 `env.eval.override_cfg.camera_fps=30`（训练环境使用
+`env.train.override_cfg.camera_fps`），字段已存在，不要再加 Hydra 的 `+` 前缀。
+reward 数据与 demo 应保持相同相机帧率，避免曝光和图像外观发生变化。
+
+在连接 RealSense 相机、支持桌面显示的控制节点上，激活已安装 `pyrealsense2`、NumPy、带 GUI 的 OpenCV 和 Tkinter 的 Python 环境，运行可视化裁剪工具：
+
+```bash
+cd /workspace/RLinf
+python franka_infra/rlinf/scripts/select_realsense_crop.py
+```
+
+默认不传 `--serial`，在弹出的 **RealSense camera** 窗口中通过下拉框选择相机序列号，再点击 **OK** 确认。这里选择的是相机序列号，不是手套或灵巧手的串口路径。该脚本位于本地 `franka_infra` 目录（被 Git 忽略），换机器时需另外准备；若无法打开 Tkinter 窗口，脚本会退回终端输入序列号。
+
+1. 根据实时画面调整相机位置，鼠标左键拖拽框选需要保留的区域；开始框选时画面自动冻结。
+2. 按 `r` 清除选区并恢复实时画面，空格切换冻结；确认选区后按回车或 `c`，按 `q` 退出。
+3. 复制终端输出的 `Normalized (top, left, bottom, right)` 数值。每次选择一台相机，其他相机重复运行上述命令。
+
+将结果写入 [Ruiyan 共享硬件配置](examples/embodiment/config/env/dexhand/ruiyan.yaml) 或 [Wuji 共享硬件配置](examples/embodiment/config/env/dexhand/wuji.yaml) 的 `env.eval.override_cfg.camera_crop_regions`，以实际相机序列号为键。若任务配置覆盖了该字段，则修改任务实际使用的配置。例如：
+
+```yaml
+env:
+  eval:
+    override_cfg:
+      camera_crop_regions:
+        "实际相机序列号": [0.4, 0.3, 0.85, 0.7]  # 示例，替换为框选结果
+```
+
+RLinf 使用相对于原始画面的 **`[0, 1]` 比例**，顺序为 **`[top, left, bottom, right]`**，要求 `top < bottom`、`left < right`。不要填写像素坐标或脚本输出的 `IMAGE_CROP` lambda 表达式。工具不会自动修改 YAML；reward 正负帧采集和 demo 采集应使用一致的裁剪配置，确认完成后关闭工具再启动采集。
 
 ## 1. 采集 reward model 正负帧
 
@@ -35,11 +64,56 @@ bash examples/reward/realworld_collect_process_dataset.sh dexhand_reward_model \
 
 每次新采集请使用不同输出目录，避免原始回合文件重名。
 
-结束之后需要对数据进行人工清洗。
+### 1.1 人工清洗 reward data
+
+采集后先审核正负帧，再训练 reward model。以下命令在仓库根目录运行，需要 Torch、NumPy、带 GUI 的 OpenCV 和桌面显示；不需要启动 Ray 或连接机器人。Wuji 数据使用相同流程，将输入路径替换为对应采集目录即可。
+
+推荐审核原始回合数据：
+
+```bash
+python -m toolkits.dexhand.review_classifier_data \
+  --input logs/dexhand_frames/raw_reward_episodes \
+  --output-dir logs/reviewed_reward
+```
+
+| 按键 | 操作 |
+| --- | --- |
+| `n` / 右箭头、`p` / 左箭头 | 下一帧、上一帧 |
+| `g`、`b` | 保留、丢弃当前样本，并进入下一帧 |
+| `1`、`2`、`0` | 只看正帧、只看负帧、查看全部 |
+| `s` | 打开保存确认窗口，按 `y` 确认、`n` 取消 |
+| `q` / Esc | 退出；有未保存改动时询问是否保存 |
+
+相机画面并排显示；绿色 `SUCCESS (label=1)`、红色 `FAILURE (label=0)` 表示原始标签。检查画面与标签是否一致，用 `b` 丢弃误标或无效样本；工具不修改标签，**未审核样本默认保留**。
+
+每次保存生成独立的 `logs/reviewed_reward/review_<时间>/`，其中包含清洗后的 `.pt`、审核记录 `review.json` 和保留帧的 PNG，原始输入不会被覆盖。可在启动命令末尾加 `--no-export-images` 关闭 PNG 导出；加 `--dry-run` 则仅检查文件并打印正负样本统计，不打开窗口、不保存。
+
+审核结束后，用终端显示的实际保存目录替换下面的 `review_<时间>`，重新生成训练集和验证集：
+
+```bash
+PYTHONPATH=. python examples/reward/preprocess_reward_dataset.py \
+  --raw-format labeled_frames \
+  --raw-data-path "logs/reviewed_reward/review_<时间>" \
+  --output-dir logs/processed_reward
+```
+
+后续训练使用 `logs/processed_reward/train.pt` 和 `logs/processed_reward/val.pt`。若清洗后无法划分出都含正负样本的训练/验证回合集合，需要补采数据。
+
+多批审核数据合并时，在 `--raw-data-path` 后依次填写多个审核目录，并指定新的输出目录；例如 `--raw-data-path /path/review_A /path/review_B`。工具会统一 episode 编号并保留来源，按完整 episode 重新划分，避免不同批次同名文件冲突。完整命令见 [离线数据工具说明](toolkits/dexhand/DATASET_TOOLS.md#3-重新生成训练验证集)。
+
+如果只想清洗已经划分好的 `train.pt` / `val.pt`，改用以下命令：
+
+```bash
+python -m toolkits.dexhand.review_classifier_data \
+  --input logs/dexhand_frames/train.pt logs/dexhand_frames/val.pt \
+  --output-dir logs/reviewed_reward_splits
+```
+
+这种方式保存后，直接使用 `logs/reviewed_reward_splits/review_<时间>/` 下的 `train.pt`、`val.pt` 训练，无需重新划分。更多选项见 [离线数据工具说明](toolkits/dexhand/DATASET_TOOLS.md)。
 
 ## 2. 训练 reward model
 
-将 `train.pt`、`val.pt` 复制到 GPU 节点，在该节点的单节点 Ray 集群运行。替换为 GPU 节点可读的数据路径：
+将上一步清洗后得到的 `train.pt`、`val.pt` 复制到 GPU 节点，在该节点的单节点 Ray 集群运行。替换为 GPU 节点可读的数据路径：
 
 ```bash
 bash examples/reward/run_reward_training.sh dexhand_reward_training \
@@ -382,9 +456,9 @@ bash examples/embodiment/collect_data.sh wuji_demo_data_stack_cube \
 
 控制节点通过轻量 `RealWorldRewardService` 接口调用 GPU 上的 reward worker，无需安装 `transformers` 等训练依赖。两端必须同步 `rlinf/utils/realworld_reward.py` 并重新启动采集进程。旧实现直接获取重型 reward actor 的句柄，Ray 在控制节点导入该类失败后，可能将底层缺少依赖的问题表现为 `TypeError: too many positional arguments`。
 
-叠方块的 reward 正负帧采集配置 [wuji_reward_data_stack_cube.yaml](examples/reward/config/wuji_reward_data_stack_cube.yaml) 与 demo 配置共用上述任务参数，包括裁剪、目标位姿、运动范围、手部复位姿态、关节下限和回合步数。只在共享文件中修改这些参数；两种采集模式分别保留自己的节点分配、成功判定和数据保存开关。
+叠方块的 reward 正负帧采集配置 [wuji_reward_data_stack_cube.yaml](examples/reward/config/wuji_reward_data_stack_cube.yaml) 与 demo 配置共用上述任务参数，包括裁剪、目标位姿、运动范围、手部复位姿态、关节下限和回合步数。只在共享文件中修改这些参数；两种采集模式分别保留自己的节点分配、成功判定和数据保存开关。 两个入口通过各自的 `defaults` 引用 `env/dexhand/wuji_stack_cube.yaml`，不要互相继承整份采集配置。当前全局相机 `105322251046` 的裁剪为 `[0.154167, 0.214062, 0.779167, 0.940625]`；以后在共享文件中调整即可同时影响 reward 与 demo 采集。在单个入口的 `env.eval.override_cfg.camera_crop_regions` 再次填写值会覆盖共享值。
 
-训练配置 [wuji_reward_training_stack_cube.yaml](examples/reward/config/wuji_reward_training_stack_cube.yaml) 已指定 `logs/reward_data/wuji_stack_cube_processed/train.pt` 和 `val.pt`。这一步在前述单节点训练集群运行；完成训练后再按本节切换到两节点采集集群：
+训练配置 [wuji_reward_training_stack_cube.yaml](examples/reward/config/wuji_reward_training_stack_cube.yaml) 直接使用本节的两节点 Ray 集群：NUC `192.168.10.10` 为 rank 0，GPU 节点 `192.168.10.11` 为 rank 1。训练 `actor` 放在 `reward_gpu` 节点组内的 GPU 0，通信网卡分别固定为 `enp3s0` 和 `enp5s0`。在 GPU 节点执行下面的命令，无需切换成单节点集群；启动前确认配置中的 `data.train_data_paths` 和 `data.val_data_paths` 指向 GPU 节点上实际生成的 `train.pt`、`val.pt`：
 
 ```bash
 bash examples/reward/run_reward_training.sh wuji_reward_training_stack_cube
@@ -415,3 +489,84 @@ git add .
       ./ psibot@192.168.10.10:/home/psibot/RLinf/
 
 ```
+
+
+### 本地与 NUC 代码自动同步（可暂停）
+
+同步工具放在 `scripts/workspace_sync.py`，由仓库现有的 `/scripts` 规则忽略，不加入 Git。
+下面的命令均在本地 GPU 开发机的仓库根目录执行；同一份脚本也存放在 NUC 的
+`/home/psibot/RLinf/scripts/workspace_sync.py`。同步目标和开关保存在本机 Git 目录的
+`rlinf-sync/` 下，不会随脚本传输，也不需要启动 Ray。
+
+**首次配置。** 迁移脚本不会丢失已有连接配置；换机器或仓库副本时再配置：
+
+```bash
+cd /workspace/yxy_RLinf/RLinf
+python scripts/workspace_sync.py configure \
+  --remote psibot@192.168.10.10 \
+  --remote-dir /home/psibot/RLinf \
+  --rsync-path 'sudo -n /usr/bin/rsync' \
+  --interval 2
+```
+
+需要 Python 3.10+，两端安装 Git、rsync，且 SSH 和远端 `sudo -n` 能非交互运行。
+配置后自动推送默认暂停；更改目标或检查间隔后，需要重启 watcher。
+
+**从 NUC 拉回修改。** 先预览，确认后再应用；拉取会等待正在进行的推送结束，
+随后暂停自动推送，并在拉取结束后保持暂停：
+
+```bash
+python scripts/workspace_sync.py pull          # 仅预览，不覆盖文件
+python scripts/workspace_sync.py pull --apply  # NUC -> 本地，实际同步
+```
+
+**开启自动推送。** 先确保 NUC 上的改动已拉回，再运行：
+
+```bash
+python scripts/workspace_sync.py resume
+python scripts/workspace_sync.py watch --apply
+```
+
+保持终端或 tmux 会话运行。默认每 2 秒检查本地已跟踪文件的变化，有变化时推送到 NUC。
+按 Ctrl+C 停止 watcher；`resume` 本身只打开开关，不会启动后台进程。
+在另一终端管理开关：
+
+```bash
+python scripts/workspace_sync.py pause   # 暂停自动推送，等待当前传输结束
+python scripts/workspace_sync.py resume  # 恢复自动推送，并重新比较文件
+python scripts/workspace_sync.py status  # 查看连接、暂停状态和 watcher 是否运行
+```
+
+**手动推送。** 手动操作不受自动推送开关限制；所有传输命令省略 `--apply` 都只预览：
+
+```bash
+python scripts/workspace_sync.py push          # 仅预览
+python scripts/workspace_sync.py push --apply  # 本地 -> NUC，实际同步
+```
+
+在 NUC 上修改代码的顺序是：**本地执行 pause → NUC 编辑 → 本地 pull --apply → 检查改动 → resume**。
+这是按源端覆盖目标端的文件同步，不会自动合并冲突，不应同时在两端修改相同文件。
+开关只控制此工具的自动推送，不控制其他 rsync 命令。
+
+同步范围与上面的 Git 文件清单一致：读取源端 `git ls-files -z` 和
+`git diff --name-only --diff-filter=D -z HEAD`，包括已跟踪文件的修改和未提交删除。
+新增文件必须先 `git add`；不复制 `.git` 或提交历史，不清理目标目录中的无关文件。
+源端已经提交的删除不再出现在该清单中，应在提交删除前同步，或通过 Git 同步提交历史。
+工具额外校验文件内容、保留文件可执行位，避免时间戳差异导致重复传输。
+
+**同步工具自身。** 因为脚本被 Git 忽略，常规同步不会传它；修改脚本后单独执行：
+
+```bash
+rsync -rlpz --checksum --itemize-changes \
+  --rsync-path='sudo -n /usr/bin/rsync' \
+  scripts/workspace_sync.py \
+  psibot@192.168.10.10:/home/psibot/RLinf/scripts/workspace_sync.py
+```
+
+本地回归测试同样放在忽略目录中：
+
+```bash
+python -m pytest scripts/test_workspace_sync.py -q
+```
+
+测试只使用临时仓库和本地 rsync，不连接真实 NUC。

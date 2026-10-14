@@ -13,6 +13,7 @@ import pytest
 from rlinf.envs.realworld.common.wrappers.dexhand_intervention import (
     DexHandIntervention,
     TeleopProcess,
+    _begin_hand_intervention,
     _bounded_hand_command,
     _resolve_joint_limits,
     _write_snapshot,
@@ -453,6 +454,8 @@ def test_optional_joint_limits(lower, upper):
         ([0.8, 0], [0.2, 1]),
         ([2, 0], None),
         (None, [-1, 1]),
+        ([-0.1, 0], None),
+        (None, [1, 1.1]),
     ],
 )
 def test_invalid_joint_limits(lower, upper):
@@ -460,10 +463,93 @@ def test_invalid_joint_limits(lower, upper):
         _resolve_joint_limits([0, 0], [1, 1], lower, upper)
 
 
-def test_custom_limits_cannot_expand_physical_limits():
-    lower, upper = _resolve_joint_limits([0, 0], [1, 1], [-1, -1], [2, 2])
-    np.testing.assert_array_equal(lower, [0, 0])
-    np.testing.assert_array_equal(upper, [1, 1])
+def test_normalized_limits_use_physical_range_for_both_bounds():
+    lower, upper = _resolve_joint_limits([-1, -2], [3, 6], [0.25, 0.5], [0.75, 1])
+    np.testing.assert_allclose(lower, [0, 2])
+    np.testing.assert_allclose(upper, [2, 6])
+
+
+@pytest.mark.parametrize("hand_type", ["wuji1hand", "ruiyanhand"])
+def test_relative_hold_press_preserves_command_despite_feedback_drift(hand_type):
+    from unittest.mock import Mock
+
+    from rlinf_dexhand.wuji_spec import to_radians, wuji_spec
+
+    spec = (
+        wuji_spec("left")
+        if hand_type == "wuji1hand"
+        else SimpleNamespace(hand_type=hand_type)
+    )
+    current = np.full(20 if hand_type == "wuji1hand" else 6, 0.4)
+    measured = (
+        to_radians(spec, current + 0.1) if hand_type == "wuji1hand" else current + 0.1
+    )
+    hand = SimpleNamespace(
+        spec=spec, get_state=lambda: measured.copy(), clear_trajectory=Mock()
+    )
+    # First press and re-press must not chase feedback or reset the trajectory.
+    for _ in range(2):
+        base, command = _begin_hand_intervention(hand, current, "relative", False)
+        np.testing.assert_array_equal(command, current)
+        if hand_type == "wuji1hand":
+            target = _bounded_hand_command(
+                base,
+                command,
+                spec,
+                np.array(spec.lower),
+                np.array(spec.upper),
+                float("inf"),
+            )
+        else:
+            target = base
+        np.testing.assert_allclose(target, current, atol=1e-12)
+    hand.clear_trajectory.assert_not_called()
+
+
+@pytest.mark.parametrize("policy_mode", [False, True])
+def test_absolute_and_policy_takeover_keep_existing_feedback_behavior(policy_mode):
+    from unittest.mock import Mock
+
+    from rlinf_dexhand.wuji_spec import to_radians, wuji_spec
+
+    spec = wuji_spec("left")
+    measured = to_radians(spec, np.full(20, 0.5))
+    hand = SimpleNamespace(
+        spec=spec, get_state=lambda: measured.copy(), clear_trajectory=Mock()
+    )
+    base, current = _begin_hand_intervention(
+        hand, np.full(20, 0.4), "relative" if policy_mode else "absolute", policy_mode
+    )
+    np.testing.assert_allclose(base, measured)
+    np.testing.assert_allclose(current, 0.5 if policy_mode else 0.4)
+    assert hand.clear_trajectory.call_count == (0 if policy_mode else 1)
+
+
+def test_stack_cube_first_press_preserves_reset_and_blocks_extension():
+    from pathlib import Path
+
+    import yaml
+    from rlinf_dexhand.wuji_spec import to_radians, wuji_spec
+
+    root = Path(__file__).resolve().parents[2]
+    config = yaml.safe_load(
+        (
+            root / "examples/embodiment/config/env/dexhand/wuji_stack_cube.yaml"
+        ).read_text()
+    )["env"]["eval"]
+    spec = wuji_spec("left")
+    reset = np.array(config["override_cfg"]["hand_reset_state"])
+    normalized_lower = np.array(config["retargeting"]["joint_lower_limits"])
+    lower, upper = _resolve_joint_limits(spec.lower, spec.upper, normalized_lower, None)
+    # On the relative-mode press edge raw == baseline, so target == measured reset.
+    first = _bounded_hand_command(
+        to_radians(spec, reset), reset, spec, lower, upper, float("inf")
+    )
+    np.testing.assert_allclose(first, reset, atol=1e-12)
+    extended = _bounded_hand_command(
+        np.array(spec.lower), first, spec, lower, upper, float("inf")
+    )
+    np.testing.assert_allclose(extended, normalized_lower, atol=1e-12)
 
 
 @pytest.mark.parametrize("mode", ["absolute", "relative"])

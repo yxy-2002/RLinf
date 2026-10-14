@@ -22,7 +22,12 @@ def _resolve_joint_limits(
     lower: list[float] | None,
     upper: list[float] | None,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Validate optional limits in native hand units and retain physical limits."""
+    """Convert optional normalized action limits to native hand units.
+
+    Bounds use the same physical-range normalization as hand reset/actions,
+    independent of the task's permitted interval. Omitted bounds retain the
+    physical limits.
+    """
     bounds = [
         np.asarray(physical_lower, dtype=float),
         np.asarray(physical_upper, dtype=float),
@@ -35,11 +40,11 @@ def _resolve_joint_limits(
         array = np.asarray(value, dtype=float)
         if array.shape != bounds[index].shape or not np.isfinite(array).all():
             raise ValueError(f"{name} must contain {bounds[index].size} finite values")
-        bounds[index] = (
-            np.maximum(bounds[index], array)
-            if index == 0
-            else np.minimum(bounds[index], array)
-        )
+        if np.any((array < 0) | (array > 1)):
+            raise ValueError(f"{name} must contain normalized values in [0, 1]")
+        physical_low = np.asarray(physical_lower, dtype=float)
+        physical_high = np.asarray(physical_upper, dtype=float)
+        bounds[index] = physical_low + array * (physical_high - physical_low)
     if np.any(bounds[0] > bounds[1]):
         raise ValueError(
             "Joint lower limits must not exceed upper limits within physical bounds"
@@ -107,6 +112,34 @@ def _feedback_target(hand) -> np.ndarray:
         if hand.spec.hand_type == "wuji1hand"
         else clipped
     )
+
+
+def _begin_hand_intervention(
+    hand, current: np.ndarray, mode: str, policy_mode: bool
+) -> tuple[np.ndarray, np.ndarray]:
+    """Keep relative hold targets continuous across a button press.
+
+    Feedback may lag or differ under load. Replacing a held command with that
+    feedback (including through a driver trajectory reset) introduces motion
+    even when the glove delta is zero.
+    """
+    from rlinf_dexhand.wuji_spec import to_radians
+
+    measured = np.asarray(hand.get_state(), dtype=np.float64).copy()
+    if policy_mode:
+        # The policy may have moved the hand since release.
+        current = _feedback_target(hand)
+        base = measured
+    elif mode == "relative":
+        base = (
+            to_radians(hand.spec, current)
+            if hand.spec.hand_type == "wuji1hand"
+            else current.copy()
+        )
+    else:
+        hand.clear_trajectory()
+        base = measured
+    return base, current
 
 
 class RuiyanControllerClient:
@@ -245,14 +278,12 @@ def _teleop_worker(connection, shared, config):
                 if custom_limits:
                     raw = np.clip(raw, lower, upper)
                 if controlling:
-                    if not previous_left:
+                    press_edge = not previous_left
+                    if press_edge:
                         baseline = raw.copy()
-                        base = hand.get_state()
-                        if policy_mode:
-                            # The policy may have moved the hand since release.
-                            current = _feedback_target(hand)
-                        else:
-                            hand.clear_trajectory()
+                        base, current = _begin_hand_intervention(
+                            hand, current, config["mode"], policy_mode
+                        )
                     target = (
                         raw if config["mode"] == "absolute" else base + raw - baseline
                     )

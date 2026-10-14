@@ -394,3 +394,29 @@ Wuji LAMP 评估在两次等待前均暂停手部轨迹并解除指令超时计�
 交互模式要求 GPU/driver 使用交互终端、单环境、单 pipeline stage、
 ``auto_reset: false``，且不启用 decoupled rollout。等待时 Ctrl+C 或终端 EOF
 会取消确认并关闭环境及 rollout worker。关闭此选项时保留原有自动轮次流程。
+
+自动同步 demo 到各节点
+~~~~~~~~~~~~~~~~~~~~~
+
+Wuji demo 采集默认启用 ``runner.sync_data_to_nodes: true``，
+``wuji_demo_data_stack_cube`` 也继承此设置。采集结束后，采集器先关闭两个输出
+写入器，再将 ``demos/`` 和配置的 ``env.eval.data_collection.save_dir``
+复制到集群配置中的其他所有节点，使用相同的绝对路径。通过 Ctrl+C 平稳停止时，
+也会同步已经保存的 episode；未完成的 episode 仍然丢弃。进程崩溃或采集异常
+不会触发这次最终同步。源文件继续保留在控制节点。
+
+传输复用现有 Ray 连接，无需 SSH 凭据，每块大小为 8 MiB。每个文件先写入临时
+文件，通过 SHA-256 校验后才发布为正式文件。目标文件内容相同则跳过，包括共享
+文件系统路径；同名但内容不同则报错，不会覆盖。同步错误会使命令失败，并保留
+源数据。单节点运行无需传输。目标节点需要拥有源输出路径的写入权限。
+这是结束后的复制，不是 episode 期间的持续同步。
+
+.. code-block:: bash
+
+   ./examples/embodiment/collect_data.sh wuji_demo_data_stack_cube
+   # 本次运行关闭同步：
+   ./examples/embodiment/collect_data.sh wuji_demo_data_stack_cube \
+     runner.sync_data_to_nodes=false
+
+等待 ``[collection sync] ... complete`` 日志及命令退出后，再使用副本训练。
+只复制采集输出，不复制模型 checkpoint 或 driver 日志。

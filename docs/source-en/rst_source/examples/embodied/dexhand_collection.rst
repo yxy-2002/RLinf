@@ -450,3 +450,35 @@ Interactive mode requires a driver TTY, one environment, one pipeline stage,
 ``auto_reset: false`` and coupled rollout. Ctrl+C or terminal EOF while waiting
 cancels confirmation and closes the environment and rollout workers. Disabling
 the option preserves the existing automatic round sequence.
+
+Automatic demo replication across nodes
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Wuji demo collection enables ``runner.sync_data_to_nodes: true`` by default,
+including ``wuji_demo_data_stack_cube``. After collection finishes, the collector
+closes both output writers, then copies ``demos/`` and the configured
+``env.eval.data_collection.save_dir`` to every other configured cluster node at
+the same absolute paths. A graceful Ctrl+C stop also synchronizes already saved
+episodes; unfinished episodes remain discarded. A process crash or collection
+exception does not trigger this final synchronization. The source files remain
+on the control node.
+
+Transfers use the existing Ray connection, without SSH credentials, in 8 MiB
+chunks. Each file is checked with SHA-256 before being published from a temporary
+file. Identical destination files are skipped, including shared-filesystem
+paths; different files at the same destination cause an error without being
+overwritten. Synchronization errors fail the command and preserve source data.
+Single-node runs need no transfer. Each destination must allow writes at the
+source output paths. This is a final copy, not continuous replication during
+the episode.
+
+.. code-block:: bash
+
+   ./examples/embodiment/collect_data.sh wuji_demo_data_stack_cube
+   # Disable replication for this run:
+   ./examples/embodiment/collect_data.sh wuji_demo_data_stack_cube \
+     runner.sync_data_to_nodes=false
+
+Wait for ``[collection sync] ... complete`` and command exit before using the
+replica for training. Only collection outputs are copied, not model checkpoints
+or driver logs.

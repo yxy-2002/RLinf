@@ -76,22 +76,32 @@ def save_reward_episode(
 
 
 def split_reward_episodes(
-    raw_dir: str,
+    raw_dir: str | list[str],
     output_dir: str,
     val_split: float = 0.2,
     seed: int = 42,
+    split_by: str = "episode",
 ) -> None:
-    """Split whole episodes while retaining every labeled frame.
+    """Split by episode or stratified frame while retaining every labeled frame.
 
-    Both splits must contain both classes. Never fall back to splitting frames.
+    Accept one or more directories. Multiple sources receive unique episode IDs
+    with a source mapping in output metadata. Both splits must contain both
+    classes. Frame mode allows an episode in both partitions.
     """
     if not 0 < val_split < 1:
         raise ValueError("val_split must be between 0 and 1")
-    episodes = [
-        RewardDatasetPayload.load(str(p))
-        for p in sorted(Path(raw_dir).glob("episode_*.pt"))
-    ]
-    if len(episodes) < 2:
+    if split_by not in {"episode", "frame"}:
+        raise ValueError("split_by must be episode or frame")
+    directories = [raw_dir] if isinstance(raw_dir, (str, Path)) else raw_dir
+    paths = set()
+    for directory in directories:
+        found = list(Path(directory).glob("episode_*.pt"))
+        if not found:
+            raise ValueError(f"No episode_*.pt files found in {directory}")
+        paths.update(path.resolve() for path in found)
+    paths = sorted(paths)
+    episodes = [RewardDatasetPayload.load(str(path)) for path in paths]
+    if split_by == "episode" and len(episodes) < 2:
         raise ValueError(
             "Collect at least two episodes before splitting; raw data was preserved"
         )
@@ -103,29 +113,64 @@ def split_reward_episodes(
         for ep in episodes
     ):
         raise ValueError("Episode camera/preprocessing metadata must match")
+    multiple_sources = len({path.parent for path in paths}) > 1
+    episode_sources = {}
+    seen = set()
+    for index, (path, episode) in enumerate(zip(paths, episodes, strict=True)):
+        original_id = episode.metadata["episode_id"]
+        identity = (path.parent, original_id)
+        if identity in seen:
+            raise ValueError(f"Duplicate episode_id {original_id} in {path.parent}")
+        seen.add(identity)
+        episode_id = index if multiple_sources else original_id
+        episode.metadata = {**episode.metadata, "episode_id": episode_id}
+        episode_sources[str(episode_id)] = {
+            "path": str(path),
+            "episode_id": original_id,
+        }
+    metadata["episode_sources"] = episode_sources
     rng = random.Random(seed)
-    n_val = min(len(episodes) - 1, max(1, round(len(episodes) * val_split)))
-    # Prefer a seeded group split with both classes in each partition.
-    for _ in range(1000):
-        rng.shuffle(episodes)
-        partitions = (episodes[n_val:], episodes[:n_val])
-        if all(
-            {label for ep in part for label in ep.labels} == {0, 1}
-            for part in partitions
-        ):
-            break
-    else:
-        raise ValueError(
-            "Cannot form episode-disjoint train/val sets containing both classes; collect more episodes"
-        )
-    for name, partition in zip(("train", "val"), partitions):
-        samples = [
+
+    def flatten(partition):
+        return [
             (image, label, ep.metadata["episode_id"], step)
             for ep in partition
             for image, label, step in zip(
                 ep.images, ep.labels, ep.metadata["step_ids"], strict=True
             )
         ]
+
+    if split_by == "frame":
+        samples = flatten(episodes)
+        groups = [
+            [sample for sample in samples if sample[1] == label] for label in (0, 1)
+        ]
+        if any(len(group) < 2 for group in groups):
+            raise ValueError("Frame split requires at least two samples of each class")
+        train_samples, val_samples = [], []
+        for group in groups:
+            rng.shuffle(group)
+            n_val = min(len(group) - 1, max(1, round(len(group) * val_split)))
+            val_samples.extend(group[:n_val])
+            train_samples.extend(group[n_val:])
+        sample_partitions = (train_samples, val_samples)
+    else:
+        n_val = min(len(episodes) - 1, max(1, round(len(episodes) * val_split)))
+        # Prefer a seeded group split with both classes in each partition.
+        for _ in range(1000):
+            rng.shuffle(episodes)
+            partitions = (episodes[n_val:], episodes[:n_val])
+            if all(
+                {label for ep in part for label in ep.labels} == {0, 1}
+                for part in partitions
+            ):
+                break
+        else:
+            raise ValueError(
+                "Cannot form episode-disjoint train/val sets containing both classes; collect more episodes"
+            )
+        sample_partitions = tuple(flatten(part) for part in partitions)
+    for name, samples in zip(("train", "val"), sample_partitions):
         rng.shuffle(samples)
         RewardDatasetPayload(
             [s[0] for s in samples],
@@ -136,5 +181,7 @@ def split_reward_episodes(
                 "step_ids": [s[3] for s in samples],
                 "random_seed": seed,
                 "val_split": val_split,
+                "split_by": split_by,
+                "stratified": split_by == "frame",
             },
         ).save(str(Path(output_dir) / f"{name}.pt"))

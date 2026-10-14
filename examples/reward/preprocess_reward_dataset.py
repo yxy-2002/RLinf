@@ -298,7 +298,7 @@ def preprocess_and_save_reward_datasets(
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Preprocess reward dataset from raw episode .pkl files."
+        description="Preprocess reward episodes into train/val files."
     )
     parser.add_argument(
         "--raw-format", choices=["pickle", "labeled_frames"], default="pickle"
@@ -306,8 +306,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--raw-data-path",
         type=str,
+        nargs="+",
         required=True,
-        help="Path to raw collected_data directory containing .pkl episode files.",
+        help="Input directory; labeled_frames accepts multiple directories of episode_*.pt files. Pickle accepts one directory.",
     )
     parser.add_argument(
         "--output-dir",
@@ -347,10 +348,16 @@ def parse_args() -> argparse.Namespace:
         help="Allow sampling to exclude each episode's last valid frame.",
     )
     parser.add_argument(
+        "--split-by",
+        choices=["episode", "frame"],
+        default="episode",
+        help="labeled_frames split unit; frame uses stratified random sampling.",
+    )
+    parser.add_argument(
         "--val-split",
         type=float,
         default=0.2,
-        help="Fraction of episodes for validation.",
+        help="Validation fraction of episodes, or each class in frame mode.",
     )
     parser.add_argument(
         "--fail-success-ratio",
@@ -383,9 +390,16 @@ def main() -> None:
             args.output_dir,
             val_split=args.val_split,
             seed=args.seed,
+            split_by=args.split_by,
         )
-        logger.info(f"Saved episode-disjoint splits to {args.output_dir}")
+        logger.info(f"Saved {args.split_by} splits to {args.output_dir}")
         return
+    if args.split_by != "episode":
+        raise ValueError("--split-by frame requires --raw-format labeled_frames")
+    if len(args.raw_data_path) != 1:
+        raise ValueError(
+            "Multiple --raw-data-path directories require --raw-format labeled_frames"
+        )
     os.makedirs(args.output_dir, exist_ok=True)
 
     train_output_path = args.train_output_path or os.path.join(
@@ -394,7 +408,7 @@ def main() -> None:
     val_output_path = args.val_output_path or os.path.join(args.output_dir, "val.pt")
 
     metadata = preprocess_and_save_reward_datasets(
-        raw_data_path=args.raw_data_path,
+        raw_data_path=args.raw_data_path[0],
         train_output_path=train_output_path,
         val_output_path=val_output_path,
         num_samples_per_episode=args.num_samples_per_episode,

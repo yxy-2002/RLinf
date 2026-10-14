@@ -125,6 +125,14 @@ Before running, fill in:
 - reward ``model.model_path``
 - dexterous-hand serial ports in ``end_effector_config`` and ``glove_config``
 
+All dexterous-hand entrypoints using ``DexpnpEnv`` default to
+``override_cfg.camera_fps: 30`` for reward data, demos, training, and evaluation.
+This is the camera capture rate, independent of the data recording ``fps``.
+Keep it consistent between reward training data and online inference, since
+changing the frame rate can change camera exposure and image appearance.
+Override it explicitly with ``env.train.override_cfg.camera_fps`` or
+``env.eval.override_cfg.camera_fps`` when needed.
+
 Camera naming and crop are configured directly in ``override_cfg`` when needed.
 This PR does not ship any serial-specific defaults so that other projects are
 not affected. Without ``camera_names``, default names follow the
@@ -195,14 +203,27 @@ Optional retargeting joint limits
 
 For Wuji collection, configure ``env.eval.retargeting.joint_lower_limits`` and
 ``joint_upper_limits`` (use ``env.train`` for training). Both default to ``null``;
-either side may be omitted. Each configured list must contain 20 finite radians
+either side may be omitted. Each configured list must contain 20 finite normalized
+values in ``[0, 1]``, using the same coordinates as ``hand_reset_state`` and actions,
 in finger-major order: finger1 joint1–4, then finger2 through finger5.
-Limits intersect the hand's physical limits; an empty interval is rejected.
+Limits are converted internally with ``q = physical_lower + a * (physical_upper - physical_lower)``.
+Out-of-range values and lower bounds above upper bounds are rejected.
+To prevent a joint from extending below its reset value, copy that joint's
+normalized reset value into the lower bound. A zero lower bound permits its
+full physical range. Existing limits specified in radians must be converted
+to normalized values; their units are not detected automatically.
 Retargeting output and the resulting relative/absolute target are clipped.
 The final active command is also bounded after rate limiting, so these bounds
 take precedence if the starting state is outside them. They apply while hand
 intervention is active; reset poses and release-to-hold behavior are unchanged.
-Ruiyan uses six normalized values in ``[0, 1]`` instead of radians.
+Ruiyan uses six normalized values in ``[0, 1]``.
+
+With ``intervention_mode: relative`` and ``release_behavior: hold``, pressing
+the button anchors glove deltas to the last held command and preserves the
+driver trajectory. It does not replace the target with measured feedback,
+which may lag under load. Task limits still take precedence if the held command
+is outside the permitted interval. Absolute and policy-release modes retain
+their existing takeover behavior.
 
 .. code-block:: yaml
 

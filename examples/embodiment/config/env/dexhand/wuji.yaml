@@ -24,7 +24,7 @@ env:
     max_episode_steps: 10000
     retargeting:
       type: wuji_tier2
-      # Optional 20 joint limits in radians, finger1 joint1..4 through finger5.
+      # Optional 20 normalized [0, 1] limits, finger1 joint1..4 through finger5.
       joint_lower_limits: null
       joint_upper_limits: null
     glove_config:

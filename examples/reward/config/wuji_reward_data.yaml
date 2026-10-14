@@ -33,7 +33,6 @@ env:
     right_button_labels_only: true
     hand_teleop_frequency: 60 # Maximum target submission rate; fresh targets depend on solver speed.
     override_cfg:
-      camera_fps: 30 # Camera capture rate, independent of the 10 FPS recording rate.
       enable_pose_reward: false
       use_reward_model: false
       max_num_steps: 10000 # Keep same as env.eval.max_episode_steps
