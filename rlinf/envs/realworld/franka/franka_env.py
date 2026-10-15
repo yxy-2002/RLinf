@@ -396,7 +396,7 @@ class FrankaEnv(gym.Env):
             is_ee_action_effective = self._end_effector_action(ee_action)
 
             safe_position = self._clip_position_to_safety_box(self.next_position)
-            if getattr(self, "_hand_spec", None) is not None:
+            if self._is_hand:
                 xyz_scale, rot_scale = self.config.action_scale[:2]
                 if xyz_scale:
                     action[:3] = (
@@ -443,7 +443,9 @@ class FrankaEnv(gym.Env):
             }
             # A confirmed success takes precedence over a simultaneous timeout.
             truncated = truncated and not terminated
-        if getattr(self, "_hand_spec", None) is not None:
+        # Both Ruiyan and Wuji report commands after the environment's limits.
+        # _hand_spec is Wuji-specific and must not gate this shared contract.
+        if self._is_hand:
             executed = action.copy()
             if self._last_hand_command is not None:
                 executed[6:] = self._last_hand_command

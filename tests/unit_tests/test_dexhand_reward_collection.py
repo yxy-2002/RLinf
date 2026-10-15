@@ -66,6 +66,21 @@ def test_views_order_and_missing_camera():
         stack_camera_frames({"wrist_1": images[0]}, KEYS)
 
 
+def test_reward_inference_copies_readonly_numpy_images():
+    import warnings
+
+    model = ResNetRewardModel(model_config()).eval()
+    images = np.full((1, 2, 32, 32, 3), 128, dtype=np.uint8)
+    images.setflags(write=False)
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", UserWarning)
+        actual = model.compute_reward({"reward_images": images})
+    expected = model.compute_reward({"reward_images": images.copy()})
+    torch.testing.assert_close(actual, expected)
+    assert not images.flags.writeable
+    assert np.all(images == 128)
+
+
 def test_insufficient_split_keeps_raw(tmp_path):
     save_reward_episode(
         str(tmp_path),

@@ -268,6 +268,8 @@ class ResNetRewardModel(BaseRewardModel):
         if images is None:
             raise ValueError(f"Missing {key} in reward observations")
         if isinstance(images, np.ndarray):
+            if not images.flags.writeable:
+                images = images.copy()
             images = torch.from_numpy(images)
         with torch.no_grad():
             rewards = torch.sigmoid(self._image_logits(images))

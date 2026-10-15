@@ -25,7 +25,7 @@ env:
       type: channel_linear
     glove_config:
       type: psiglove_2
-      pipeline_config: ${oc.env:REPO_PATH}/third_party/rlinf-dexhand/configs/psiglove_2_ruiyan_left.yaml
+      pipeline_config: /workspace/RLinf/third_party/rlinf-dexhand/configs/psiglove_2_ruiyan_left.yaml
       frequency: 60
       intervention_mode: relative
       release_behavior: hold

@@ -29,5 +29,5 @@ runner:
   logger:
     experiment_name: ruiyan-stack-cube-resnet18
 data:
-  train_data_paths: ???
-  val_data_paths: ???
+  train_data_paths: /workspace/yxy_RLinf/RLinf/logs/reward_data/ruiyan_stack_cube_reviewed_20261014/train.pt
+  val_data_paths: /workspace/yxy_RLinf/RLinf/logs/reward_data/ruiyan_stack_cube_reviewed_20261014/val.pt

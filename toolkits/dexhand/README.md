@@ -8,6 +8,20 @@
 - [crop_classifier_data.py](crop_classifier_data.py)：裁剪 reward/demo 图像。
 - 命令见 [DATASET_TOOLS.md](DATASET_TOOLS.md)。
 
+## Ruiyan policy 评估的执行动作回传
+
+`release_behavior: policy` 要求底层环境每步返回 `info["executed_action"]`。
+Ruiyan 和 Wuji 均回传经过环境安全位姿限制的机械臂动作，以及经过手部变化限幅后
+下发的目标；外层 `RelativeFrame` 再将机械臂动作转换回 policy 使用的坐标系。
+该字段表示下发命令，不是测量到的实际位移或关节位置。
+
+如果旧版本报 `Policy hand control requires executed_action feedback`，将
+`rlinf/envs/realworld/franka/franka_env.py` 的修复同步到 NUC，并退出旧评估进程后
+重新启动。不要删除检查或将 `release_behavior` 改为 `hold` 来绕过报错。
+先使用 `evaluations/run_eval.sh realworld ruiyan_lamp_dp_stack_cube_il_eval`
+并设置 `env.eval.rollout_epoch=1`、`runner.debug_actions=true` 验证一个回合，
+确认调试记录包含执行动作后再增加回合数。真机测试会启动硬件，应由操作人员执行。
+
 ## 手套配置要求
 
 `GloveExpert` 必须传入完整的 `pipeline_config`，不再自动使用 PSI1/Ruiyan 默认构造。支持 `psiglove_1 + channel_linear + ruiyanhand`、`psiglove_2 + channel_linear + ruiyanhand` 和 `psiglove_2 + wuji_tier2 + wuji1hand`，左右手必须一致；错误配置在启动读取线程前报错。

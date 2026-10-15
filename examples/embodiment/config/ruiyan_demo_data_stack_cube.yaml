@@ -3,11 +3,11 @@ defaults:
 - env/dexhand/ruiyan_stack_cube
 - _self_
 runner:
-  num_data_episodes: 5
+  num_data_episodes: 10
   logger:
     log_path: ./logs
     experiment_name: ruiyan-demo-data-stack-cube
   pause_between_episodes: true
 reward:
   model:
-    model_path: ???
+    model_path: /workspace/yxy_RLinf/RLinf/logs/20261014-132746-ruiyan_reward_training_stack_cube/ruiyan-stack-cube-resnet18/checkpoints/best_model/actor/model_state_dict/full_weights.pt
