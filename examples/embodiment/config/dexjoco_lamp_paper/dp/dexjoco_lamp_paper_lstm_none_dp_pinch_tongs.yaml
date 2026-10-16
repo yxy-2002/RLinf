@@ -1,0 +1,14 @@
+# @package _global_
+# Source: outputs/lamp_lstm_il/group_b/runs/pinch_tongs/lstm_none/dp.yaml
+defaults:
+- /dexjoco_lamp_paper/dp/dexjoco_lamp_paper_lstm_none_dp
+- _self_
+runner:
+  logger:
+    experiment_name: dexjoco_lamp_paper_lstm_none_dp_pinch_tongs
+data:
+  task_name: pinch_tongs
+actor:
+  model:
+    hand_prior:
+      artifact_path: ./outputs/lamp_paper/dexjoco_lamp_paper_lstm_none_prior_pinch_tongs/artifact

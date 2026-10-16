@@ -12,6 +12,8 @@ actor:
     lr: 6.0e-05
     warmup_steps: 1000
     weight_decay: 0.0001
+    # Shared by all six Ruiyan DP variants; matches the 50-demo best recipe.
+    backbone_lr_ratio: 1.0
   model:
     hand_prior:
       artifact_path: ???

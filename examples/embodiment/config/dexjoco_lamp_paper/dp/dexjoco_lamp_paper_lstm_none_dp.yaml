@@ -1,0 +1,6 @@
+# @package _global_
+# lstm_none dp: hyperparameters from the group A/B main experiment.
+# Prior architecture and conditioning are loaded from the task-specific artifact.
+defaults:
+- /dexjoco_lamp_paper/dp/dexjoco_lamp_paper_lstm_dp
+- _self_

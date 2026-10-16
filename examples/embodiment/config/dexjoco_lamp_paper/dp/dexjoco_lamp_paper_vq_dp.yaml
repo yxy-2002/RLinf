@@ -1,0 +1,10 @@
+# @package _global_
+# vq dp: hyperparameters from the group A/B main experiment.
+defaults:
+- /dexjoco_lamp_paper/dp/dexjoco_lamp_paper_dp_base
+- _self_
+actor:
+  model:
+    hand_prior:
+      type: vq
+      latent_dim: 1

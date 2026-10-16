@@ -1,0 +1,9 @@
+# @package _global_
+# mlp dp: hyperparameters from the group A/B main experiment.
+defaults:
+- /dexjoco_lamp_paper/dp/dexjoco_lamp_paper_dp_base
+- _self_
+actor:
+  model:
+    hand_prior:
+      type: mlp

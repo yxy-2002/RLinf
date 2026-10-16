@@ -1,0 +1,30 @@
+# @package _global_
+# pca prior: hyperparameters from the group A/B main experiment.
+defaults:
+- /dexjoco_lamp_paper/dexjoco_lamp_paper_base
+- _self_
+actor:
+  micro_batch_size: 128
+  global_batch_size: 128
+  eval_batch_size: 256
+  validation_interval: 500
+  optim:
+    lr: 0.0001
+    min_lr: 1.0e-06
+    warmup_steps: 500
+    weight_decay: 0.0001
+    adam_beta1: 0.9
+    clip_grad: 1.0
+  model:
+    num_action_chunks: 4
+    execution_horizon: 4
+    hand_prior:
+      type: pca
+      latent_dim: 2
+runner:
+  max_epochs: 1000000
+  max_steps: 1
+  local_update_steps: 1
+  save_interval: 1
+algorithm:
+  stage: prior

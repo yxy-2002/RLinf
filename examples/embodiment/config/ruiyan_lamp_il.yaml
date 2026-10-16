@@ -42,6 +42,8 @@ data:
   split_seed: 42
   robot_type: ruiyan
 actor:
+  # Match the frozen 50-demo stack_cube image augmentation recipe.
+  enable_drq: true
   model:
     action_horizon: 16
     execution_horizon: 8
