@@ -1,0 +1,42 @@
+# @package _global_
+# lstm_film prior: hyperparameters from the group A/B main experiment.
+defaults:
+- /dexjoco_lamp_paper/dexjoco_lamp_paper_base
+- _self_
+actor:
+  micro_batch_size: 512
+  global_batch_size: 512
+  eval_batch_size: 512
+  validation_interval: 1000
+  optim:
+    lr: 5.0e-05
+    min_lr: 1.0e-06
+    warmup_steps: 500
+    weight_decay: 0.0
+    adam_beta1: 0.9
+    clip_grad: 1.0
+  model:
+    num_action_chunks: 8
+    execution_horizon: 8
+    hand_prior:
+      type: lamplstm
+      latent_dim: 2
+      beta: 0.0005
+      beta_warmup_steps: 0
+      action_dim: 16
+      history_dim: 16
+      history_length: 8
+      horizon: 16
+      action_hidden_dim: 256
+      condition_hidden_dim: 256
+      encoder_condition_mode: film
+      decoder_condition_mode: film
+      num_lstm_layers: 1
+      condition_drop_prob: 0.1
+runner:
+  max_epochs: 1000000
+  max_steps: 20000
+  local_update_steps: 100
+  save_interval: 10000
+algorithm:
+  stage: prior

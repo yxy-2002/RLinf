@@ -5,6 +5,8 @@ actor:
   model:
     hand_prior:
       type: vq
+      # Preserve the non-LSTM prior fields from the 50-demo recipe.
+      beta: 0.0005
       latent_dim: 1
       artifact_path: ???
 runner:

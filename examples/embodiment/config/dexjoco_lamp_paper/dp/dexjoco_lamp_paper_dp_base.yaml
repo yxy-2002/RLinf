@@ -1,0 +1,27 @@
+# @package _global_
+# Common DP schedule for all six methods.
+defaults:
+- /dexjoco_lamp_paper/dexjoco_lamp_paper_base
+- _self_
+actor:
+  micro_batch_size: 512
+  global_batch_size: 512
+  eval_batch_size: 512
+  validation_interval: 1000
+  optim:
+    lr: 6.0e-05
+    min_lr: 1.0e-06
+    warmup_steps: 1000
+    weight_decay: 0.0001
+    adam_beta1: 0.9
+    clip_grad: 1.0
+  model:
+    num_action_chunks: 8
+    execution_horizon: 8
+runner:
+  max_epochs: 1000000
+  max_steps: 40000
+  local_update_steps: 100
+  save_interval: 10000
+algorithm:
+  stage: dp

@@ -5,6 +5,8 @@ actor:
   model:
     hand_prior:
       type: pca
+      # Preserve the non-LSTM prior fields from the 50-demo recipe.
+      beta: 0.0005
       artifact_path: ???
 runner:
   logger:

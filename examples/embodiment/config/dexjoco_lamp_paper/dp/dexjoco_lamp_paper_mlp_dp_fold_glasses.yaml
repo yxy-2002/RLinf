@@ -1,0 +1,10 @@
+# @package _global_
+# Source: outputs/lamp_lstm_il/group_a/runs/fold_glasses/mlp/dp.yaml
+defaults:
+- /dexjoco_lamp_paper/dp/dexjoco_lamp_paper_mlp_dp
+- _self_
+runner:
+  logger:
+    experiment_name: dexjoco_lamp_paper_mlp_dp_fold_glasses
+data:
+  task_name: fold_glasses

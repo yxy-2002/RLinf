@@ -1,0 +1,14 @@
+# @package _global_
+# Source: outputs/lamp_lstm_il/group_a/runs/click_mouse/lstm_none/dp.yaml
+defaults:
+- /dexjoco_lamp_paper/dp/dexjoco_lamp_paper_lstm_none_dp
+- _self_
+runner:
+  logger:
+    experiment_name: dexjoco_lamp_paper_lstm_none_dp_click_mouse
+data:
+  task_name: click_mouse
+actor:
+  model:
+    hand_prior:
+      artifact_path: ./outputs/lamp_paper/dexjoco_lamp_paper_lstm_none_prior_click_mouse/artifact

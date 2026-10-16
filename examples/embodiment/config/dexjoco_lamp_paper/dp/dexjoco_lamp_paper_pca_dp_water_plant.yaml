@@ -1,0 +1,14 @@
+# @package _global_
+# Source: outputs/lamp_lstm_il/group_b/runs/water_plant/pca/dp.yaml
+defaults:
+- /dexjoco_lamp_paper/dp/dexjoco_lamp_paper_pca_dp
+- _self_
+runner:
+  logger:
+    experiment_name: dexjoco_lamp_paper_pca_dp_water_plant
+data:
+  task_name: water_plant
+actor:
+  model:
+    hand_prior:
+      artifact_path: ./outputs/lamp_paper/dexjoco_lamp_paper_pca_prior_water_plant/artifact

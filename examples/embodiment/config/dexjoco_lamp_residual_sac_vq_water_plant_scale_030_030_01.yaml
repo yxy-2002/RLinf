@@ -11,14 +11,14 @@ cluster:
     rollout: 0-1
 runner:
   logger:
-    experiment_name: dexjoco_lamp_residual_sac_lamplstm_water_plant_scale_075_075
+    experiment_name: dexjoco_lamp_residual_sac_vq_water_plant_scale_030_030
 actor:
   model:
-    model_path: /vepfs-mlp2/c20250301/240906020/RLinf/outputs/lamp_lstm_il/group_b/runs/water_plant/lstm_film/dp/run/artifact
+    model_path: /vepfs-mlp2/c20250301/240906020/RLinf/outputs/lamp_lstm_il/group_b/runs/water_plant/vq/dp/run/artifact
     hand_prior:
-      type: lamplstm
-    wrist_residual_scale: 0.75
-    hand_residual_scale: 0.75
+      type: vq_codebook
+    wrist_residual_scale: 0.3
+    hand_residual_scale: 0.3
 env:
   train:
     lamp_history_length: 8

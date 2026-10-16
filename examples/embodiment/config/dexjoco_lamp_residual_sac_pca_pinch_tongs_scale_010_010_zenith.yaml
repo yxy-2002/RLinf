@@ -1,0 +1,29 @@
+# Requires a single-arm version-2 lamplstm DP deployment artifact.
+defaults:
+  - env/dexjoco_pinch_tongs@env.train
+  - env/dexjoco_pinch_tongs@env.eval
+  - dexjoco_lamp_residual_sac
+  - _self_
+cluster:
+  component_placement:
+    actor: 0-0
+    env: 0-1
+    rollout: 0-1
+runner:
+  logger:
+    # Access the mounted bucket directly instead of the repository outputs symlink.
+    log_path: /projects/c20250301/buckets/c20250301/yangxinye/dexjoco/rlinf_outputs
+    experiment_name: dexjoco_lamp_residual_sac_pca_pinch_tongs_scale_010_010
+actor:
+  model:
+    # Self-contained DP artifact; rollout inherits this path.
+    model_path: /projects/c20250301/buckets/c20250301/yangxinye/dexjoco/rlinf_outputs/lamp_lstm_il/group_b/runs/pinch_tongs/pca/dp/run/artifact
+    hand_prior:
+      type: pca
+    wrist_residual_scale: 0.10
+    hand_residual_scale: 0.10
+env:
+  train:
+    lamp_history_length: 8
+  eval:
+    lamp_history_length: 8

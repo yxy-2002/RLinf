@@ -1,0 +1,10 @@
+# @package _global_
+# Source: outputs/lamp_lstm_il/group_a/runs/click_mouse/lstm_none/prior.yaml
+defaults:
+- /dexjoco_lamp_paper/prior/dexjoco_lamp_paper_lstm_none_prior
+- _self_
+runner:
+  logger:
+    experiment_name: dexjoco_lamp_paper_lstm_none_prior_click_mouse
+data:
+  task_name: click_mouse

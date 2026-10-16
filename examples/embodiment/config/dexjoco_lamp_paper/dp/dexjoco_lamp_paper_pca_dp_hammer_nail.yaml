@@ -1,0 +1,14 @@
+# @package _global_
+# Source: outputs/lamp_lstm_il/group_a/runs/hammer_nail/pca/dp.yaml
+defaults:
+- /dexjoco_lamp_paper/dp/dexjoco_lamp_paper_pca_dp
+- _self_
+runner:
+  logger:
+    experiment_name: dexjoco_lamp_paper_pca_dp_hammer_nail
+data:
+  task_name: hammer_nail
+actor:
+  model:
+    hand_prior:
+      artifact_path: ./outputs/lamp_paper/dexjoco_lamp_paper_pca_prior_hammer_nail/artifact
