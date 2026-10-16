@@ -142,13 +142,12 @@ CollectionFiles = _collection_files_type()
 def sync_collection_data(outputs: list[dict], cluster: Any) -> None:
     """Copy closed collector outputs to the same absolute paths on cluster nodes.
 
+    Transfer, checksum, and conflicting-file errors propagate to the caller.
+    Source files are never removed, so a failed transfer can be retried.
+
     Args:
         outputs: Each collector's Ray node ID and absolute output directories.
         cluster: Initialized RLinf cluster, used for node IDs and interpreters.
-
-    Raises:
-        Exception: Transfer, checksum or conflicting-file errors. Source files
-            are never removed, so a failed transfer can be retried.
     """
     import ray
     from ray.util.scheduling_strategies import NodeAffinitySchedulingStrategy
