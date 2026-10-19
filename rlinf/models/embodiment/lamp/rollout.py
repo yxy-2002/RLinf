@@ -5,7 +5,9 @@
 # http://www.apache.org/licenses/LICENSE-2.0
 """LAMP adaptation to the existing generic rollout worker contract."""
 
-from typing import TypeVar
+from typing import Literal, TypeVar
+
+import torch
 
 from rlinf.models.embodiment.base_policy import BasePolicy
 
@@ -44,3 +46,31 @@ def resolve_rollout_mode(
     if mode not in ("train", "eval"):
         raise ValueError(f"Unsupported LAMP rollout mode: {mode!r}")
     return mode
+
+
+def residual_exploration(
+    *,
+    recipe: str,
+    mode: str,
+    count: int | float | torch.Tensor | None,
+    batch_size: int,
+    device: torch.device,
+    learning_starts: int,
+    progressive_steps: int,
+) -> tuple[torch.Tensor | None, float, Literal["actor", "uniform"]]:
+    """Choose rollout exploration without changing the actor or critic network.
+
+    RealWorld always samples the residual actor in training. Policy Decorator
+    retains its global macro-count gate and uniform warmup. Evaluation uses
+    the deterministic actor for both recipes.
+    """
+    from .residual_sac import LampResidualSACPolicy
+    from .training_recipe import training_recipe
+
+    recipe = training_recipe({"training_recipe": recipe})
+    if mode != "train" or recipe == "realworld_rlpd":
+        return None, 1.0, "actor"
+    count = LampResidualSACPolicy._counter_value(count)
+    probability = min(count / float(progressive_steps), 1.0)
+    enabled = torch.rand(batch_size, device=device) < probability
+    return enabled, probability, "uniform" if count < learning_starts else "actor"

@@ -178,52 +178,173 @@ same number of updates. This option trains the whole prior; preserving an
 existing frozen DP's latent interface requires a separate encoder/history-freezing
 design. Do not assume a newly trained prior can replace the old one inside DP.
 
-Convert Demonstrations
-----------------------
+Load Demonstrations
+-------------------
 
-Use ``toolkits/convert_lamp_demos.py`` after exporting a DP artifact. Supply a
-resolved residual model YAML with ``model_type: lamp_residual_sac``,
-``contract_version: 5``, the complete robot specification, ``action_dim: 26``,
-``action_horizon: 16``, ``num_action_chunks: 8``, ``precision: '32'``,
-``is_lora: false`` and ``model_path`` pointing to the DP artifact. Keep its
-remaining residual settings identical to the RLPD configuration.
+RealWorld RLPD loads raw ``demos/`` directories directly via
+``algorithm.demo_buffer.load_path``. It adapts chunks and histories at startup
+into native replay, without a separate base model load or conversion step.
+All supplied episodes are used; provide training-only directories if you need
+a held-out validation split. Preconverted buffers remain supported.
 
-.. code-block:: bash
-
-   python toolkits/convert_lamp_demos.py --source /path/to/demos \
-     --model-config /path/to/resolved-model.yaml --output /path/to/macro-demos \
-     --episodes 0 1 2 3 4 5 6 7 9 10 11 12 14 15 16 17 18 19
-
-The episode IDs above are the training split of the audited recording; obtain
-the split from cache metadata for another recording. Conversion never crosses
-an episode. It preserves physical commands, terminal next observations and
-primitive rewards, pads incomplete tails with invalid zero slots, and marks
-missing frozen caches invalid. It does not infer an expert residual or quantize
-human commands onto a VQ codebook. The manifest binds data, base artifact,
-robot specification and H/K.
+Loading never crosses episode boundaries. It preserves physical commands,
+terminal next observations and primitive rewards, pads incomplete chunks with
+invalid zero slots, and marks missing frozen caches invalid. It does not infer
+expert residuals or quantize human commands onto a VQ codebook.
 
 RLPD and Intervention
 ---------------------
 
-Compose ``realworld_lamp_rlpd`` for the existing ``train_async.py`` entrypoint.
+RealWorld RLPD defaults to ``rollout.enable_torch_compile: true`` with
+``rollout.torch_compile_mode: default``. The rollout copy
+compiles the frozen base observation encoder, DDIM sampler and residual actor
+forward. Preprocessing, hand decoding and exploration scheduling remain eager;
+CUDA Graphs remain disabled. Training compilation is configured separately below. Parameter
+names and objects are retained for weight synchronization and checkpoints.
+The rollout worker warms the configured batch sizes and both residual sampling
+branches before collection. Compilation failures stop startup rather than
+silently disabling compilation. Input shape or mode changes may still recompile.
+Restart the run to apply this default; set ``rollout.enable_torch_compile=false``
+to compare with eager execution.
+
+Benchmark the configured artifact without connecting to the robot:
+
+.. code-block:: bash
+
+   PYTHONPATH=. python toolkits/benchmark_lamp_compile.py \
+     --config ruiyan_lamp_rlpd_stack_cube_film \
+     --output /tmp/lamp_compile_benchmark.json
+
+This measures synchronized CUDA inference with synthetic observations and a
+fresh residual head, checks action agreement and visibility of weight updates,
+and reports compilation time separately. It excludes robot, camera, reward RPC
+and concurrent learner load; it does not measure control-loop smoothness.
+The comparison uses ``atol=1e-3, rtol=1e-4`` in output action units and reports
+per-coordinate errors over ten additional inputs; this is not a hardware safety
+bound. ``max-autotune-no-cudagraphs`` exceeded that tolerance on the tested
+stack-cube artifact, so it is not the default.
+
+Training compilation is separately controlled by ``actor.compile_model``
+(default: ``true`` in RealWorld RLPD). For LAMP it compiles the residual actor's Gaussian-parameter
+network and the online/target Q kernels inside the existing FSDP wrappers.
+Sampling and log-probability autograd stay eager: compiling that entire actor
+forward with the initial ``log_std=-9`` produced different Adam mean-head updates
+in the GPU audit. Frozen DP cache-miss inference, hand decoding, optimizers and
+target updates also remain eager. Kernel compilation happens on the first
+training batches and can compete with rollout on a shared GPU.
+
+Test fresh RL weights against recorded replay without connecting to the robot:
+
+.. code-block:: bash
+
+   PYTHONPATH=. python toolkits/benchmark_lamp_training_compile.py \
+     --config ruiyan_lamp_rlpd_stack_cube_film \
+     --replay /path/to/run/replay_buffer/rank_0 \
+     --output /tmp/lamp_training_compile.json
+
+The test uses batch 256 and the configured critic/actor cadence, preserving
+recorded cache misses. It compares the first four updates' losses, gradients,
+parameters, alpha and target Qs, times another 80 updates, and checks actor
+weight export/loading. Replay sampling, the 50/50 demo mix and concurrent rollout
+are excluded. The tested stack-cube replay showed no training speedup; the default
+enables compilation for further online comparison. Set ``actor.compile_model=false``
+to compare with eager training. Old RL checkpoints are not required.
+
+The async training driver starts the standalone reward service on its configured
+GPU node and passes a lightweight RPC service name to the robot environment.
+The control node need not import the reward worker's ``transformers`` or FSDP
+dependencies. The service is ready before environment initialization and closes
+when training exits.
+
+Compose ``realworld_lamp_rlpd`` (Wuji) or ``ruiyan_lamp_rlpd`` (Ruiyan) for
+the existing ``train_async.py`` entrypoint.
 Set ``actor.model.model_path``, ``algorithm.demo_buffer.load_path`` and
 ``reward.model.model_path``. Review the inherited Wuji device setup and node
 assignments before hardware use. The control and GPU rollout workers have
 separate placements; this version uses one learner rank.
 
 The profile mixes online/demo samples 50/50, uses two Qs (actor mean, target
-minimum), disables entropy backup and updates critic:actor at 4:1. Every new
-online macro transition grants four critic updates. Loading or copying demos
-adds no update budget. Sum valid primitive rewards and apply gamma 0.97 once
-per macro transition. Alpha uses the existing exponential parameterization.
+minimum), disables entropy backup and updates critic:actor at 4:1. With
+``algorithm.training_recipe: realworld_rlpd``, the native asynchronous worker
+waits for replay readiness, then performs ``algorithm.update_epoch: 8`` critic
+updates per training call and two actor/temperature updates. Available replay
+can be reused without new online data; there is no macro-transition update
+budget. Sum valid primitive rewards and apply gamma 0.97 once per macro
+transition. Alpha retains exponential parameterization and the decoder-causal
+target entropy. The base policy stays frozen.
 
-Hold the left button to control both arm and hand; release it to return to the
-policy. The right button retains success labeling. ``release_behavior: policy``
+Both RealWorld and Dexjoco infer ``target_entropy = -d / 2`` when
+``algorithm.entropy_tuning.target_entropy: null``, where ``d`` is the number of
+decoder-causal residual coordinates: execution horizon K times the per-step
+core action dimension. For K=8 and a two-dimensional hand latent, Ruiyan uses
+``-32`` (6 arm + 2 latent coordinates) and Dexjoco uses ``-36`` (7 arm + 2 latent
+coordinates). The per-dimension entropy target is ``-0.5``. An explicit target
+must match this inferred value; the previous ``-d`` target is rejected.
+
+The true residual actor is active from the first training action, within the
+existing residual bounds. Training samples it stochastically; evaluation uses
+its deterministic output. RealWorld has no progressive enable gate or uniform
+residual warmup. Dexjoco retains ``algorithm.training_recipe: policy_decorator``
+and its previous exploration and budget scheduling. Legacy LAMP configs without
+a recipe retain Policy Decorator behavior. Remove ``utd_ratio``,
+``learning_starts_macro_transitions``, ``progressive_exploration_macro_steps``
+and the legacy ``algorithm.async`` scheduling fields from RealWorld configs;
+validation rejects these overrides.
+
+RealWorld recipes compose ``realworld_lamp_rlpd_base`` with device/task and
+shared model configs, independently of simulator and collection recipes.
+``runner.max_steps`` and ``runner.save_interval`` count native training calls,
+not physical actions or optimizer updates. The ``realworld/`` training metrics
+report ``training_rounds``, ``critic_updates``, ``actor_updates``,
+``online_macro_transitions``, ``primitive_env_steps`` and ``demo_sample_fraction``.
+
+.. warning::
+
+   This split preserves existing device/task timing. Verify
+   ``env.train.override_cfg.step_frequency`` against the corresponding demos
+   before hardware use. The outer ``max_episode_steps`` remains 900 and the
+   device ``max_num_steps`` remains 400; preserved environment truncations can
+   end an episode at the lower limit. This change does not harmonize these limits.
+
+Moving the SpaceMouse independently takes over the arm; after 0.5 seconds
+without motion input, arm control returns to the policy. Holding the left button
+takes over only the hand, which returns to the policy on release. Either or both
+components can be controlled; components without intervention retain policy
+actions. Online RealWorld RLPD defaults to
+``env.eval.right_button_ends_episode: true`` (inherited by ``env.train``). A right-button
+press fails the episode when the current or next executed control step returns:
+reward is 0, ``terminated=True`` and ``truncated=False``, taking precedence over
+success and timeout on that step. The remaining chunk is discarded, the terminal
+observation is retained, and the existing auto-reset path runs.
+``info.manual_failure`` and ``info.manual_failure_source=right_click`` identify the
+result; ``[manual_failure]`` is logged for each manual failure.
+Cumulative HID press events retain short taps between control steps. Clicks during
+reset and a button held across reset do not fail the next episode; release and
+press again to trigger another failure. The right button alone does not count as
+action intervention. Collection defaults are unchanged; set the option to
+``false`` to disable it. ``release_behavior: policy``
 routes both command sources through the environment executor. Existing
-``hold`` collection behavior is preserved. Control changes and termination
-cancel the remaining chunk. Every executed primitive updates measured history;
-invalid tails are neither sent nor rewarded. Complete macros containing
-intervention enter both the online buffer and demonstration buffer.
+``hold`` collection behavior is preserved.
+
+The real-world RLPD configuration enables
+``env.train.lamp_continue_intervention: true``: entering or maintaining
+intervention does not cancel the chunk. Each substep reads fresh human input;
+components without intervention continue the existing policy plan. Releasing
+either component cancels the remaining chunk and requests a new plan. A release
+detected before a substep prevents that command from being sent; a release
+detected during execution stops before the next substep. The pre-step check and
+action selection share one input snapshot. Termination and truncation still
+stop execution immediately after the executed step. Setting the option to
+``false`` restores cancellation on any intervention/control change.
+
+This reduces repeated inference during sustained intervention within a chunk;
+it does not provide continuous human control while waiting for inference at
+chunk boundaries. Partial intervention can invalidate the remaining plan of
+the other component. Validate this behavior on the task before relying on it.
+Every executed primitive updates measured history; invalid tails are neither
+sent nor rewarded. Complete macros containing intervention enter both the
+online buffer and demonstration buffer, including their policy-controlled
+steps. The macro reward sum and single-discount convention remain unchanged.
 
 Compatibility and Validation
 ----------------------------
@@ -234,9 +355,13 @@ H=16, K=8 and D=23. New specifications use v5. Units, ordering and independent
 state widths are validated; mismatches are not padded or silently reshaped.
 
 Checkpoints include online/demo replay, target Q, optimizers, temperature,
-sampling state and update budget. Changed training modes or demonstration
-identities fail restoration. Keep persisted replay available when restoring an
-older checkpoint that references external trajectory files.
+sampling state, training recipe and progress counters. RealWorld native-recipe
+checkpoints can resume under the same contract. Old macro-budget training
+checkpoints cannot resume as native RealWorld RLPD: start a new run from the
+base policy artifact and compatible demonstrations. Policy Decorator
+keeps its existing budget-state restoration. Changed training modes or
+demonstration identities fail restoration. Keep persisted replay available when
+restoring an older checkpoint that references external trajectory files.
 
 The integration tests include real-data offline training and simulated online
 RLPD updates. Short training losses verify the software path, not robot success
@@ -353,21 +478,29 @@ All stages must use the same training data and split. The three LSTM variants
 use 6-D measured histories; all variants produce 12-D physical commands.
 A Wuji artifact is incompatible and is rejected, even if manually renamed.
 
-For online training, export the resolved ``actor.model`` section of
-``ruiyan_lamp_rlpd`` as ``residual_model.yaml``, with the same base DP artifact
-and model options used by the online run. Select only training episode IDs for
-conversion. Keep decoder history length at 8 for these LSTM recipes; if you
-change the trained history length, update both conversion and environment settings.
+Online training accepts raw demonstration directories in
+``algorithm.demo_buffer.load_path``: a single path or an ordered list. Loading
+preserves actual actions, rewards and terminal flags while constructing chunks
+and observation histories of length 8. Raw recordings require no base-policy
+manifest and are not tied to a particular base checkpoint. Training resume
+still checks both data identity and the model contract.
 
 .. code-block:: bash
 
-   python toolkits/convert_lamp_demos.py --robot-type ruiyan \
-     --source /path/to/demos --model-config /path/to/residual_model.yaml \
-     --output /path/to/ruiyan_demo_buffer --episodes 0 1 2 --history-length 8
    python examples/embodiment/train_async.py --config-name ruiyan_lamp_rlpd \
      actor.model.model_path=/path/to/dp/artifact \
      reward.model.model_path=/path/to/reward/full_weights.pt \
-     algorithm.demo_buffer.load_path=/path/to/ruiyan_demo_buffer
+     'algorithm.demo_buffer.load_path=[/path/to/batch1/demos,/path/to/batch2/demos]'
+
+``ruiyan_lamp_rlpd_stack_cube_film`` includes the delivered FiLM artifact and
+three raw stack-cube demo directories, using all 30 episodes. It inherits
+``realworld_lamp_rlpd_base`` through ``ruiyan_lamp_rlpd``, with 12-dimensional
+actions and history length 8. Ensure these paths are accessible on the nodes
+loading the model and demonstrations, then launch directly:
+
+.. code-block:: bash
+
+   python examples/embodiment/train_async.py --config-name ruiyan_lamp_rlpd_stack_cube_film
 
 The online configuration uses the same actor/rollout robot contract and records
 12-D executed commands, valid prefixes and intervention flags. The evaluation

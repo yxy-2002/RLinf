@@ -165,10 +165,15 @@ class EmbodiedRunner:
             )
         )
 
-    def init_workers(self):
+    def init_workers(self, reward_service_name: str | None = None):
         # create worker in order to decrease the maximum memory usage
         rollout_handle = self.rollout.init_worker()
-        env_handle = self.env.init_worker()
+        env_kwargs = (
+            {"reward_service_name": reward_service_name}
+            if reward_service_name is not None
+            else {}
+        )
+        env_handle = self.env.init_worker(**env_kwargs)
 
         if self.reward is not None:
             self.reward.init_worker().wait()

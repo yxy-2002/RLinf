@@ -81,7 +81,8 @@ def test_group_closes_even_if_service_cleanup_fails(monkeypatch):
 
 
 @pytest.mark.parametrize("fail", [False, True])
-def test_eval_driver_owns_reward_service(monkeypatch, fail):
+@pytest.mark.parametrize("mode", ["train", "eval"])
+def test_driver_owns_reward_service(monkeypatch, fail, mode):
     from omegaconf import OmegaConf
 
     import rlinf.utils.realworld_reward as module
@@ -89,7 +90,7 @@ def test_eval_driver_owns_reward_service(monkeypatch, fail):
     cfg = OmegaConf.create(
         {
             "reward": {"use_reward_model": True, "standalone_realworld": True},
-            "env": {"eval": {"env_type": "realworld"}},
+            "env": {mode: {"env_type": "realworld"}},
         }
     )
     original = OmegaConf.to_container(cfg)
@@ -101,14 +102,16 @@ def test_eval_driver_owns_reward_service(monkeypatch, fail):
     monkeypatch.setattr(module, "launch_realworld_reward_service", launch)
     placement, cluster = Mock(), Mock()
     try:
-        with module.evaluation_reward_service(cfg, placement, cluster) as name:
+        with module.realworld_reward_service(
+            cfg, placement, cluster, env_mode=mode
+        ) as name:
             assert name == "eval-reward"
             owner._close.assert_not_called()
             if fail:
                 raise RuntimeError("env init failed")
     except RuntimeError as exc:
         assert fail and str(exc) == "env init failed"
-    inject.assert_called_once_with(cfg, cfg.env.eval, placement, cluster)
+    inject.assert_called_once_with(cfg, cfg.env[mode], placement, cluster)
     launch.assert_called_once_with(injected)
     owner._close.assert_called_once_with()
     assert OmegaConf.to_container(cfg) == original
@@ -175,3 +178,26 @@ def test_eval_passes_service_name_to_robot_environment(name):
         assert kwargs["reward_service_name"] == name
     else:
         assert "reward_service_name" not in kwargs
+
+
+@pytest.mark.parametrize("name", [None, "training-reward"])
+def test_training_passes_service_name_to_environment(name):
+    from types import SimpleNamespace
+
+    from omegaconf import OmegaConf
+
+    from rlinf.runners.async_embodied_runner import AsyncEmbodiedRunner
+
+    runner = SimpleNamespace(
+        rollout=Mock(),
+        env=Mock(),
+        actor=Mock(),
+        reward=None,
+        cfg=OmegaConf.create({"runner": {"resume_dir": None}}),
+    )
+    AsyncEmbodiedRunner.init_workers(runner, reward_service_name=name)
+    runner.env.init_worker.assert_called_once_with(
+        **({"reward_service_name": name} if name else {})
+    )
+    runner.env.init_worker.return_value.wait.assert_called_once_with()
+    runner.actor.init_worker.return_value.wait.assert_called_once_with()

@@ -119,8 +119,9 @@ class FakeRobot:
     num_envs = 1
     auto_reset = True
 
-    def __init__(self, intervene_at=None, done_at=None):
+    def __init__(self, intervene_at=None, done_at=None, truncated=False):
         self.intervene_at, self.done_at = intervene_at, done_at
+        self.truncated = truncated
         self.steps = 0
         self.reset_count = 0
         self.raw = raw_episode(12)
@@ -138,17 +139,24 @@ class FakeRobot:
         return (
             {k: v[self.steps - 1] for k, v in self.raw["next_obs"].items()},
             done.float(),
-            done,
-            torch.zeros_like(done),
+            torch.zeros_like(done) if self.truncated else done,
+            done if self.truncated else torch.zeros_like(done),
             {"executed_action": executed, "intervene_flag": torch.tensor([intervened])},
         )
+
+    def prepare_lamp_chunk_step(self, fresh_chunk):
+        return True
 
 
 @pytest.mark.parametrize(
     "intervene_at,done_at", [(1, None), (3, None), (None, 2), (None, None)]
 )
-def test_chunk_cancels_suffix_and_preserves_measurements(intervene_at, done_at):
-    env = FakeRobot(intervene_at, done_at)
+@pytest.mark.parametrize("continuous", [False, True])
+@pytest.mark.parametrize("truncated", [False, True])
+def test_chunk_cancels_suffix_and_preserves_measurements(
+    intervene_at, done_at, continuous, truncated
+):
+    env = FakeRobot(intervene_at, done_at, truncated=truncated)
     spec = wuji_robot_spec().to_dict()
     adapter = RealWorldLampAdapter(
         env,
@@ -158,6 +166,7 @@ def test_chunk_cancels_suffix_and_preserves_measurements(intervene_at, done_at):
                 "lamp_robot_spec": spec,
                 "lamp_history_length": 3,
                 "auto_reset": env.auto_reset,
+                "lamp_continue_intervention": continuous,
             }
         ),
         OmegaConf.create({"robot_spec": spec}),
@@ -168,7 +177,7 @@ def test_chunk_cancels_suffix_and_preserves_measurements(intervene_at, done_at):
         initial["arm_state_pair"][0, -1], env.raw["curr_obs"]["states"][0, 0, 23:29]
     )
     obs, rewards, terms, truncs, infos = adapter.chunk_step(torch.zeros(1, 4, 26))
-    count = intervene_at or done_at or 4
+    count = (done_at or 4) if continuous else (intervene_at or done_at or 4)
     info = infos[-1]
     assert info["primitive_valid"].sum().item() == count
     assert not info["executed_action"][:, count:].any()
@@ -181,8 +190,8 @@ def test_chunk_cancels_suffix_and_preserves_measurements(intervene_at, done_at):
         assert obs[-1]["hand_history_mask"].tolist() == [[0, 0, 1]]
     else:
         assert env.steps == count and env.reset_count == 1
-    assert terms.sum().item() == int(done_at is not None)
-    assert not truncs.any()
+    assert terms.sum().item() == int(done_at is not None and not truncated)
+    assert truncs.sum().item() == int(done_at is not None and truncated)
     if intervene_at:
         assert (info["executed_action"][0, intervene_at - 1] == 0.75).all()
         assert not terms.any() and not rewards.any()
@@ -215,7 +224,7 @@ def test_policy_release_uses_one_executor_and_button_gate():
     policy = np.full(26, 0.1)
 
     def snapshot(held, right=False):
-        return np.array([1, 1, 1, held, right, held] + [0.4] * 6 + [0.9] * 20)
+        return np.array([1, 1, 1, held, right, held] + [0.0] * 6 + [0.9] * 20)
 
     for held in (False, True, True, False):
         wrapper._teleop.snapshot.side_effect = [snapshot(held), snapshot(held)]
@@ -224,7 +233,7 @@ def test_policy_release_uses_one_executor_and_button_gate():
         assert ("intervene_action" in info) == held
         np.testing.assert_allclose(
             executor.commands[-1],
-            np.r_[np.full(6, 0.4), np.full(20, 0.9)] if held else policy,
+            np.r_[policy[:6], np.full(20, 0.9)] if held else policy,
         )
         np.testing.assert_allclose(info["executed_action"][6:], 0.8 if held else 0.1)
     assert info["lamp_control_released"]
@@ -232,6 +241,131 @@ def test_policy_release_uses_one_executor_and_button_gate():
     wrapper._teleop.snapshot.side_effect = [snapshot(False, True)] * 2
     _, _, _, _, info = wrapper.step(policy)
     assert info["right"] and "intervene_action" not in info
+
+
+@pytest.mark.parametrize(
+    "component,release",
+    [
+        (component, release)
+        for component in ("arm", "hand", "both")
+        for release in ("none", "enter", "before", "during")
+    ]
+    + [("both", "before_arm"), ("both", "before_hand")],
+)
+def test_continuous_chunk_release_never_sends_old_policy(
+    component, release, monkeypatch
+):
+    """Exercise adapter and real wrapper together with deterministic device input."""
+    import gymnasium as gym
+
+    from rlinf.envs.realworld.common.wrappers import dexhand_intervention as module
+
+    robot = FakeRobot()
+    commands = []
+    clock = [0.0]
+    monkeypatch.setattr(module.time, "monotonic", lambda: clock[0])
+
+    class Executor(gym.Env):
+        action_space = gym.spaces.Box(-1, 1, (26,))
+
+        def step(self, action):
+            commands.append(action.copy())
+            obs, reward, term, trunc, info = robot.step(torch.tensor(action[None]))
+            info["executed_action"] = info["executed_action"][0].numpy()
+            return obs, reward, term, trunc, info
+
+    def sample(active):
+        arm = active and component in ("arm", "both")
+        hand = active and component in ("hand", "both")
+        if active == "arm":
+            hand = False
+        elif active == "hand":
+            arm = False
+        return np.array([1, 1, 1, hand, False, hand] + [0.2 * arm] * 6 + [0.7] * 20)
+
+    # Each executed step reads once before sending and once after execution.
+    states = [True] * 8
+    if release == "enter":
+        states[:2] = [False] * 2
+    elif release == "before":
+        states[4:] = [False] * 4
+    elif release == "during":
+        states[3:] = [False] * 5
+    elif release == "before_arm":
+        states[4:] = ["hand"] * 4
+    elif release == "before_hand":
+        states[4:] = ["arm"] * 4
+    samples = iter(states)
+
+    def snapshot():
+        clock[0] += 1.0  # Exceed the arm's 0.5-second release grace period.
+        return sample(next(samples))
+
+    wrapper = object.__new__(module.DexHandIntervention)
+    gym.Wrapper.__init__(wrapper, Executor())
+    wrapper._release_behavior = "policy"
+    wrapper._teleop = SimpleNamespace(snapshot=snapshot)
+
+    class Bridge:
+        num_envs = 1
+
+        def reset(self):
+            return robot.reset()
+
+        def prepare_lamp_chunk_step(self, fresh_chunk):
+            return wrapper.prepare_lamp_chunk_step(fresh_chunk)
+
+        def step(self, action, **kwargs):
+            obs, reward, term, trunc, info = wrapper.step(action[0].numpy())
+            info["executed_action"] = torch.tensor(info["executed_action"][None])
+            info["intervene_flag"] = torch.tensor(["intervene_action" in info])
+            return obs, reward, term, trunc, info
+
+    spec = wuji_robot_spec().to_dict()
+    adapter = RealWorldLampAdapter(
+        Bridge(),
+        OmegaConf.create(
+            {
+                "lamp_robot_spec": spec,
+                "lamp_history_length": 3,
+                "lamp_continue_intervention": True,
+                "env_type": "realworld",
+            }
+        ),
+        OmegaConf.create({"robot_spec": spec}),
+    )
+    adapter.reset()
+    obs, rewards, terms, truncs, infos = adapter.chunk_step(torch.full((1, 4, 26), 0.1))
+    count = 4 if release in ("none", "enter") else 2
+    assert len(commands) == count
+    expected = np.r_[
+        np.full(6, 0.2 if component in ("arm", "both") else 0.1),
+        np.full(20, 0.7 if component in ("hand", "both") else 0.1),
+    ]
+    expected_commands = np.tile(expected, (count, 1))
+    if release == "enter":
+        expected_commands[0] = 0.1
+    np.testing.assert_allclose(commands, expected_commands)
+    final = infos[-1]
+    assert final["primitive_valid"].tolist() == [[True] * count + [False] * (4 - count)]
+    expected_flags = [True] * count + [False] * (4 - count)
+    if release == "enter":
+        expected_flags[0] = False
+    assert final["intervene_flag"].tolist() == [expected_flags]
+    assert not final["executed_action"][:, count:].any()
+    assert not rewards.any() and not terms.any() and not truncs.any()
+    torch.testing.assert_close(
+        obs[-1]["hand_history"][0, -1],
+        robot.raw["next_obs"]["hand_state_normalized"][count - 1, 0],
+    )
+    if release not in ("none", "enter"):
+        assert final["lamp_control_released"]
+        # A newly planned chunk can resume; its first command is not the old suffix.
+        clock[0] += 1.0
+        wrapper._teleop.snapshot = lambda: sample(False)
+        adapter.chunk_step(torch.full((1, 4, 26), 0.3))
+        assert len(commands) == count + 4
+        np.testing.assert_allclose(commands[-4:], np.full((4, 26), 0.3))
 
 
 def test_native_collector_initial_flags_and_replay_prefix(tmp_path):
@@ -345,7 +479,10 @@ def test_input_process_rebases_each_press_without_sending_commands(monkeypatch):
     mouse.get_action.side_effect = buttons
     imports = {
         "rlinf_dexhand.glove": {"GloveExpert": lambda **kw: glove},
-        "rlinf_dexhand.wuji_spec": {"to_normalized": lambda spec, value: value},
+        "rlinf_dexhand.wuji_spec": {
+            "to_normalized": lambda spec, value: value,
+            "to_radians": lambda spec, value: value,
+        },
         "rlinf.envs.realworld.common.hand.wuji_hand": {
             "WujiHand": lambda *a, **kw: hand
         },
@@ -396,8 +533,8 @@ def test_input_process_rebases_each_press_without_sending_commands(monkeypatch):
     )
     held = [s for s in snapshots if s[5]]
     assert len(held) == 2
-    np.testing.assert_allclose(held[0][12:], 0.8)
-    np.testing.assert_allclose(held[1][12:], 0.2)
+    np.testing.assert_allclose(held[0][12:32], 0.8)
+    np.testing.assert_allclose(held[1][12:32], 0.2)
     hand.command.assert_not_called()
     hand.clear_trajectory.assert_not_called()
     hand.hold.assert_not_called()

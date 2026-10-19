@@ -14,7 +14,6 @@
 
 import asyncio
 import copy
-import gc
 import time
 from typing import Any, Callable, Literal, Optional
 
@@ -163,6 +162,16 @@ class MultiStepRolloutWorker(Worker):
                 "torch_compile_mode", "max-autotune-no-cudagraphs"
             )
             self.hf_model.enable_torch_compile(mode=mode)
+            if hasattr(self.hf_model, "warmup_torch_compile"):
+                self.log_info("Warming compiled rollout kernels before collection")
+                warmup_start = time.perf_counter()
+                self.hf_model.warmup_torch_compile(
+                    [self.per_node_train_batch_size, self.per_node_eval_batch_size]
+                )
+                self.log_info(
+                    "Compiled rollout kernels ready in "
+                    f"{time.perf_counter() - warmup_start:.1f}s"
+                )
         if self.enable_cuda_graph and not self.enable_offload:
             self.hf_model.capture_cuda_graph(
                 train_batch_size=self.per_node_train_batch_size,
@@ -629,7 +638,6 @@ class MultiStepRolloutWorker(Worker):
         if hasattr(self.hf_model, "set_global_step"):
             self.hf_model.set_global_step(applied_version)
 
-        gc.collect()
         self.torch_platform.empty_cache()
 
     @Worker.timer("generate_one_epoch")

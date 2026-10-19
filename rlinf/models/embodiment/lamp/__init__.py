@@ -181,6 +181,7 @@ def get_residual_model(
         critic_observation_input=str(cfg.get("critic_observation_input", "condition")),
         entropy_scope=str(cfg.get("entropy_scope", "decoder_causal")),
         target_entropy=cfg.get("target_entropy", None),
+        training_recipe=str(cfg.get("training_recipe", "policy_decorator")),
         learning_starts_macro_transitions=int(
             cfg.get("learning_starts_macro_transitions", 8000)
         ),

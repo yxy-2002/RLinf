@@ -13,7 +13,6 @@
 # limitations under the License.
 
 import asyncio
-import gc
 from collections import defaultdict
 from typing import Any
 
@@ -372,7 +371,11 @@ class EnvWorker(Worker):
 
     def _lamp_env_batch(self, output):
         batch = output.to_dict()
-        if self.model_cfg.model_type == "lamp_residual_sac":
+        if (
+            self.model_cfg.model_type == "lamp_residual_sac"
+            and self.model_cfg.get("training_recipe", "policy_decorator")
+            == "policy_decorator"
+        ):
             ref = batch["obs"]["main_images"]
             batch["obs"]["online_macro_transitions"] = torch.full(
                 (len(ref),),
@@ -924,7 +927,6 @@ class EnvWorker(Worker):
         for trajectory in trajectories:
             channel.put(trajectory, async_op=True)
         del trajectories
-        gc.collect()
 
     @Worker.timer("run_interact_once")
     async def _run_interact_once(
@@ -1148,9 +1150,8 @@ class EnvWorker(Worker):
                 await self.send_rollout_trajectories(
                     self.rollout_results[stage_id], actor_channel
                 )
-            # reduce memory peak
+            # Release references without forcing a GC pause between action chunks.
             self.rollout_results = []
-            gc.collect()
 
         for key, value in env_metrics.items():
             env_metrics[key] = torch.cat(value, dim=0).contiguous().cpu()

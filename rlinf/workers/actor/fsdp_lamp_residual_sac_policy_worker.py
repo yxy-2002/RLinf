@@ -38,6 +38,11 @@ from rlinf.workers.actor.fsdp_sac_policy_worker import EmbodiedSACFSDPPolicy
 class LampResidualSACFSDPPolicy(EmbodiedSACFSDPPolicy):
     """Reuse RLinf SAC while preserving LAMP macro-transition semantics."""
 
+    def compile_training_models(self) -> None:
+        """Retain FSDP parameter names and compile only actor/Q tensor kernels."""
+        for model in (self.model, self.target_model):
+            self._unwrap_policy(model).enable_training_torch_compile()
+
     @staticmethod
     def _unwrap_policy(model):
         unwrapped = model
@@ -79,9 +84,9 @@ class LampResidualSACFSDPPolicy(EmbodiedSACFSDPPolicy):
                 f"expected {expected_target_entropy:g}, got "
                 f"{float(configured_target_entropy):g}"
             )
-        if expected_target_entropy != -float(causal_action_dim):
+        if expected_target_entropy != -0.5 * float(causal_action_dim):
             raise RuntimeError(
-                "LAMP model target entropy disagrees with causal_action_dim"
+                "LAMP model target entropy must equal -0.5 * causal_action_dim"
             )
         if self.cfg.algorithm.entropy_tuning.get("alpha_type") != "exp":
             raise ValueError("LAMP residual SAC requires alpha_type=exp")
@@ -126,11 +131,9 @@ class LampResidualSACFSDPPolicy(EmbodiedSACFSDPPolicy):
         )
         return added, 0
 
-    def _training_contract(self) -> dict:
-        """Bind a resume to model, demos and SAC update semantics."""
-        policy = self._unwrap_policy(self.model)
-        algorithm = self.cfg.algorithm
-        demo = algorithm.get("demo_buffer")
+    def _demo_training_identity(self, policy) -> str | None:
+        """Validate a preconverted replay and identify it for checkpoint resume."""
+        demo = self.cfg.algorithm.get("demo_buffer")
         demo_identity = None
         if demo is not None:
             manifest = Path(demo.load_path) / "lamp_demo_manifest.json"
@@ -161,10 +164,19 @@ class LampResidualSACFSDPPolicy(EmbodiedSACFSDPPolicy):
                     "Converted demos use a different model/robot/timing contract"
                 )
 
+        return demo_identity
+
+    def _training_contract(self) -> dict:
+        """Bind a resume to model, demos and SAC update semantics."""
+        policy = self._unwrap_policy(self.model)
+        algorithm = self.cfg.algorithm
+        demo = algorithm.get("demo_buffer")
+        demo_identity = self._demo_training_identity(policy)
+
         base_manifest = (
             resolve_artifact_dir(self.cfg.actor.model.model_path) / "artifact.json"
         )
-        return {
+        contract = {
             "version": 1,
             "model_contract": policy.contract_digest.cpu().tolist()
             if policy.contract_version == 5
@@ -176,8 +188,17 @@ class LampResidualSACFSDPPolicy(EmbodiedSACFSDPPolicy):
             "backup_entropy": bool(algorithm.get("backup_entropy", False)),
             "critic_actor_ratio": int(algorithm.get("critic_actor_ratio", 1)),
             "gamma": float(algorithm.gamma),
-            "utd_ratio": float(algorithm.utd_ratio),
         }
+        if algorithm.get("training_recipe", "policy_decorator") == "realworld_rlpd":
+            contract.update(
+                training_recipe="realworld_rlpd",
+                scheduling_version=1,
+                update_epoch=int(algorithm.update_epoch),
+            )
+        else:
+            # Preserve legacy checkpoint equality for Policy Decorator runs.
+            contract["utd_ratio"] = float(algorithm.utd_ratio)
+        return contract
 
     def setup_sac_components(self) -> None:
         """Use the proven RealWorld replay/mixer and validate LAMP contracts."""
@@ -217,6 +238,21 @@ class LampResidualSACFSDPPolicy(EmbodiedSACFSDPPolicy):
 
     def load_checkpoint(self, load_base_path) -> None:
         """Reject changed training contracts before restoring mutable state."""
+        if self.cfg.algorithm.get("training_recipe") == "realworld_rlpd":
+            original = (
+                Path(load_base_path)
+                / "sac_components"
+                / f"lamp_training_contract_rank_{self._rank}.json"
+            )
+            if (
+                not original.is_file()
+                or json.loads(original.read_text()).get("training_recipe")
+                != "realworld_rlpd"
+            ):
+                raise ValueError(
+                    "Cannot resume a legacy macro-budget checkpoint as RealWorld RLPD; "
+                    "start a new run from the base policy artifact"
+                )
         load_base_path = lamp_checkpoint_view(
             load_base_path,
             Path(self.cfg.runner.logger.log_path) / "resume_views",

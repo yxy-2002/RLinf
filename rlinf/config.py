@@ -820,11 +820,52 @@ def validate_megatron_cfg(cfg: DictConfig) -> DictConfig:
 
 
 def validate_lamp_async_cfg(cfg: DictConfig) -> None:
-    """Validate a transition-counted async LAMP residual contract.
+    """Validate the selected native or transition-budget LAMP training recipe.
 
     This helper does not construct a cluster or initialize Ray, which makes it
     safe to use from configuration preflight and CPU-only unit tests.
     """
+    from rlinf.models.embodiment.lamp.training_recipe import training_recipe
+
+    if training_recipe(cfg.algorithm) == "realworld_rlpd":
+        assert cfg.runner.get("execution_mode", "sync") == "async", (
+            "RealWorld RLPD requires runner.execution_mode=async"
+        )
+        assert cfg.actor.model.get("training_recipe") == "realworld_rlpd", (
+            "Actor/rollout model must select the realworld_rlpd recipe"
+        )
+        forbidden = {
+            "utd_ratio",
+            "learning_starts_macro_transitions",
+            "progressive_exploration_macro_steps",
+        }
+        for section in (cfg.algorithm, cfg.actor.model):
+            stale = forbidden.intersection(section)
+            assert not stale, (
+                f"RealWorld RLPD does not use budget/exploration fields: {sorted(stale)}"
+            )
+        async_cfg = cfg.algorithm.get("async", {})
+        stale = {
+            "lockstep_updates",
+            "max_pending_collector_rounds",
+            "max_learner_rounds_per_collector",
+        }.intersection(async_cfg)
+        assert not stale, (
+            f"RealWorld RLPD uses native asynchronous scheduling: {sorted(stale)}"
+        )
+        updates = cfg.algorithm.get("update_epoch", 1)
+        assert (
+            isinstance(updates, int) and not isinstance(updates, bool) and updates > 0
+        ), "RealWorld RLPD update_epoch must be a positive integer"
+        assert cfg.actor.model.contract_version == 5, "RealWorld RLPD requires v5"
+        assert cfg.algorithm.get("demo_buffer") is not None, (
+            "RealWorld RLPD requires demonstrations"
+        )
+        return
+
+    assert (
+        cfg.actor.model.get("training_recipe", "policy_decorator") == "policy_decorator"
+    ), "Actor/rollout recipe must match algorithm.training_recipe"
     contract_version = int(cfg.actor.model.get("contract_version", 0))
     assert contract_version in (4, 5), (
         "Async LAMP residual supports only contract_version 4 or 5"

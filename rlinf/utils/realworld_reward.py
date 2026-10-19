@@ -199,29 +199,37 @@ def launch_realworld_reward_service(env_cfg: DictConfig) -> tuple[Any, str]:
 
 
 @contextmanager
-def evaluation_reward_service(
+def realworld_reward_service(
     cfg: DictConfig,
     component_placement: "ComponentPlacement",
     cluster: "Cluster",
+    *,
+    env_mode: str = "eval",
 ) -> Iterator[str | None]:
-    """Own the standalone reward service on the evaluation driver.
+    """Own the standalone reward service on a training or evaluation driver.
 
     Only the service name crosses into the robot environment, so its Python
     environment does not need the reward worker's training dependencies.
     """
+    if env_mode not in ("train", "eval"):
+        raise ValueError(f"Unknown reward environment mode: {env_mode}")
     reward = cfg.get("reward", {})
     if not (
         reward.get("use_reward_model", False)
         and reward.get("standalone_realworld", False)
-        and cfg.env.eval.env_type == "realworld"
+        and cfg.env[env_mode].env_type == "realworld"
     ):
         yield None
         return
     env_cfg = inject_realworld_reward_cfg(
-        cfg, cfg.env.eval, component_placement, cluster
+        cfg, cfg.env[env_mode], component_placement, cluster
     )
     owner, service_name = launch_realworld_reward_service(env_cfg)
     try:
         yield service_name
     finally:
         owner._close()
+
+
+# Preserve the existing evaluation entrypoint API.
+evaluation_reward_service = realworld_reward_service

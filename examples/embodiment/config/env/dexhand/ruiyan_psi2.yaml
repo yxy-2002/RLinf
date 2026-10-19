@@ -108,7 +108,7 @@ env:
       - 2
       - 0
       success_hold_steps: 1
-      step_frequency: 100.0
+      step_frequency: 10.0
     data_collection:
       enabled: true
       save_dir: ${runner.logger.log_path}/collected_data

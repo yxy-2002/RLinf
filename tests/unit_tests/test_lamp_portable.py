@@ -283,7 +283,7 @@ class SyntheticAdapter(LampEnvAdapter):
         )
 
 
-@pytest.mark.parametrize("h,k", [(4, 1), (8, 8), (12, 3), (16, 8), (32, 32)])
+@pytest.mark.parametrize("h,k", [(4, 1), (8, 8), (12, 3), (16, 1), (16, 8), (32, 32)])
 @pytest.mark.parametrize("prior", ["lamplstm", "pca", "vq_codebook", "mlp"])
 def test_variable_horizons_and_causal_gradients(h, k, prior):
     spec = synthetic_spec()
@@ -296,7 +296,7 @@ def test_variable_horizons_and_causal_gradients(h, k, prior):
         obs, base_core=core, condition=features
     )
     assert action.shape == (2, k * spec.action_dim)
-    assert policy.target_entropy == -k * base.spec.core_action_dim
+    assert policy.target_entropy == -0.5 * k * base.spec.core_action_dim
     q = policy.sac_q_forward(obs, action, shared_feature=context, detach_encoder=True)
     (-q.mean() + 0.1 * log_prob.mean()).backward()
     assert all(p.grad is None for p in base.parameters())

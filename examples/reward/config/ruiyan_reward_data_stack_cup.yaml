@@ -1,0 +1,20 @@
+defaults:
+- ruiyan_reward_data
+- /env/dexhand/ruiyan_stack_cup
+- override hydra/job_logging: stdout
+- _self_
+hydra:
+  run:
+    dir: .
+  output_subdir: null
+  searchpath:
+  - file://${oc.env:REPO_PATH}/examples/embodiment/config
+runner:
+  task_type: embodied
+  logger:
+    log_path: ./logs
+    project_name: rlinf
+    experiment_name: ruiyan-reward-data-stack-cup
+  num_success_frames: 400
+  val_split: 0.1
+  random_seed: 42

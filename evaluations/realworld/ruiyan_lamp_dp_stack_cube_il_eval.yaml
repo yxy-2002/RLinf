@@ -11,7 +11,7 @@ runner:
     experiment_name: ruiyan_lamp_dp_stack_cube_il_eval
 rollout:
   model:
-    model_path: /workspace/yxy_RLinf/RLinf/logs/ruiyan_stack_cube_il/20_demos/vq/dp/artifact
+    model_path: /workspace/yxy_RLinf/RLinf/outputs/ruiyan_stack_cube_30demo_sweep_20261015/delivery/film/artifact
 reward:
   model:
     model_path: /workspace/yxy_RLinf/RLinf/logs/20261014-132746-ruiyan_reward_training_stack_cube/ruiyan-stack-cube-resnet18/checkpoints/best_model/actor/model_state_dict/full_weights.pt

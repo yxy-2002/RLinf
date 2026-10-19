@@ -496,6 +496,7 @@ class LampPolicy(nn.Module, BasePolicy):
             self.register_buffer(f"stat_{name}", tensor, persistent=True)
         self.torch_compile_enabled = False
         self._compiled_predict = None
+        self._compiled_encode = None
 
     def _stat(self, name: str) -> torch.Tensor:
         try:
@@ -578,7 +579,8 @@ class LampPolicy(nn.Module, BasePolicy):
         """Encode fixed actor features and carry explicit decoder context."""
         history, history_mask = self.decoder_context(observation)
         inputs = self._processed_inputs(observation)
-        condition, aux = self.core._encode_observation(*inputs, train=False)
+        encoder = self._compiled_encode or self.core._encode_observation
+        condition, aux = encoder(*inputs, train=False)
         return LampObservationFeatures(
             condition=condition,
             front_feat=aux["front_feat"],
@@ -788,12 +790,42 @@ class LampPolicy(nn.Module, BasePolicy):
         }
 
     def enable_torch_compile(self, mode: str = "max-autotune-no-cudagraphs") -> None:
+        """Compile tensor kernels without changing checkpoint parameter names."""
         if self.torch_compile_enabled:
             return
+        self._compiled_encode = torch.compile(
+            self.core._encode_observation, mode=mode, fullgraph=True
+        )
         self._compiled_predict = torch.compile(
-            self.core._ddim_sample, mode=mode, fullgraph=False
+            self.core._ddim_sample, mode=mode, fullgraph=True
         )
         self.torch_compile_enabled = True
+
+    @torch.no_grad()
+    def warmup_torch_compile(self, batch_sizes: Sequence[int]) -> None:
+        """Compile supported input shapes before obtaining robot observations."""
+        if not self.torch_compile_enabled:
+            return
+        reference = next(self.core.parameters())
+        for batch in sorted(set(batch_sizes)):
+            if batch <= 0:
+                continue
+            image_shape = (batch, 3, self.spec.image_size, self.spec.image_size)
+            condition, _ = self._compiled_encode(
+                reference.new_zeros(image_shape),
+                reference.new_zeros(image_shape),
+                reference.new_zeros((batch, 2, self.spec.robot_spec.arm_state_dim)),
+                reference.new_zeros((batch, 2, self.spec.robot_spec.hand_state_dim)),
+                train=False,
+            )
+            self._compiled_predict(
+                reference.new_zeros(
+                    (batch, self.spec.action_horizon, self.spec.core_action_dim)
+                ),
+                condition,
+            )
+        if reference.is_cuda:
+            torch.cuda.synchronize(reference.device)
 
 
 __all__ = [

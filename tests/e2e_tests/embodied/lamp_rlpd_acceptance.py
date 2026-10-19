@@ -18,7 +18,9 @@ import copy
 import gc
 import json
 import os
+import queue
 from pathlib import Path
+from tempfile import TemporaryDirectory
 
 import torch
 import torch.distributed as dist
@@ -35,10 +37,9 @@ from rlinf.hybrid_engines.fsdp.strategy.fsdp import FSDPStrategy
 from rlinf.models.embodiment.lamp import get_residual_model
 from rlinf.models.embodiment.modules.entropy_tunning import EntropyTemperature
 from rlinf.scheduler.hardware.accelerators.accelerator import AcceleratorType
-from rlinf.workers.actor.async_fsdp_lamp_residual_sac_policy_worker import (
-    AsyncLampResidualSACFSDPPolicy,
+from rlinf.workers.actor.async_fsdp_lamp_realworld_policy_worker import (
+    AsyncLampRealWorldRLPDPolicy,
 )
-from toolkits.convert_lamp_demos import convert
 
 
 def main() -> None:
@@ -63,7 +64,12 @@ def main() -> None:
     online_ids = audit["train_episodes"][9:]
     assert not set(demo_ids) & set(online_ids)
     results = {}
+    demo_directory = TemporaryDirectory(prefix="lamp-rlpd-demos-")
     try:
+        for episode in demo_ids:
+            (Path(demo_directory.name) / f"trajectory_{episode}_raw.pt").symlink_to(
+                source.paths[episode]
+            )
         for prior in ("lamplstm", "vq", "pca", "mlp"):
             torch.manual_seed(43)
             out = root / "rlpd" / prior
@@ -72,7 +78,7 @@ def main() -> None:
                 config_dir=str(Path("examples/embodiment/config").resolve()),
                 version_base="1.1",
             ):
-                cfg = compose(config_name="dexjoco_lamp_residual_sac")
+                cfg = compose(config_name="realworld_lamp_rlpd")
             with open_dict(cfg):
                 cfg.actor.global_batch_size = 4
                 cfg.actor.micro_batch_size = 4
@@ -84,13 +90,10 @@ def main() -> None:
                 cfg.actor.model.action_dim = 26
                 cfg.actor.model.eval_base_noise_seed = 42
                 cfg.actor.model.num_inference_steps_override = 2
-                cfg.actor.model.learning_starts_macro_transitions = 0
                 cfg.runner.logger.log_path = str(out)
                 cfg.algorithm.actor_agg_q = "mean"
                 cfg.algorithm.backup_entropy = False
                 cfg.algorithm.critic_actor_ratio = 4
-                cfg.algorithm.utd_ratio = 4.0
-                cfg.algorithm.learning_starts_macro_transitions = 0
                 cfg.algorithm.demo_fraction = 0.5
                 cfg.algorithm.replay_buffer.auto_save = False
                 cfg.algorithm.replay_buffer.enable_preload = False
@@ -101,20 +104,11 @@ def main() -> None:
                     "cache_size": 30,
                     "sample_window_size": 30,
                     "min_buffer_size": 1,
-                    "load_path": str(out / "demos"),
+                    "load_path": demo_directory.name,
                     "auto_save": False,
                 }
             policy = get_residual_model(cfg.actor.model).cuda()
-            if not (out / "demos").exists():
-                convert(
-                    source,
-                    policy,
-                    out / "demos",
-                    base_path=Path(cfg.actor.model.model_path),
-                    episodes=demo_ids,
-                    history_length=16,
-                )
-            w = object.__new__(AsyncLampResidualSACFSDPPolicy)
+            w = object.__new__(AsyncLampRealWorldRLPDPolicy)
             w.cfg = cfg
             w._rank = 0
             w._world_size = 1
@@ -152,7 +146,8 @@ def main() -> None:
                 w.alpha_optimizer, lambda _: 1
             )
             w.setup_sac_components()
-            w._ensure_lamp_progress()
+            w._ensure_realworld_progress()
+            w._recv_queue = queue.Queue()
             for traj in convert_demo_trajectories(
                 source, policy, episodes=online_ids, history_length=16
             ):
@@ -171,7 +166,6 @@ def main() -> None:
                     torch.isfinite(torch.as_tensor(v)).all() for v in metrics.values()
                 )
                 w.update_step += 1
-                w._optimizer_updates_completed += 1
                 assert all(p.grad is None for p in policy.base_policy.parameters())
                 if step % 16 == 15:
                     print(
@@ -223,7 +217,7 @@ def main() -> None:
                 "critic_updates": 64,
                 "actor_updates": actor_updates,
                 "alpha_updates": actor_updates,
-                "progress": w.get_lamp_progress(),
+                "progress": w._realworld_progress,
                 "demo_episodes": demo_ids,
                 "simulated_online_episodes": online_ids,
                 "ddim_steps": 2,
@@ -241,6 +235,7 @@ def main() -> None:
             torch.cuda.empty_cache()
         print("ALL OFFLINE RLPD PASSED", flush=True)
     finally:
+        demo_directory.cleanup()
         dist.destroy_process_group()
 
 

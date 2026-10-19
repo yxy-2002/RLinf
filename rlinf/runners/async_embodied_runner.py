@@ -169,7 +169,9 @@ class AsyncEmbodiedRunner(EmbodiedRunner):
     def run(self):
         start_step = self.global_step
         start_time = time.time()
-        lamp = self.cfg.actor.model.model_type == "lamp_residual_sac"
+        from rlinf.models.embodiment.lamp.training_recipe import uses_policy_decorator
+
+        lamp = uses_policy_decorator(self.cfg)
         lamp_lockstep = lamp and bool(
             self.cfg.algorithm.get("async", {}).get("lockstep_updates", False)
         )

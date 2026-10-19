@@ -21,6 +21,7 @@ from omegaconf.omegaconf import OmegaConf
 from rlinf.config import validate_cfg
 from rlinf.scheduler import Cluster
 from rlinf.utils.placement import HybridComponentPlacement
+from rlinf.utils.realworld_reward import realworld_reward_service
 from rlinf.workers.env.async_env_worker import AsyncEnvWorker
 from rlinf.workers.reward.reward_worker import EmbodiedRewardWorker
 from rlinf.workers.rollout.hf.async_huggingface_worker import (
@@ -59,6 +60,14 @@ def main(cfg) -> None:
             )
 
             actor_worker_cls = AsyncLampResidualSACFSDPPolicy
+            from rlinf.models.embodiment.lamp.training_recipe import training_recipe
+
+            if training_recipe(cfg.algorithm) == "realworld_rlpd":
+                from rlinf.workers.actor.async_fsdp_lamp_realworld_policy_worker import (
+                    AsyncLampRealWorldRLPDPolicy,
+                )
+
+                actor_worker_cls = AsyncLampRealWorldRLPDPolicy
     elif cfg.algorithm.loss_type == "embodied_dagger":
         from rlinf.runners.async_embodied_runner import AsyncEmbodiedRunner
         from rlinf.workers.actor.async_fsdp_dagger_policy_worker import (
@@ -111,8 +120,11 @@ def main(cfg) -> None:
         reward=reward_group,
     )
 
-    runner.init_workers()
-    runner.run()
+    with realworld_reward_service(
+        cfg, component_placement, cluster, env_mode="train"
+    ) as reward_service_name:
+        runner.init_workers(reward_service_name=reward_service_name)
+        runner.run()
 
 
 if __name__ == "__main__":

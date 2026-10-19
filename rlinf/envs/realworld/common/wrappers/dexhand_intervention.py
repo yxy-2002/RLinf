@@ -237,6 +237,8 @@ def _teleop_worker(connection, shared, config):
         previous_left = False
         wait_release = True
         last_intervene = 0.0
+        failure_enabled = config.get("right_button_ends_episode", False)
+        failure_sequence = right_press_baseline = 0
         connection.send(("ready", os.getpid()))
         while True:
             started = time.monotonic()
@@ -257,6 +259,10 @@ def _teleop_worker(connection, shared, config):
                     baseline = base = None
                     previous_left = False
                     wait_release = True
+                    # Ignore reset-time clicks and buttons still held on resume.
+                    failure_sequence = 0
+                    if failure_enabled:
+                        right_press_baseline = mouse.get_button_press_counts()[0]
                     active = True
                 else:
                     raise ValueError(f"Unknown teleop command: {command}")
@@ -271,6 +277,10 @@ def _teleop_worker(connection, shared, config):
                     raise RuntimeError("No fresh glove target for 0.5 seconds")
                 arm, buttons = mouse.get_action()
                 left, right = bool(buttons[1]), bool(buttons[0])
+                if failure_enabled:
+                    right_presses = mouse.get_button_press_counts()[0]
+                    failure_sequence += right_presses - right_press_baseline
+                    right_press_baseline = right_presses
                 if not left:
                     wait_release = False
                 controlling = left and not wait_release
@@ -324,6 +334,7 @@ def _teleop_worker(connection, shared, config):
                         else time.monotonic() - last_intervene < config["timeout"],
                         *arm,
                         *current,
+                        *([failure_sequence] if failure_enabled else []),
                     ],
                 )
             # IPC wakes the wait immediately for pause/stop; no queued samples.
@@ -355,7 +366,12 @@ class TeleopProcess:
 
     def __init__(self, config: dict, worker=_teleop_worker):
         context = mp.get_context("spawn")
-        self.shared = context.Array("d", SNAPSHOT_HEADER + config["hand_dim"])
+        self.shared = context.Array(
+            "d",
+            SNAPSHOT_HEADER
+            + config["hand_dim"]
+            + int(config.get("right_button_ends_episode", False)),
+        )
         self.connection, child = context.Pipe()
         self.process = context.Process(
             target=worker,
@@ -434,6 +450,11 @@ class DexHandIntervention(gym.Wrapper):
         if self._release_behavior not in ("hold", "policy"):
             raise ValueError("release_behavior must be hold or policy")
         self._was_intervening = False
+        self._policy_control_state = (False, False)
+        self._lamp_prepared_input = None
+        self._last_arm_intervene = float("-inf")
+        self._right_button_ends_episode = kwargs.get("right_button_ends_episode", False)
+        self._failure_sequence = 0
         hand_dim = 20 if hand_type == "wuji_hand" else 6
         if env.action_space.shape != (6 + hand_dim,):
             raise ValueError("Hand action dimension does not match end effector")
@@ -470,7 +491,9 @@ class DexHandIntervention(gym.Wrapper):
             "hand": hand_config,
             "hand_type": hand_type,
             "hand_dim": hand_dim,
-            "right_button_labels_only": kwargs.get("right_button_labels_only", False),
+            "right_button_labels_only": kwargs.get("right_button_labels_only", False)
+            or self._right_button_ends_episode,
+            "right_button_ends_episode": self._right_button_ends_episode,
             "frequency": teleop_frequency,
             "glove_frequency": kwargs.get("glove_frequency", 60),
             "pipeline_config": kwargs["pipeline_config"],
@@ -506,6 +529,10 @@ class DexHandIntervention(gym.Wrapper):
         """Transfer hand control to reset only after teleop acknowledges pause."""
         self._teleop.request("pause")
         self._was_intervening = False
+        self._policy_control_state = (False, False)
+        self._lamp_prepared_input = None
+        self._last_arm_intervene = float("-inf")
+        self._failure_sequence = 0
         result = self.env.reset(**kwargs)
         self._teleop.request("resume")
         deadline = time.monotonic() + 5
@@ -519,52 +546,130 @@ class DexHandIntervention(gym.Wrapper):
                 time.sleep(0.01)
         return result
 
+    def _policy_intervention_state(self, snapshot) -> tuple[bool, bool]:
+        """Separate motion-triggered arm control from button-gated hand control."""
+        now = time.monotonic()
+        if np.linalg.norm(snapshot[6:12]) > 0.001:
+            self._last_arm_intervene = now
+        last_arm = self.__dict__.get("_last_arm_intervene", float("-inf"))
+        # Match the native SpaceMouse wrapper's motion-release grace period.
+        return now - last_arm < 0.5, bool(snapshot[5])
+
+    def prepare_lamp_chunk_step(self, fresh_chunk: bool) -> bool:
+        """Latch input for one step; reject a stale suffix on component release.
+
+        The next step consumes this exact snapshot so the release check and
+        action selection cannot observe different control states.
+        """
+        if self._release_behavior != "policy":
+            raise ValueError("Continuous LAMP intervention requires policy release")
+        self._lamp_prepared_input = None
+        snapshot = self._teleop.snapshot()
+        control = self._policy_intervention_state(snapshot)
+        previous = self.__dict__.get("_policy_control_state", (False, False))
+        if not fresh_chunk and any(
+            old and not new for old, new in zip(previous, control)
+        ):
+            return False
+        if fresh_chunk:
+            # The old suffix has already been discarded and replanned.
+            self._policy_control_state = control
+        self._lamp_prepared_input = (snapshot, control)
+        return True
+
+    def _failure_pending(self, snapshot: np.ndarray) -> bool:
+        """Check whether the input process latched a new right-button press."""
+        return self.__dict__.get("_right_button_ends_episode", False) and int(
+            snapshot[-1]
+        ) > self.__dict__.get("_failure_sequence", 0)
+
+    def _apply_manual_failure(self, result: tuple, before, after) -> tuple:
+        """Turn a right-button press into an ordinary failed terminal transition."""
+        if not self.__dict__.get("_right_button_ends_episode", False):
+            return result
+        obs, reward, done, truncated, info = result
+        failed = self._failure_pending(before) or self._failure_pending(after)
+        self._failure_sequence = int(after[-1])
+        info["right_click"] = failed
+        info["manual_failure"] = failed
+        if failed:
+            from rlinf.utils.logging import get_logger
+
+            reward, done, truncated = 0.0, True, False
+            info.update(
+                manual_failure_source="right_click", success=False, succeed=False
+            )
+            get_logger().info(
+                "[manual_failure] SpaceMouse right button: episode failed, reward=0"
+            )
+        return obs, reward, done, truncated, info
+
     def step(self, action):
         """Use current arm input; hand output continues throughout image capture."""
         started = time.time()
-        before = self._teleop.snapshot()
+        prepared = self.__dict__.get("_lamp_prepared_input")
+        self._lamp_prepared_input = None
+        before = self._teleop.snapshot() if prepared is None else prepared[0]
         chosen = np.array(action, dtype=np.float64, copy=True)
+        hand_end = SNAPSHOT_HEADER + len(chosen) - 6
         if getattr(self, "_release_behavior", "hold") == "policy":
             # The input process never publishes hand commands in this mode.
             # Both policy and human commands pass through the same env/limits.
-            intervening = bool(before[5])
-            if intervening:
+            arm_control, hand_control = (
+                self._policy_intervention_state(before)
+                if prepared is None
+                else prepared[1]
+            )
+            intervening = arm_control or hand_control
+            if arm_control:
                 chosen[:6] = before[6:12]
-                chosen[6:] = before[12:]
+            if hand_control:
+                chosen[6:] = before[12:hand_end]
             obs, reward, done, truncated, info = self.env.step(chosen)
             after = self._teleop.snapshot()
             info["left"], info["right"] = bool(after[3]), bool(after[4])
-            info["lamp_control_changed"] = (
-                intervening != bool(after[5]) or intervening != self._was_intervening
+            current = (arm_control, hand_control)
+            following = self._policy_intervention_state(after)
+            previous = self.__dict__.get("_policy_control_state", (False, False))
+            info["lamp_control_changed"] = current != following or current != previous
+            info["lamp_control_released"] = any(
+                (old and not active) or (active and not new)
+                for old, active, new in zip(previous, current, following)
             )
-            info["lamp_control_released"] = (
-                self._was_intervening and not intervening
-            ) or (intervening and not bool(after[5]))
-            self._was_intervening = bool(after[5])
+            self._policy_control_state = following
+            self._was_intervening = any(following)
+            info["arm_intervening"] = arm_control
+            info["hand_intervening"] = hand_control
             if "executed_action" not in info:
                 raise RuntimeError(
                     "Policy hand control requires executed_action feedback"
                 )
             if intervening:
                 info["intervene_action"] = np.asarray(info["executed_action"]).copy()
-            return obs, reward, done, truncated, info
+            return self._apply_manual_failure(
+                (obs, reward, done, truncated, info), before, after
+            )
         if before[5]:
             chosen[:6] = before[6:12]
-        chosen[6:] = before[12:]
+        chosen[6:] = before[12:hand_end]
         obs, reward, done, truncated, info = self.env.step(chosen)
         after = self._teleop.snapshot()
         info["left"], info["right"] = bool(after[3]), bool(after[4])
         # The hand target is asynchronous, so it is a snapshot, not one action
         # held for the entire collection step. Preserve both sample boundaries.
         info["teleop_snapshot"] = np.array(
-            [started, time.time(), before[1], after[1], after[2], *after[12:]]
+            [started, time.time(), before[1], after[1], after[2], *after[12:hand_end]]
         )
         executed = np.asarray(info.get("executed_action", chosen)).copy()
-        executed[6:] = after[12:]
+        executed[6:] = after[12:hand_end]
         info["executed_action"] = executed
         if before[5]:
             info["intervene_action"] = info["executed_action"].copy()
-        return obs, reward, done, truncated, info
+        info["arm_intervening"] = bool(before[5])
+        info["hand_intervening"] = bool(before[3])
+        return self._apply_manual_failure(
+            (obs, reward, done, truncated, info), before, after
+        )
 
     def close(self):
         """Stop hand output before closing the controller and its driver."""

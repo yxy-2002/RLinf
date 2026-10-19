@@ -42,6 +42,28 @@ def load_methods(path, class_name, names, **namespace):
     return namespace
 
 
+@pytest.mark.parametrize("enabled", [False, True])
+def test_lamp_input_preparation_reaches_vector_env_wrapper(enabled):
+    methods = load_methods(
+        "rlinf/envs/realworld/realworld_env.py",
+        "RealWorldEnv",
+        {"prepare_lamp_chunk_step"},
+    )
+    prepare = Mock(return_value=False)
+    vector_env = Mock()
+    vector_env.call.return_value = (prepare,)
+    env = SimpleNamespace(cfg={"use_spacemouse": enabled}, env=vector_env)
+    accepted = methods["prepare_lamp_chunk_step"](env, fresh_chunk=False)
+    assert accepted is (not enabled)
+    if enabled:
+        vector_env.call.assert_called_once_with(
+            "get_wrapper_attr", "prepare_lamp_chunk_step"
+        )
+        prepare.assert_called_once_with(fresh_chunk=False)
+    else:
+        vector_env.call.assert_not_called()
+
+
 @pytest.mark.parametrize("confirm", [False, True])
 @pytest.mark.parametrize("probability", [0.9, 1.0])
 @pytest.mark.parametrize("penalty", [False, True])
@@ -71,6 +93,7 @@ def test_franka_reward_and_timeout_compatibility(confirm, probability, penalty):
         _franka_state=SimpleNamespace(
             tcp_pose=np.array([0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0])
         ),
+        _is_hand=False,
         _num_steps=0,
         _success_hold_counter=0,
         _get_observation=lambda: {},
@@ -245,7 +268,8 @@ def test_right_button_process_snapshot_controls_intervention(labels_only):
     methods = load_methods(
         "rlinf/envs/realworld/common/wrappers/dexhand_intervention.py",
         "DexHandIntervention",
-        {"step"},
+        {"step", "_apply_manual_failure"},
+        SNAPSHOT_HEADER=12,
         np=np,
         time=SimpleNamespace(time=lambda: 10.0),
     )
@@ -253,6 +277,9 @@ def test_right_button_process_snapshot_controls_intervention(labels_only):
     wrapper = SimpleNamespace(
         _teleop=SimpleNamespace(snapshot=lambda: sample),
         env=SimpleNamespace(step=lambda _: ({}, 0, False, False, {})),
+    )
+    wrapper._apply_manual_failure = lambda *args: methods["_apply_manual_failure"](
+        wrapper, *args
     )
     *_, info = methods["step"](wrapper, np.zeros(12))
     assert info["right"] and not info["left"]
@@ -301,4 +328,4 @@ def test_wrapped_wuji_observation_preserves_state_and_adds_measured_posture(hand
             result["hand_state_normalized"], normalize_wuji_hand_state(hand)
         )
     else:
-        assert "hand_state_normalized" not in result
+        np.testing.assert_array_equal(result["hand_state_normalized"], hand)

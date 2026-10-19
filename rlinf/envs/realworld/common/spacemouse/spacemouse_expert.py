@@ -47,7 +47,12 @@ class SpaceMouseExpert:
                 self.latest_data["action"] = np.array(
                     [-state.y, state.x, state.z, -state.roll, -state.pitch, -state.yaw]
                 )  # spacemouse axis matched with robot base frame
-                self.latest_data["buttons"] = state.buttons
+                previous = self.latest_data.get("buttons", [0, 0])
+                counts = self.latest_data.setdefault("button_press_counts", [0, 0])
+                for index, pressed in enumerate(state.buttons[:2]):
+                    if pressed and not previous[index]:
+                        counts[index] += 1
+                self.latest_data["buttons"] = list(state.buttons)
             # Event.wait releases the GIL and wakes immediately on close.
             # Include read/copy time in the period; never catch up with a burst.
             self._stop.wait(
@@ -58,6 +63,11 @@ class SpaceMouseExpert:
         """Returns the latest action and button state of the SpaceMouse."""
         with self.state_lock:
             return self.latest_data["action"], self.latest_data["buttons"]
+
+    def get_button_press_counts(self) -> tuple[int, int]:
+        """Return cumulative HID press counts so slow consumers retain short taps."""
+        with self.state_lock:
+            return tuple(self.latest_data.get("button_press_counts", (0, 0)))
 
     def close(self) -> None:
         """Stop polling and release the SpaceMouse device."""

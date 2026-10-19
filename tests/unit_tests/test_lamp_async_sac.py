@@ -301,7 +301,9 @@ def test_lamp_residual_factory_preserves_v4_defaults(monkeypatch) -> None:
             return self
 
     monkeypatch.setattr(lamp_module, "get_model", fake_get_model)
-    monkeypatch.setattr(lamp_module, "LampResidualSACPolicy", ResidualPolicyStub)
+    import rlinf.models.embodiment.lamp.residual_sac as residual_module
+
+    monkeypatch.setattr(residual_module, "LampResidualSACPolicy", ResidualPolicyStub)
     cfg = _compose("dexjoco_lamp_residual_sac_water_plant")
     lamp_module.get_residual_model(cfg.actor.model)
 

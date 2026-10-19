@@ -43,6 +43,7 @@ class RealWorldLampAdapter(LampEnvAdapter):
         self.debug_finished = False
         self._debug_state = None
         self.auto_reset = bool(cfg.get("auto_reset", False))
+        self.continue_intervention = bool(cfg.get("lamp_continue_intervention", False))
         self.history = LampObservationHistory(
             self.robot_spec, 1, int(cfg.get("lamp_history_length", 16))
         )
@@ -122,6 +123,13 @@ class RealWorldLampAdapter(LampEnvAdapter):
         terms, truncs = torch.zeros_like(valid), torch.zeros_like(valid)
         observations, infos = [], []
         for index in range(k):
+            if self.continue_intervention and not self.env.prepare_lamp_chunk_step(
+                fresh_chunk=index == 0
+            ):
+                if index == 0:
+                    raise RuntimeError("A fresh LAMP chunk must accept its first step")
+                info = {**infos[-1], "lamp_control_released": True}
+                break
             obs, reward, term, trunc, info = self.step(actions[:, index])
             if "executed_action" not in info:
                 raise ValueError(
@@ -146,9 +154,16 @@ class RealWorldLampAdapter(LampEnvAdapter):
             if (
                 terms[:, index].any()
                 or truncs[:, index].any()
-                or intervention[:, index].any()
-                or torch.as_tensor(info.get("lamp_control_changed", False)).any()
                 or torch.as_tensor(info.get("lamp_control_released", False)).any()
+                or (
+                    not self.continue_intervention
+                    and (
+                        intervention[:, index].any()
+                        or torch.as_tensor(
+                            info.get("lamp_control_changed", False)
+                        ).any()
+                    )
+                )
             ):
                 break
         while len(observations) < k:

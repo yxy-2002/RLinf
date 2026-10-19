@@ -157,6 +157,14 @@ class LampResidualActor(nn.Module):
             - 1.0
         )
         nn.init.constant_(self.log_std_head.bias, _inverse_tanh(normalized_init))
+        self._compiled_distribution = None
+
+    def distribution_parameters(
+        self, features: torch.Tensor
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Compute Gaussian parameters without reparameterized sampling."""
+        hidden = self.trunk(features)
+        return self.mean_head(hidden), self._bounded_log_std(self.log_std_head(hidden))
 
     def _bounded_log_std(self, raw_log_std: torch.Tensor) -> torch.Tensor:
         unit = torch.tanh(raw_log_std)
@@ -185,6 +193,7 @@ class LampResidualActor(nn.Module):
         features: torch.Tensor,
         *,
         deterministic: bool,
+        noise: torch.Tensor | None = None,
     ) -> tuple[
         torch.Tensor,
         torch.Tensor,
@@ -198,13 +207,13 @@ class LampResidualActor(nn.Module):
                 f"[B, {self.input_dim}], got "
                 f"{tuple(features.shape)}"
             )
-        hidden = self.trunk(features)
-        mean = self.mean_head(hidden)
-        log_std = self._bounded_log_std(self.log_std_head(hidden))
+        distribution = self._compiled_distribution or self.distribution_parameters
+        mean, log_std = distribution(features)
         pre_tanh = (
             mean
             if deterministic
-            else mean + torch.exp(log_std) * torch.randn_like(mean)
+            else mean
+            + torch.exp(log_std) * (torch.randn_like(mean) if noise is None else noise)
         )
         squashed = torch.tanh(pre_tanh)
         mask = self.causal_mask.to(dtype=squashed.dtype)
@@ -364,6 +373,7 @@ class LampResidualSACPolicy(nn.Module, BasePolicy):
         critic_observation_input: str = "condition",
         entropy_scope: str = "decoder_causal",
         target_entropy: float | None = None,
+        training_recipe: str = "policy_decorator",
         learning_starts_macro_transitions: int = 8000,
         progressive_exploration_macro_steps: int = 30000,
         residual_application: str = "corrected_plan_crop",
@@ -422,6 +432,9 @@ class LampResidualSACPolicy(nn.Module, BasePolicy):
             )
         self.executed_action_dim = self.execution_horizon * self.physical_action_dim
         self.num_q_heads = int(num_q_heads)
+        from .training_recipe import training_recipe as resolve_recipe
+
+        self.training_recipe = resolve_recipe({"training_recipe": training_recipe})
         self.learning_starts_macro_transitions = int(learning_starts_macro_transitions)
         self.progressive_exploration_macro_steps = int(
             progressive_exploration_macro_steps
@@ -462,7 +475,7 @@ class LampResidualSACPolicy(nn.Module, BasePolicy):
         )
         self.register_buffer("causal_mask", causal_mask, persistent=False)
         self.causal_action_dim = int(causal_mask.sum().item())
-        self.target_entropy = -float(self.causal_action_dim)
+        self.target_entropy = -0.5 * float(self.causal_action_dim)
         self.validate_target_entropy(target_entropy)
 
         residual_scale_per_action = self.residual_scale_per_core * self.horizon
@@ -500,6 +513,8 @@ class LampResidualSACPolicy(nn.Module, BasePolicy):
             )
         self.base_policy.freeze_base_policy()
         self.base_policy.requires_grad_(False)
+        self._compiled_residual_actor = None
+        self._compiled_q_head = None
 
     def _load_from_state_dict(
         self,
@@ -624,7 +639,7 @@ class LampResidualSACPolicy(nn.Module, BasePolicy):
             float(configured), self.target_entropy, rel_tol=0.0, abs_tol=1e-6
         ):
             raise ValueError(
-                "LAMP target entropy must match the decoder-causal action count: "
+                "LAMP target entropy must equal -0.5 * decoder-causal action count: "
                 f"expected {self.target_entropy:g}, got {float(configured):g}"
             )
         return self.target_entropy
@@ -956,9 +971,28 @@ class LampResidualSACPolicy(nn.Module, BasePolicy):
         torch.Tensor,
         torch.Tensor,
     ]:
-        flat_residual, log_prob, mean, log_std, pre_tanh = self.residual_actor(
-            context["actor_features"], deterministic=deterministic
+        features = context["actor_features"]
+        compiled_actor = (
+            self._compiled_residual_actor if not torch.is_grad_enabled() else None
         )
+        if compiled_actor is not None:
+            # Keep sampling outside compilation so eager/compiled use the same
+            # RNG stream, and only tensor computation is captured.
+            noise = (
+                None
+                if deterministic
+                else torch.randn(
+                    (features.shape[0], self.horizon * self.core_dim),
+                    device=features.device,
+                    dtype=features.dtype,
+                )
+            )
+            actor_output = compiled_actor(
+                features, deterministic=deterministic, noise=noise
+            )
+        else:
+            actor_output = self.residual_actor(features, deterministic=deterministic)
+        flat_residual, log_prob, mean, log_std, pre_tanh = actor_output
         residual = flat_residual.reshape(-1, self.horizon, self.core_dim)
         coordinate_log_prob = self.residual_actor.coordinate_log_prob(
             mean, log_std, pre_tanh
@@ -1163,7 +1197,8 @@ class LampResidualSACPolicy(nn.Module, BasePolicy):
         normalized_action = self._physical_action_norm(action_chunk).flatten(
             start_dim=1
         )
-        return self.q_head(
+        q_forward = self._compiled_q_head or self.q_head
+        return q_forward(
             observation_features,
             normalized_action,
             detach_parameters=bool(detach_encoder),
@@ -1203,27 +1238,20 @@ class LampResidualSACPolicy(nn.Module, BasePolicy):
             )
             batch = int(context["condition"].shape[0])
 
-            enabled = None
-            enable_probability = 1.0
-            residual_mode: Literal["actor", "uniform", "zero"] = "actor"
+            from .rollout import residual_exploration
+
+            enabled, enable_probability, residual_mode = residual_exploration(
+                recipe=self.training_recipe,
+                mode=mode,
+                count=online_macro_transitions
+                if online_macro_transitions is not None
+                else env_obs.get("online_macro_transitions"),
+                batch_size=batch,
+                device=context["condition"].device,
+                learning_starts=self.learning_starts_macro_transitions,
+                progressive_steps=self.progressive_exploration_macro_steps,
+            )
             deterministic = mode != "train"
-            if mode == "train":
-                if online_macro_transitions is None:
-                    online_macro_transitions = env_obs.get("online_macro_transitions")
-                count = self._counter_value(online_macro_transitions)
-                enable_probability = min(
-                    count / float(self.progressive_exploration_macro_steps),
-                    1.0,
-                )
-                enabled = (
-                    torch.rand(batch, device=context["condition"].device)
-                    < enable_probability
-                )
-                residual_mode = (
-                    "uniform"
-                    if count < self.learning_starts_macro_transitions
-                    else "actor"
-                )
 
             (
                 _full_plan,
@@ -1287,12 +1315,59 @@ class LampResidualSACPolicy(nn.Module, BasePolicy):
             "progressive_enable_probability": execution.new_tensor(enable_probability),
         }
 
-    def enable_torch_compile(self, mode: str = "max-autotune-no-cudagraphs") -> None:
-        del mode
-        raise NotImplementedError(
-            "LAMP residual SAC uses dynamic progressive exploration; disable "
-            "rollout torch.compile"
+    def enable_training_torch_compile(self, mode: str = "default") -> None:
+        """Compile trainable tensor kernels inside the existing FSDP wrapper.
+
+        Replay cache dispatch, decoder autograd, optimizers and target updates
+        retain their eager implementations. Sampling stays outside compilation.
+        """
+        if self._compiled_q_head is not None:
+            return
+        # At init_log_std=-9, fused reparameterization/log-prob backward can
+        # amplify cancellation error into different Adam mean-head updates.
+        # Keep sampling/log-prob eager and compile only the Gaussian network.
+        self.residual_actor._compiled_distribution = torch.compile(
+            self.residual_actor.distribution_parameters, mode=mode, fullgraph=True
         )
+        self._compiled_q_head = torch.compile(
+            self.q_head.forward, mode=mode, fullgraph=True
+        )
+
+    def enable_torch_compile(self, mode: str = "max-autotune-no-cudagraphs") -> None:
+        """Compile frozen DP kernels and the rollout residual actor forward."""
+        if self._compiled_residual_actor is not None:
+            return
+        self.base_policy.enable_torch_compile(mode=mode)
+        # Compile the bound function, not the module: state_dict and weight
+        # synchronization retain the original parameter names and objects.
+        self._compiled_residual_actor = torch.compile(
+            self.residual_actor.forward, mode=mode, fullgraph=True
+        )
+
+    @torch.no_grad()
+    def warmup_torch_compile(self, batch_sizes: Sequence[int]) -> None:
+        """Warm both sampling branches without advancing rollout RNG streams."""
+        if self._compiled_residual_actor is None:
+            return
+        reference = self.residual_actor.mean_head.weight
+        devices = [reference.device.index] if reference.is_cuda else []
+        with torch.random.fork_rng(devices=devices):
+            self.base_policy.warmup_torch_compile(batch_sizes)
+            for batch in sorted(set(batch_sizes)):
+                if batch <= 0:
+                    continue
+                features = reference.new_zeros((batch, self.actor_observation_dim))
+                for deterministic in (False, True):
+                    noise = (
+                        None
+                        if deterministic
+                        else reference.new_zeros((batch, self.horizon * self.core_dim))
+                    )
+                    self._compiled_residual_actor(
+                        features, deterministic=deterministic, noise=noise
+                    )
+            if reference.is_cuda:
+                torch.cuda.synchronize(reference.device)
 
 
 __all__ = [

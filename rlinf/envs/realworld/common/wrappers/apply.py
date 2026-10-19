@@ -154,6 +154,7 @@ def apply_single_arm_wrappers(env: gym.Env, cfg: Mapping[str, Any]) -> gym.Env:
                 intervention_mode=glove_cfg.get("intervention_mode", "relative"),
                 release_behavior=glove_cfg.get("release_behavior", "hold"),
                 right_button_labels_only=cfg.get("right_button_labels_only", False),
+                right_button_ends_episode=cfg.get("right_button_ends_episode", False),
             )
         else:
             env = SpacemouseIntervention(env, gripper_enabled=gripper_enabled)

@@ -171,8 +171,11 @@ def test_v3_actor_and_causal_entropy_contract(
     assert actor.action_dim == 16 * core_dim
     assert actor.active_action_dim == active_dim
     assert policy.causal_action_dim == active_dim
-    assert policy.target_entropy == -float(active_dim)
-    assert policy.validate_target_entropy(-float(active_dim)) == -float(active_dim)
+    assert policy.target_entropy == -0.5 * float(active_dim)
+    assert policy.validate_target_entropy(None) == -0.5 * float(active_dim)
+    assert policy.validate_target_entropy(-0.5 * active_dim) == -0.5 * active_dim
+    with pytest.raises(ValueError, match="decoder-causal"):
+        policy.validate_target_entropy(-float(active_dim))
     with pytest.raises(ValueError, match="decoder-causal"):
         policy.validate_target_entropy(-999.0)
 

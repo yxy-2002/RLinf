@@ -325,6 +325,9 @@ class LAMPDiffusionPolicy(nn.Module):
         for name, value in schedule.items():
             self.register_buffer(f"_schedule_{name}", value, persistent=False)
         self.num_inference_steps = int(num_inference_steps)
+        self._inference_timesteps = inference_timesteps(
+            NUM_TRAIN_TIMESTEPS, self.num_inference_steps
+        )
         self.decoder_history_contract = decoder_history_contract
         self.decoder_history_length = decoder_history_length
         if decoder_history_contract != "primitive_v1":
@@ -434,11 +437,12 @@ class LAMPDiffusionPolicy(nn.Module):
                 f"{NUM_TRAIN_TIMESTEPS}, got {steps}"
             )
         self.num_inference_steps = steps
+        self._inference_timesteps = inference_timesteps(NUM_TRAIN_TIMESTEPS, steps)
 
     def _ddim_sample(
         self, sample: torch.Tensor, condition: torch.Tensor
     ) -> torch.Tensor:
-        timesteps = inference_timesteps(NUM_TRAIN_TIMESTEPS, self.num_inference_steps)
+        timesteps = self._inference_timesteps
         schedule = self._schedule()
         for index, timestep in enumerate(timesteps):
             previous = timesteps[index + 1] if index + 1 < len(timesteps) else -1

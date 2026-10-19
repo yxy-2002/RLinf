@@ -70,10 +70,12 @@ class EmbodiedSACFSDPPolicy(EmbodiedFSDPActor):
             self.offload_param_and_grad()
             self.offload_optimizer()
         if self.cfg.actor.get("compile_model", False):
-            self.model = torch.compile(
-                self.model, mode="default"
-            )  # max-autotune-no-cudagraphs
-            self.target_model = torch.compile(self.target_model, mode="default")
+            self.compile_training_models()
+
+    def compile_training_models(self) -> None:
+        """Enable training compilation after wrapping and optimizer setup."""
+        self.model = torch.compile(self.model, mode="default")
+        self.target_model = torch.compile(self.target_model, mode="default")
 
     def setup_model_and_optimizer(self, initialize_target=False) -> None:
         """Setup model, lr_scheduler, optimizer and grad_scaler."""
@@ -168,6 +170,15 @@ class EmbodiedSACFSDPPolicy(EmbodiedFSDPActor):
                 self.alpha_optimizer, self.cfg.algorithm.entropy_tuning.optim
             )
 
+    def _load_demo_buffer(self, load_path: str) -> None:
+        """Load native demo replay; model-specific workers may adapt recordings."""
+        self.demo_buffer.load_checkpoint(
+            load_path,
+            is_distributed=True,
+            local_rank=self._rank,
+            world_size=self._world_size,
+        )
+
     def setup_sac_components(self):
         """Initialize SAC-specific components"""
         # Initialize replay buffer
@@ -211,12 +222,7 @@ class EmbodiedSACFSDPPolicy(EmbodiedFSDPActor):
             )
             min_demo_buffer_size = self.cfg.algorithm.demo_buffer.min_buffer_size
             if self.cfg.algorithm.demo_buffer.get("load_path", None) is not None:
-                self.demo_buffer.load_checkpoint(
-                    self.cfg.algorithm.demo_buffer.load_path,
-                    is_distributed=True,
-                    local_rank=self._rank,
-                    world_size=self._world_size,
-                )
+                self._load_demo_buffer(self.cfg.algorithm.demo_buffer.load_path)
 
         if self.cfg.algorithm.replay_buffer.get("enable_preload", False):
             buffer_dataset_cls = PreloadReplayBufferDataset

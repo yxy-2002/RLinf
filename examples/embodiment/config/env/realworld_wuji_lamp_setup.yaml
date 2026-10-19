@@ -1,0 +1,54 @@
+# @package _global_
+# Reuse device defaults independently of the data-collection runner.
+defaults:
+- /env/realworld_dex_pnp@env.eval
+- /env/dexhand/wuji
+- _self_
+cluster:
+  num_nodes: 2
+  component_placement:
+    env:
+      node_group: franka
+      placement: 0
+    reward:
+      node_group: reward_gpu
+      placement: 0
+    actor:
+      node_group: reward_gpu
+      placement: 0
+    rollout:
+      node_group: reward_gpu
+      placement: 0
+  node_groups:
+  - label: franka
+    node_ranks: 0
+    hardware:
+      type: Franka
+      configs:
+      - robot_ip: 172.17.0.2
+        node_rank: 0
+    env_configs:
+    - node_ranks: 0
+      env_vars:
+      - RLINF_COMM_NET_DEVICES: enp3s0
+      - GLOO_SOCKET_IFNAME: enp3s0
+      - NCCL_SOCKET_IFNAME: enp3s0
+  - label: reward_gpu
+    node_ranks: 1
+    env_configs:
+    - node_ranks: 1
+      env_vars:
+      - RLINF_COMM_NET_DEVICES: enp5s0
+      - GLOO_SOCKET_IFNAME: enp5s0
+      - NCCL_SOCKET_IFNAME: enp5s0
+env:
+  eval:
+    max_episode_steps: 600
+    preserve_env_truncations: true
+    keyboard_reward_wrapper: null
+    right_button_labels_only: true
+    override_cfg:
+      reward_success_confirmation: true
+      enable_pose_reward: false
+      max_num_steps: 600
+      success_hold_steps: 1

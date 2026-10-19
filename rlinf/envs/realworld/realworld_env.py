@@ -357,6 +357,13 @@ class RealWorldEnv(gym.Env):
             infos,
         )
 
+    def prepare_lamp_chunk_step(self, fresh_chunk: bool) -> bool:
+        """Prepare the single robot's input before sending a LAMP substep."""
+        if not self.cfg.get("use_spacemouse", False):
+            return True
+        (prepare,) = self.env.call("get_wrapper_attr", "prepare_lamp_chunk_step")
+        return bool(prepare(fresh_chunk=fresh_chunk))
+
     def chunk_step(self, chunk_actions):
         # chunk_actions: [num_envs, chunk_step, action_dim]
         chunk_size = chunk_actions.shape[1]

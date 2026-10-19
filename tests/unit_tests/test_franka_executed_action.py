@@ -45,7 +45,10 @@ def test_policy_reports_limited_commands_in_relative_frame(
         {"state": gym.spaces.Dict({"tcp_pose": gym.spaces.Box(-np.inf, np.inf, (7,))})}
     )
     pose = np.r_[np.zeros(3), Rotation.from_euler("z", 0.7).as_quat()]
-    env._franka_state = SimpleNamespace(tcp_pose=pose.copy())
+    env._franka_state = SimpleNamespace(
+        tcp_pose=pose.copy(),
+        hand_position=np.full(hand_dim, 0.2),
+    )
     env._controller = Mock()
     env._controller.get_state.return_value.wait.return_value = [env._franka_state]
     env._last_hand_command = np.full(hand_dim, 0.2)
@@ -57,7 +60,12 @@ def test_policy_reports_limited_commands_in_relative_frame(
             Rotation.from_euler("xyz", [0.05, 0, 0]) * Rotation.from_quat(pose[3:])
         ).as_quat(),
     ]
-    env._clip_position_to_safety_box = Mock(return_value=safe)
+
+    def clip_in_place(position):
+        position[:] = safe
+        return position
+
+    env._clip_position_to_safety_box = Mock(side_effect=clip_in_place)
     env._move_action = Mock()
 
     teleop = object.__new__(DexHandIntervention)
@@ -66,7 +74,9 @@ def test_policy_reports_limited_commands_in_relative_frame(
     teleop._was_intervening = False
     teleop._teleop = Mock()
     teleop._teleop.snapshot.return_value = np.array(
-        [1, 1, 1, intervening, 0, intervening] + [0.6] * 6 + [0.9] * hand_dim
+        [1, 1, 1, intervening, 0, intervening]
+        + [0.6 if intervening else 0.0] * 6
+        + [0.9] * hand_dim
     )
     relative = RelativeFrame(teleop, include_relative_pose=False)
     relative.adjoint_matrix = construct_adjoint_matrix(pose)
@@ -83,3 +93,86 @@ def test_policy_reports_limited_commands_in_relative_frame(
     if intervening:
         np.testing.assert_allclose(info["intervene_action"], expected, atol=1e-7)
     np.testing.assert_array_equal(action, np.full(6 + hand_dim, 0.8))
+    env._controller.get_state.assert_called_once_with()
+
+
+@pytest.mark.parametrize("hand_dim", [6, 20])
+@pytest.mark.parametrize(
+    "arm_control,hand_control",
+    [(False, False), (True, False), (False, True), (True, True)],
+)
+def test_arm_and_hand_intervene_independently(hand_dim, arm_control, hand_control):
+    env = gym.Env()
+    env.step = Mock(
+        side_effect=lambda action: (
+            {},
+            0,
+            False,
+            False,
+            {"executed_action": action.copy()},
+        )
+    )
+    wrapper = object.__new__(DexHandIntervention)
+    gym.Wrapper.__init__(wrapper, env)
+    wrapper._release_behavior = "policy"
+    snapshot = np.array(
+        [1, 1, 1, hand_control, 0, hand_control]
+        + [0.4 if arm_control else 0.0] * 6
+        + [0.7] * hand_dim
+    )
+    wrapper._teleop = Mock()
+    wrapper._teleop.snapshot.return_value = snapshot
+    policy = np.full(6 + hand_dim, 0.1)
+    _, _, _, _, info = wrapper.step(policy)
+    sent = env.step.call_args.args[0]
+    np.testing.assert_allclose(sent[:6], 0.4 if arm_control else 0.1)
+    np.testing.assert_allclose(sent[6:], 0.7 if hand_control else 0.1)
+    np.testing.assert_allclose(policy, 0.1)
+    assert info["arm_intervening"] == arm_control
+    assert info["hand_intervening"] == hand_control
+    assert ("intervene_action" in info) == (arm_control or hand_control)
+    if arm_control or hand_control:
+        np.testing.assert_allclose(info["intervene_action"], sent)
+
+
+def test_releasing_one_component_preserves_the_other(monkeypatch):
+    import rlinf.envs.realworld.common.wrappers.dexhand_intervention as module
+
+    clock = [10.0]
+    monkeypatch.setattr(module.time, "monotonic", lambda: clock[0])
+    env = gym.Env()
+    env.step = Mock(
+        side_effect=lambda action: (
+            {},
+            0,
+            False,
+            False,
+            {"executed_action": action.copy()},
+        )
+    )
+    wrapper = object.__new__(DexHandIntervention)
+    gym.Wrapper.__init__(wrapper, env)
+    wrapper._release_behavior = "policy"
+    wrapper._teleop = Mock()
+    policy = np.full(12, 0.1)
+
+    def step(arm, hand):
+        wrapper._teleop.snapshot.return_value = np.array(
+            [1, 1, 1, hand, 0, hand] + [arm] * 6 + [0.7] * 6
+        )
+        return wrapper.step(policy)[-1]
+
+    step(0.4, True)
+    info = step(0.4, False)
+    assert info["lamp_control_released"] and info["arm_intervening"]
+    np.testing.assert_allclose(env.step.call_args.args[0][6:], policy[6:])
+    step(0.4, True)
+    clock[0] += 0.2
+    info = step(0, True)
+    assert info["arm_intervening"]  # Native SpaceMouse 0.5-second grace period.
+    clock[0] += 0.4
+    info = step(0, True)
+    assert info["lamp_control_released"] and not info["arm_intervening"]
+    assert info["hand_intervening"] and "intervene_action" in info
+    np.testing.assert_allclose(env.step.call_args.args[0][:6], policy[:6])
+    np.testing.assert_allclose(env.step.call_args.args[0][6:], 0.7)

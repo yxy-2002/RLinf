@@ -155,45 +155,140 @@ K 来自 ``actor.model.execution_horizon``。H=16、K=8 时，旧窗口使用索
 latent 接口，还需单独设计 encoder/shared history 冻结方案，不能直接假定
 新 prior 可替换 DP 内原有的 prior。
 
-转换示范
+加载示范
 --------
 
-导出 DP 后使用 ``toolkits/convert_lamp_demos.py``。提供已解析的 residual 模型 YAML：
-包含 ``model_type: lamp_residual_sac``、``contract_version: 5``、完整机器人规格、
-``action_dim: 26``、``action_horizon: 16``、``num_action_chunks: 8``、
-``precision: '32'``、``is_lora: false``，以及指向 DP 产物的 ``model_path``。
-其他 residual 参数必须与 RLPD 配置一致。
+真机 RLPD 可通过 ``algorithm.demo_buffer.load_path`` 直接加载原始 ``demos/``
+目录，启动时自动适配 chunk 和历史观测并写入原生 replay，无需单独加载 base
+模型或执行转换。所有传入示范都会用于训练；如需保留验证集，请传入仅含训练示范的目录。
+已有预转换 buffer 仍可加载。
 
-.. code-block:: bash
-
-   python toolkits/convert_lamp_demos.py --source /path/to/demos \
-     --model-config /path/to/resolved-model.yaml --output /path/to/macro-demos \
-     --episodes 0 1 2 3 4 5 6 7 9 10 11 12 14 15 16 17 18 19
-
-上述 episode ID 对应本次采集的训练集；其他采集应从缓存元数据获取划分。
-转换不跨 episode，保留物理命令、terminal next observation 和 primitive rewards，
+加载时不跨 episode，保留物理命令、terminal next observation 和 primitive rewards，
 不足 K 的尾部补无效零槽，缺失的冻结缓存标为无效。
 不反推专家 residual，也不将人类命令量化为 VQ 码表动作。
-manifest 绑定数据、base 产物、机器人规格及 H/K。
 
 RLPD 与接管
 -----------
 
-既有 ``train_async.py`` 入口使用 ``realworld_lamp_rlpd`` 配置，填写
+真机 RLPD 默认设置 ``rollout.enable_torch_compile: true``，使用
+``rollout.torch_compile_mode: default``。rollout 副本编译
+冻结 base 的观测编码器、DDIM 采样器和 residual actor 前向计算。
+预处理、手部解码与探索调度保持 eager；CUDA Graph 保持关闭，训练端编译单独配置，见下文。
+参数名称和对象不变，以兼容权重同步与 checkpoint。
+rollout worker 在采集前预热配置的 batch size，以及 residual 的随机和确定性分支。
+编译失败会终止启动，不会静默关闭编译。输入形状或模式变化仍可能触发重新编译。
+重启训练后默认配置才会生效；设置 ``rollout.enable_torch_compile=false``
+可对比 eager 执行。
+
+无需连接机器人即可测试配置中的 artifact：
+
+.. code-block:: bash
+
+   PYTHONPATH=. python toolkits/benchmark_lamp_compile.py \
+     --config ruiyan_lamp_rlpd_stack_cube_film \
+     --output /tmp/lamp_compile_benchmark.json
+
+此测试使用合成观测和新初始化的 residual head，统计经过 CUDA 同步的推理耗时，
+检查动作一致性与权重更新是否生效，并单独报告编译耗时。
+测试不包含机器人、相机、reward RPC 或并发 learner 负载，不能衡量控制循环的流畅度。
+对比采用输出动作单位下的 ``atol=1e-3, rtol=1e-4``，并报告额外十组输入的逐维误差；
+该阈值不是真机安全边界。``max-autotune-no-cudagraphs`` 在测试的叠方块 artifact
+上超过了此阈值，因此没有作为默认模式。
+
+训练端编译由 ``actor.compile_model`` 单独控制（真机 RLPD 默认 ``true``）。LAMP 在现有
+FSDP 包装内部编译 residual actor 的高斯参数网络，以及 online/target Q 内核。
+采样和 log-probability 的反向传播保持 eager：GPU 对照中，在初始 ``log_std=-9``
+下编译整个 actor 前向会改变 Adam 对 mean head 的更新。
+冻结 DP 的缓存缺失重算、手部解码、优化器和 target 更新也保持 eager。
+训练内核在首批训练数据上编译，共用 GPU 时可能与 rollout 争用资源。
+
+使用新初始化的 RL 权重和已记录 replay，无需连接机器人即可测试：
+
+.. code-block:: bash
+
+   PYTHONPATH=. python toolkits/benchmark_lamp_training_compile.py \
+     --config ruiyan_lamp_rlpd_stack_cube_film \
+     --replay /path/to/run/replay_buffer/rank_0 \
+     --output /tmp/lamp_training_compile.json
+
+测试使用 batch 256 和配置中的 critic/actor 更新比例，保留记录中的缓存缺失。
+比较前四次更新的 loss、梯度、参数、alpha 和 target Q，再计时 80 次更新，
+并检查 actor 权重导出和加载。测试不包含 replay 采样、50/50 示范混合或并发 rollout。
+叠方块 replay 的实测未见训练提速；默认开启此开关以继续进行在线对照。
+设置 ``actor.compile_model=false`` 可对比 eager 训练，不需要旧 RL checkpoint。
+
+异步训练入口在配置的 GPU 节点启动独立奖励服务，并向真机环境传递轻量 RPC 服务名。
+控制节点不需要导入奖励 worker 的 ``transformers`` 或 FSDP 依赖；
+奖励服务在环境初始化前就绪，并在训练退出时关闭。
+
+既有 ``train_async.py`` 入口使用 ``realworld_lamp_rlpd``（Wuji）或
+``ruiyan_lamp_rlpd``（睿研）配置，填写
 ``actor.model.model_path``、``algorithm.demo_buffer.load_path``、
 ``reward.model.model_path``。实际使用硬件前核对继承的 Wuji 设备配置与节点分配。
 控制与 GPU rollout worker 使用不同 placement；当前版本使用一个 learner rank。
 
 该配置按 50/50 混合 online/demo，保持双 Q（actor 取均值、target 取最小值），
 关闭 entropy backup，critic:actor 更新比为 4:1。
-每新增一个在线 macro transition 授予四次 critic 更新；加载或复制 demo 不增加预算。
-有效 primitive rewards 求和，每个 macro transition 只应用一次 gamma 0.97。
-温度沿用指数参数化。
+选择 ``algorithm.training_recipe: realworld_rlpd`` 后，原生异步 worker 等待
+replay 就绪，每次训练调用按 ``algorithm.update_epoch: 8`` 执行八次 critic 更新、
+两次 actor/温度更新。即使没有新增在线数据，也可继续复用就绪的 replay；不再使用
+macro transition 更新预算。有效 primitive rewards 求和，每个 macro transition
+只应用一次 gamma 0.97。温度保留指数参数化和 decoder-causal 目标熵，base policy 保持冻结。
 
-按住左键接管臂和手，松开后交还策略；右键保留成功标记。
+真机和 Dexjoco 在 ``algorithm.entropy_tuning.target_entropy: null`` 时均自动设置
+``target_entropy = -d / 2``，其中 ``d`` 是 decoder-causal 残差坐标数，等于执行长度 K
+乘以每步 core action 维度。K=8 且手部 latent 为二维时，睿研使用 ``-32``
+（6 维腕部 + 2 维 latent），Dexjoco 使用 ``-36``（7 维腕部 + 2 维 latent）。
+每维目标熵为 ``-0.5``。显式配置必须与此推导值一致，旧的 ``-d`` 目标会被拒绝。
+
+真机从第一个训练动作起就启用 residual actor，保持原有残差幅度限制。训练时随机采样，
+评估时使用确定性输出，不再使用渐进启用门控或均匀随机残差 warmup。
+Dexjoco 使用 ``algorithm.training_recipe: policy_decorator``，保留原有探索和预算调度。
+未指定 recipe 的旧 LAMP 配置保留 Policy Decorator 行为。真机配置需要移除
+``utd_ratio``、``learning_starts_macro_transitions``、
+``progressive_exploration_macro_steps`` 和旧 ``algorithm.async`` 调度字段；
+校验会拒绝这些覆盖参数。
+
+真机通过 ``realworld_lamp_rlpd_base`` 组合设备、任务和共享模型配置，不再继承仿真或采集
+实验配置。``runner.max_steps`` 与 ``runner.save_interval`` 按原生训练调用计数，
+不是物理动作数或优化器更新数。``realworld/`` 训练指标分别报告
+``training_rounds``、``critic_updates``、``actor_updates``、
+``online_macro_transitions``、``primitive_env_steps`` 和 ``demo_sample_fraction``。
+
+.. warning::
+
+   本次拆分保留既有设备和任务时序。使用硬件前，根据对应示范核对
+   ``env.train.override_cfg.step_frequency``。外层 ``max_episode_steps`` 仍为 900，
+   设备 ``max_num_steps`` 仍为 400；保留底层截断时，episode 可能在较低上限结束。
+   本次修改不统一这些上限。
+
+推动 SpaceMouse 独立接管机械臂；停止推动 0.5 秒后机械臂交还策略。
+按住左键只接管灵巧手，松开后手部交还策略。两部分可单独或同时接管，
+未接管部分继续执行策略动作。真机在线 RLPD 默认启用
+``env.eval.right_button_ends_episode: true``（``env.train`` 继承）：右键按下
+将当前 episode 标记为失败，在当前或下一实际控制步返回时设置奖励为 0、
+``terminated=True``、``truncated=False``，优先于同一步的成功和超时判定。
+剩余 chunk 不再执行，保留最终观测并走原有自动 reset 流程。
+``info.manual_failure`` 和 ``info.manual_failure_source=right_click`` 记录来源，
+每次人工标记失败时，终端打印 ``[manual_failure]``。
+HID 按下事件累计保存，短按不会因两次控制步间已松开而丢失；reset 期间
+的点击和跨 reset 持续按住的按键不会使下一局失败，需松开后再次按下。
+右键本身不计为动作接管。该选项不改变数采默认行为，设为 ``false`` 可关闭。
 ``release_behavior: policy`` 将两种命令统一经环境执行，既有 ``hold`` 采集行为保留。
-控制权切换和终止会取消剩余 chunk。每个实际 primitive 更新测量历史；无效尾部
-不发送、不计奖励。包含接管步的完整 macro 同时进入 online 和 demo buffer。
+
+真机 RLPD 配置启用 ``env.train.lamp_continue_intervention: true``：
+进入或持续接管不会取消 chunk。每个子步读取最新人工输入，未接管部分继续执行
+已有策略计划。任一部分释放接管时，取消剩余 chunk 并请求重新规划。
+若在子步执行前检测到释放，该指令不会下发；若在执行期间检测到释放，
+则在下一子步之前停止。执行前检查与动作选择共用同一份输入快照。
+终止和截断仍在当前步执行后立即结束 chunk。设为 ``false`` 可恢复
+任意介入或控制权变化都会截断的行为。
+
+这能减少 chunk 内持续接管时的重复推理，但 chunk 边界等待推理时仍不能
+连续执行人工控制。部分接管可能使另一部分的剩余计划失效，应针对任务验证。
+每个实际 primitive 更新测量历史；无效尾部不发送、不计奖励。
+包含接管步的完整 macro 同时进入 online 和 demo buffer，也包含其中由策略
+控制的步骤。macro 奖励求和及只使用一次折扣的约定保持不变。
 
 兼容与验证
 ----------
@@ -202,9 +297,11 @@ H 至少为 4 且必须是 4 的倍数，1 <= K <= H。LSTM prior 的 H 必须�
 历史长度和 DDIM 步数独立。旧 Dexjoco v4 保持 H=16、K=8、D=23；新规格使用 v5。
 单位、顺序和独立状态维度不一致时拒绝加载，不自动补齐或重塑。
 
-checkpoint 包含 online/demo replay、target Q、优化器、温度、采样状态和更新预算。
-训练模式或 demo 身份改变时拒绝恢复。恢复引用外部轨迹文件的旧 checkpoint 时，
-仍需保留对应的持久化 replay。
+checkpoint 包含 online/demo replay、target Q、优化器、温度、采样状态、训练配方和进度计数。
+真机原生配方的 checkpoint 可在相同契约下恢复；旧 macro 预算训练 checkpoint 不能直接
+恢复为原生真机 RLPD，需要从 base policy artifact 和兼容的示范启动新训练。
+Policy Decorator 保留原有预算状态恢复。训练模式或 demo 身份改变时拒绝恢复。
+恢复引用外部轨迹文件的旧 checkpoint 时，仍需保留对应的持久化 replay。
 
 集成验证包括真实数据离线训练和模拟在线输入的 RLPD 更新。短程训练误差只验证软件链路，
 不代表机器人成功率。硬件运动和在线任务效果需要另行验收。
@@ -311,20 +408,26 @@ MLP 没有独立 prior 阶段。``all both`` 运行五组 prior/DP 和一个 MLP
 所有阶段必须使用相同的数据及划分。三个 LSTM 变体使用 6 维实测历史，所有变体输出 12 维物理动作。
 Wuji artifact 与 Ruiyan 不兼容，即使改名也会被拒绝。
 
-在线训练前，将 ``ruiyan_lamp_rlpd`` 解析后的 ``actor.model`` 部分导出为
-``residual_model.yaml``，使用与在线运行一致的基础 DP artifact 和模型选项。
-转换时仅选择训练集 episode ID。这些 LSTM 配方使用历史长度 8；如修改训练历史长度，
-应同时修改转换参数和环境配置。
+在线训练的 ``algorithm.demo_buffer.load_path`` 接受原始示范目录，支持单个路径
+或按顺序排列的目录列表。加载时保留实际动作、奖励和终止信息，自动构造执行 chunk
+和长度为 8 的历史观测。原始示范无需 base policy manifest，也不绑定具体 base
+checkpoint；训练恢复仍检查数据身份和模型契约。
 
 .. code-block:: bash
 
-   python toolkits/convert_lamp_demos.py --robot-type ruiyan \
-     --source /path/to/demos --model-config /path/to/residual_model.yaml \
-     --output /path/to/ruiyan_demo_buffer --episodes 0 1 2 --history-length 8
    python examples/embodiment/train_async.py --config-name ruiyan_lamp_rlpd \
      actor.model.model_path=/path/to/dp/artifact \
      reward.model.model_path=/path/to/reward/full_weights.pt \
-     algorithm.demo_buffer.load_path=/path/to/ruiyan_demo_buffer
+     'algorithm.demo_buffer.load_path=[/path/to/batch1/demos,/path/to/batch2/demos]'
+
+``ruiyan_lamp_rlpd_stack_cube_film`` 已设置交付的 FiLM artifact 和三批原始
+stack-cube 示范目录，使用全部 30 条。它通过 ``ruiyan_lamp_rlpd`` 继承
+``realworld_lamp_rlpd_base``，沿用 12 维动作和历史长度 8。
+确保路径在对应模型和示范加载节点上可访问，然后直接启动：
+
+.. code-block:: bash
+
+   python examples/embodiment/train_async.py --config-name ruiyan_lamp_rlpd_stack_cube_film
 
 在线配置使用一致的 actor/rollout 机器人约定，记录 12 维实际执行动作、有效前缀和人工干预标记。
 评估配置可加载六种兼容的 DP artifact。在线恢复使用现有 ``runner.resume_dir`` 机制。

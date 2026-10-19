@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 
 import hydra
 import pytest
@@ -16,6 +17,18 @@ from rlinf.config import validate_cfg
 
 _ROOT = Path(__file__).resolve().parents[2]
 _CONFIG_DIR = _ROOT / "examples" / "embodiment" / "config"
+
+
+@pytest.fixture(autouse=True)
+def isolated_config_cluster(monkeypatch):
+    """Configuration unit tests must never connect to a user's live Ray cluster."""
+    monkeypatch.setattr("rlinf.config.Cluster", lambda *a, **kw: object())
+    monkeypatch.setattr(
+        "rlinf.config.HybridComponentPlacement",
+        lambda cfg, cluster: SimpleNamespace(
+            get_world_size=lambda component: 1 if component == "actor" else 4
+        ),
+    )
 
 
 @pytest.mark.parametrize("task", ("water_plant",))
@@ -121,7 +134,9 @@ def test_realworld_rlpd_reuses_device_profile_and_portable_contract():
     assert cfg.algorithm.actor_agg_q == "mean"
     assert cfg.algorithm.backup_entropy is False
     assert cfg.algorithm.critic_actor_ratio == 4
-    assert cfg.algorithm.utd_ratio == 4
+    assert cfg.algorithm.training_recipe == "realworld_rlpd"
+    assert cfg.algorithm.update_epoch == 8
+    assert "utd_ratio" not in cfg.algorithm
     assert cfg.algorithm.entropy_tuning.initial_alpha == 0.01
     assert cfg.algorithm.gamma == 0.97
     assert cfg.algorithm.replay_buffer.auto_save
