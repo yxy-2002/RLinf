@@ -6,6 +6,7 @@
 import ast
 import asyncio
 import importlib.util
+import sys
 import threading
 from pathlib import Path
 from types import SimpleNamespace
@@ -180,10 +181,18 @@ def test_collection_thread_only_for_new_modes(new_mode, kind):
             _run_legacy=collect,
             env=Mock(),
         )
-    methods = load_methods(path, cls, {"run"}, asyncio=asyncio)
+    names = {"run"}
+    if kind == "demo":
+        names.update({"_collect_and_flush", "_close_writers"})
+    methods = load_methods(path, cls, names, asyncio=asyncio, sys=sys)
+    for name in names - {"run"}:
+        setattr(collector, name, lambda n=name: methods[n](collector))
     asyncio.run(methods["run"](collector))
     assert (threads[0] != main_thread) == new_mode
-    collector.env.close.assert_called_once()
+    # Hardware remains alive until job cleanup has captured its children.
+    collector.env.close.assert_not_called()
+    if kind == "demo":
+        collector.buffer.close.assert_called_once()
 
 
 def test_legacy_reward_injection_accepts_original_model_config():

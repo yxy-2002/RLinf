@@ -15,7 +15,6 @@
 import asyncio
 import os
 import select
-import signal
 import sys
 import termios
 import threading
@@ -33,6 +32,10 @@ from rlinf.data.embodied_io_struct import (
 from rlinf.data.replay_buffer import TrajectoryReplayBuffer
 from rlinf.envs.realworld.realworld_env import RealWorldEnv
 from rlinf.scheduler import Cluster, ComponentPlacement, Worker
+from rlinf.utils.logging import get_logger
+from rlinf.utils.training_cleanup import training_exit_cleanup
+
+logger = get_logger()
 
 
 class DataCollector(Worker):
@@ -124,7 +127,40 @@ class DataCollector(Worker):
     async def request_stop(self) -> None:
         """Stop after the current step and flush complete trajectories."""
         self._quit = True
-        self._episode_resume.set()
+        resume = getattr(self, "_episode_resume", None)
+        if resume is not None:
+            resume.set()
+
+    async def stop(self) -> None:
+        """Stop acquisition and wait for completed trajectories to reach disk."""
+        await self.request_stop()
+        task = getattr(self, "_collection_task", None)
+        if task is not None and not task.done():
+            await asyncio.shield(asyncio.gather(task, return_exceptions=True))
+
+    def _close_writers(self) -> None:
+        if not getattr(self, "_writers_closed", False):
+            self._writers_closed = True
+            buffer = getattr(self, "buffer", None)
+            try:
+                if buffer is not None:
+                    buffer.close()
+            finally:
+                env = getattr(self, "env", None)
+                finish = getattr(type(env), "finish_recording", None)
+                if finish is not None:
+                    finish(env)
+
+    async def close_envs(self) -> None:
+        """Release initialized resources once, after acquisition has stopped."""
+        await self.stop()
+        try:
+            self._close_writers()
+        finally:
+            env = getattr(self, "env", None)
+            self.env = None
+            if env is not None:
+                env.close()
 
     def collection_outputs(self) -> dict:
         """Locate files on this node after run() has closed the output writers."""
@@ -170,17 +206,30 @@ class DataCollector(Worker):
         ) != "reward_model" and not self.cfg.runner.get(
             "pause_between_episodes", False
         ):
-            self._collect()
-            self.buffer.close()
-            self.env.close()
+            self._collect_and_flush()
             return
+        self._collection_task = asyncio.create_task(
+            asyncio.to_thread(self._collect_and_flush)
+        )
+        await asyncio.shield(self._collection_task)
+
+    def _collect_and_flush(self) -> None:
         try:
-            await asyncio.to_thread(self._collect)
+            self._collect()
         finally:
+            acquisition_failed = sys.exc_info()[0] is not None
             try:
-                self.buffer.close()
+                env = getattr(self, "_realworld_env", None)
+                if env is not None:
+                    # Hold teleop while files are flushed/synced, without
+                    # destroying the process tree before the driver snapshots it.
+                    env.pause_hand_teleop()
+            except Exception as exc:
+                if not acquisition_failed:
+                    raise
+                self.log_warning(f"Teleop pause during error cleanup failed: {exc}")
             finally:
-                self.env.close()
+                self._close_writers()
 
     def _collect(self):
         obs, _ = self.env.reset()
@@ -393,7 +442,7 @@ def wait_for_collection(collector, run_handle, stop_requested: threading.Event) 
         if readable and not stop_requested.is_set():
             if sys.stdin.readline() == "":
                 stop_requested.set()
-                collector.request_stop().wait()
+                raise EOFError("Demo collection terminal closed")
             else:
                 collector.resume_episode(episode).wait()
     run_handle.wait()
@@ -424,6 +473,39 @@ def main(cfg):
             raise ValueError("Inner and outer episode limits must match")
 
     cluster = Cluster(cluster_cfg=cfg.cluster)
+    with training_exit_cleanup(namespace=Cluster.NAMESPACE) as retained_resources:
+        _run_collection(cfg, cluster, retained_resources)
+
+
+def _sync_collection(cfg, collector, cluster) -> None:
+    if cfg.runner.get("sync_data_to_nodes", False):
+        from rlinf.utils.collection_sync import sync_collection_data
+
+        sync_collection_data(collector.collection_outputs().wait(), cluster)
+
+
+def _finish_interrupted_collection(cfg, collector, run_handle, cluster) -> None:
+    """Allow a bounded graceful flush before falling back to job cleanup."""
+    try:
+        collector.request_stop()
+        deadline = time.monotonic() + 15
+        while not run_handle.done():
+            if time.monotonic() >= deadline:
+                logger.warning(
+                    "Collector did not finish within 15 seconds; "
+                    "deferring to job cleanup. Data sync was skipped."
+                )
+                return
+            time.sleep(0.1)
+        run_handle.wait()
+        _sync_collection(cfg, collector, cluster)
+    except Exception:
+        logger.exception(
+            "Interrupted collection flush/sync failed; proceeding to cleanup"
+        )
+
+
+def _run_collection(cfg, cluster, retained_resources: list[object]) -> None:
     component_placement = ComponentPlacement(cfg, cluster)
     env_placement = component_placement.get_strategy("env")
     from rlinf.utils.realworld_reward import inject_realworld_reward_cfg
@@ -433,47 +515,27 @@ def main(cfg):
         env_cfg = inject_realworld_reward_cfg(
             cfg, env_cfg, component_placement, cluster
         )
-    reward_group = None
-    collector = None
-    previous_handlers = {}
-    stop_requested = threading.Event()
+    reward_service_name = None
+    if cfg.runner.get("success_source") == "reward_model":
+        from rlinf.utils.realworld_reward import launch_realworld_reward_service
+
+        reward_group, reward_service_name = launch_realworld_reward_service(env_cfg)
+        retained_resources.append(reward_group)
+    collector = DataCollector.create_group(
+        cfg, env_cfg=env_cfg, reward_service_name=reward_service_name
+    )
+    retained_resources.append(collector)
+    collector.launch(cluster, name=cfg.env.group_name, placement_strategy=env_placement)
+    run_handle = collector.run()
     try:
-        reward_service_name = None
-        if cfg.runner.get("success_source") == "reward_model":
-            from rlinf.utils.realworld_reward import launch_realworld_reward_service
-
-            reward_group, reward_service_name = launch_realworld_reward_service(env_cfg)
-        collector = DataCollector.create_group(
-            cfg, env_cfg=env_cfg, reward_service_name=reward_service_name
-        ).launch(cluster, name=cfg.env.group_name, placement_strategy=env_placement)
-
-        if cfg.runner.get("success_source") == "reward_model" or pause_between_episodes:
-
-            def request_stop(signum, frame):
-                stop_requested.set()
-                collector.request_stop()
-
-            for sig in (signal.SIGINT, signal.SIGTERM):
-                previous_handlers[sig] = signal.signal(sig, request_stop)
-        run_handle = collector.run()
-        if pause_between_episodes:
-            wait_for_collection(collector, run_handle, stop_requested)
+        if cfg.runner.get("pause_between_episodes", False):
+            wait_for_collection(collector, run_handle, threading.Event())
         else:
             run_handle.wait()
-        if cfg.runner.get("sync_data_to_nodes", False):
-            from rlinf.utils.collection_sync import sync_collection_data
-
-            # run() returns only after both writers close, also on graceful stop.
-            sync_collection_data(collector.collection_outputs().wait(), cluster)
-    finally:
-        for sig, handler in previous_handlers.items():
-            signal.signal(sig, handler)
-        try:
-            if collector is not None:
-                collector._close()
-        finally:
-            if reward_group is not None:
-                reward_group._close()
+    except (KeyboardInterrupt, SystemExit, EOFError):
+        _finish_interrupted_collection(cfg, collector, run_handle, cluster)
+        raise
+    _sync_collection(cfg, collector, cluster)
 
 
 if __name__ == "__main__":

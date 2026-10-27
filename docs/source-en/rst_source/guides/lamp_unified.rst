@@ -233,22 +233,7 @@ in the GPU audit. Frozen DP cache-miss inference, hand decoding, optimizers and
 target updates also remain eager. Kernel compilation happens on the first
 training batches and can compete with rollout on a shared GPU.
 
-Test fresh RL weights against recorded replay without connecting to the robot:
-
-.. code-block:: bash
-
-   PYTHONPATH=. python toolkits/benchmark_lamp_training_compile.py \
-     --config ruiyan_lamp_rlpd_stack_cube_film \
-     --replay /path/to/run/replay_buffer/rank_0 \
-     --output /tmp/lamp_training_compile.json
-
-The test uses batch 256 and the configured critic/actor cadence, preserving
-recorded cache misses. It compares the first four updates' losses, gradients,
-parameters, alpha and target Qs, times another 80 updates, and checks actor
-weight export/loading. Replay sampling, the 50/50 demo mix and concurrent rollout
-are excluded. The tested stack-cube replay showed no training speedup; the default
-enables compilation for further online comparison. Set ``actor.compile_model=false``
-to compare with eager training. Old RL checkpoints are not required.
+Set ``actor.compile_model=false`` to compare with eager training.
 
 The async training driver starts the standalone reward service on its configured
 GPU node and passes a lightweight RPC service name to the robot environment.
@@ -273,13 +258,51 @@ budget. Sum valid primitive rewards and apply gamma 0.97 once per macro
 transition. Alpha retains exponential parameterization and the decoder-causal
 target entropy. The base policy stays frozen.
 
-Both RealWorld and Dexjoco infer ``target_entropy = -d / 2`` when
-``algorithm.entropy_tuning.target_entropy: null``, where ``d`` is the number of
-decoder-causal residual coordinates: execution horizon K times the per-step
-core action dimension. For K=8 and a two-dimensional hand latent, Ruiyan uses
-``-32`` (6 arm + 2 latent coordinates) and Dexjoco uses ``-36`` (7 arm + 2 latent
-coordinates). The per-dimension entropy target is ``-0.5``. An explicit target
-must match this inferred value; the previous ``-d`` target is rejected.
+When ``algorithm.entropy_tuning.target_entropy: null``, both environments infer
+``target_entropy = target_entropy_per_dim * K * core_action_dim`` using only
+decoder-causal residual coordinates. Set
+``algorithm.entropy_tuning.target_entropy_per_dim`` independently: Dexjoco
+defaults to ``-1.0`` and RealWorld to ``-0.5``. For K=8 and a two-dimensional
+hand latent, Ruiyan uses ``-32`` (6 arm + 2 latent coordinates) and Dexjoco
+uses ``-72`` (7 arm + 2 latent coordinates). Configs without the new field
+retain ``-0.5`` per dimension. An explicit ``target_entropy`` must match the
+inferred value. Compare ``entropy_causal`` with the total target, or
+``entropy_causal_per_dim`` with the configured per-dimension target.
+
+RealWorld sets ``actor.model.init_log_std: -2.5`` so a fresh residual actor
+starts near Gaussian standard deviation 0.082 before tanh. This controls the
+initial noise scale explicitly; it does not reproduce franka_infra's random
+standard-deviation head initialization. Residual scales still bound the
+executed perturbations.
+Dexjoco retains ``-9.0``. Resuming a training checkpoint restores the actor's
+learned distribution instead of resetting it to this initial value.
+``init_log_std`` must be strictly between ``log_std_min`` and ``log_std_max``
+(currently -20 and 2); launch validation accepts -2.5, 0 and the legacy -9.
+
+With ``actor.enable_drq: true``, training randomly shifts current and next
+camera images by up to four pixels and recomputes visual features.
+RealWorld enables ``actor.lamp_cache_base_core: true``: each new rollout still
+samples a fresh base plan, while the learner preserves that core and fills
+missing current/next cores once, from the original observations before replay
+insertion. Raw demos are prepared at startup; converted demos receive a
+run-local cached copy without modifying the source dataset. The cores are
+saved with replay/demo trajectories and survive eviction and checkpoint resume.
+The learner still decodes ``base core + residual`` with gradients to the actor.
+
+``actor.lamp_share_frozen_features: true`` shares detached augmented current
+features between data-Q and the actor within one update, then releases them.
+Actor Q values are recomputed after the critic step. These two options require
+resident frozen base parameters and FSDP ``no_shard``.
+Set both options to ``false`` to restore the previous path: DrQ recomputes
+both features and plans; without DrQ, valid original caches are reused.
+
+Caching cores changes training semantics: the base plan is fixed per replay
+transition instead of resampled from augmented images. Throughput improvements
+do not establish convergence or success-rate equivalence. Faster learning also
+increases updates per new observation under the native asynchronous schedule.
+Changing ``actor.lamp_cache_base_core`` requires a new run
+(``runner.resume_dir: null``); same-mode checkpoints retain cores and the
+dedicated cache-population RNG. Feature sharing can be toggled independently.
 
 The true residual actor is active from the first training action, within the
 existing residual bounds. Training samples it stochastically; evaluation uses
@@ -326,6 +349,35 @@ action intervention. Collection defaults are unchanged; set the option to
 routes both command sources through the environment executor. Existing
 ``hold`` collection behavior is preserved.
 
+SpaceMouse disconnects pause new environment actions until input recovers;
+the controller retains its last target during the wait. No environment steps
+are generated by the wait, and a disconnect does not itself fail the episode.
+HID reads run in an isolated process: read errors, process exits and a stalled
+reader trigger automatic reopen attempts, with a 1-second retry delay. Input
+expires after 0.25 seconds; the initial reader startup allows up to 10 seconds.
+The container must already expose the reconnected HID device (the host device
+synchronization service is still required).
+
+ROS services are shared by the controller and input processes. Importing
+RealWorld modules, including when a HID reader starts or restarts, preserves
+the running ROS master. Under a node-local lock, ``ROSController`` probes the
+XML-RPC endpoint configured by ``ROS_MASTER_URI`` and reuses a responding master,
+even if its ``roscore`` parent process has exited. If no master responds, it
+starts ``roscore`` and waits up to 10 seconds for readiness; process exit or
+readiness timeout aborts initialization before ``rospy.init_node``. Each probe
+has a one-second socket timeout. Package imports do not clean up ROS processes.
+Removing stale node registrations does not stop a healthy master or prevent
+new stale registrations after subsequent process exits.
+
+Recovery requires no operator confirmation. The terminal logs
+``[spacemouse] Connection interrupted`` once per outage and
+``[spacemouse] Connection restored`` on recovery. Button levels held across
+reopen are ignored until released; hand control establishes a new glove baseline.
+The LAMP executor discards an old chunk suffix on recovery. When recovery is
+first observed at a fresh chunk, it executes one stationary arm step with the
+recovered hand target before requesting a new plan. Commands already submitted
+to the controller cannot be recalled by this input watchdog.
+
 The real-world RLPD configuration enables
 ``env.train.lamp_continue_intervention: true``: entering or maintaining
 intervention does not cancel the chunk. Each substep reads fresh human input;
@@ -369,6 +421,39 @@ rates. Hardware motion and online task performance require a separate validation
 See ``docs/lamp_unified_validation.md`` for reproducible checks and limitations,
 and ``docs/lamp_code_guide.md`` for adapter responsibilities.
 
+Evaluate a Ruiyan RL Checkpoint
+------------------------------
+
+Use the residual policy evaluator to run a trained RL checkpoint without learner
+updates. The shared configuration is
+``evaluations/realworld/ruiyan_lamp_dp_rl_eval.yaml``; the stack-cube task uses
+``ruiyan_lamp_dp_stack_cube_rl_eval.yaml``. It retains the IL evaluator's episode
+confirmation, reward service, action logging and video recording.
+
+.. code-block:: bash
+
+   bash evaluations/run_eval.sh realworld ruiyan_lamp_dp_stack_cube_rl_eval \
+     runner.ckpt_path=/path/to/checkpoints/global_step_11000
+
+``runner.ckpt_path`` accepts the step directory, its ``actor`` directory, the
+``model_state_dict`` directory, or the ``full_weights.pt`` file itself. Evaluation
+loads the full policy state strictly, including the learned residual actor; it
+does not restore optimizers or replay buffers. Use ``runner.resume_dir`` only for
+resuming training. A missing export or incompatible model state fails loading.
+
+The stack-cube preset points to the existing FiLM artifact and 11k checkpoint.
+For another training run, set ``rollout.model.model_path`` to its base artifact
+and match the robot specification, horizons, actor/critic inputs and residual
+scales. In particular, residual scales are not stored in the weight state dict:
+this preset explicitly uses ``wrist_residual_scale: 0.2`` and
+``hand_residual_scale: 0.2`` to match ``ruiyan_lamp_rlpd_stack_cube_film``.
+
+Evaluation uses the deterministic residual actor and DP noise streams seeded by
+``rollout.model.eval_base_noise_seed: 42``. The seed can be overridden for repeated
+trials. It executes eight actions from each 16-step plan, with temporal ensembling
+disabled, for 20 episodes of at most 400 steps each. This tests the fixed RL policy;
+the IL evaluator loads only the base DP artifact.
+
 Online Evaluation Action Logs
 -----------------------------
 
@@ -379,11 +464,58 @@ Run the existing task command:
    bash evaluations/run_eval.sh realworld realworld_lamp_dp_stack_cube_il_eval
 
 The shared IL evaluation config enables ``runner.debug_actions: true``.
+The RealWorld IL presets also enable ``runner.stop_eval_on_done: true``, inherited
+by the Ruiyan RL evaluator. A termination (including reward-model success) or
+truncation ends the current episode immediately after the terminal primitive
+step: the remaining LAMP chunk is discarded and no next chunk is requested.
+The environment holds output, the rollout acknowledges the episode end, and
+action logs and video are finalized before the next reset/start confirmation.
+The rollout limit ends an episode through the same handshake; the last episode
+also stops the rollout worker. This ends the current episode, not the entire
+evaluation early. Set ``env.eval.rollout_epoch=1`` for a single episode.
+The protocol requires one environment, one pipeline stage, ``auto_reset=false``
+and coupled rollout. It also works with action logging or interactive confirmation
+disabled; without confirmation, the next episode resets and resumes automatically.
+
 Each episode is written on the driver node to
 ``<runner.logger.log_path>/debug_actions/episode_0001_env_000.jsonl``.
 Records are flushed after each action chunk, preserving completed chunks if
 evaluation is interrupted. An ``episode_end`` record marks normal completion
 and distinguishes environment termination from the rollout limit.
+
+RL evaluation uses the same trace files. Its ``policy`` object includes
+``base_core_chunk``, ``residual_chunk``, ``adapted_core_chunk`` (after quaternion
+correction), ``planned_env_action_chunk`` and ``sent_env_action_chunk`` from the
+same forward pass, plus residual mean, log standard deviation, scale and causal
+mask. Core values are normalized model coordinates, not motor positions; the
+planned/sent action chunks are decoded environment commands. No extra policy
+sample or decoder call is made for logging. ``prediction_wall_seconds`` includes
+prediction and action transfer to CPU, not network or robot execution time.
+
+Action-chunk records use ``schema_version: 2`` and retain existing fields. They
+also record ``primitive_step_start``, ``executed_step_count``,
+``applied_env_action_chunk`` (shape executed-steps × batch × action-dim),
+``applied_action_source``, ``discarded_suffix_count`` and ``suffix_discard_reason``.
+The latter counts only unexecuted entries in the sent chunk, not the unused
+planning horizon. Each RealWorld step includes available ``control_info`` such as
+manual failure, reward probability, success, episode metrics and control changes; missing fields are
+not inferred. Applied actions are controller commands, not measured motor
+feedback; measured state remains in ``state_before``/``state_after``.
+These traces do not replace the separate serial/motor diagnostic logs.
+
+Video recording can be enabled with ``env.eval.video_cfg.save_video=true``.
+The video wrapper forwards ``auto_reset=False`` from the LAMP adapter, so
+recording preserves the adapter's episode boundaries, including when
+``CollectEpisode`` is also enabled.
+
+``ruiyan_lamp_dp_stack_cube_il_eval`` enables video recording at 10 FPS by
+default. Its ``env.eval.video_cfg.image_keys`` is
+``[extra_view_images[0], main_images]``: the global view is on the left and
+the wrist view on the right, in one MP4 per rollout. Files are written on
+the environment worker's node under
+``<runner.logger.log_path>/video/eval/seed_<seed>/``.
+This setting only selects recording images; model inputs are unchanged.
+Omitting ``image_keys`` retains the default single-view recording behavior.
 
 Each ``action_chunk`` contains ``policy.decoded_action_plan`` (the full decoded
 prediction before temporal ensembling or execution-window slicing),
@@ -469,6 +601,21 @@ The reward checkpoint is an image classifier and retains the existing network.
      rollout.model.model_path=/path/to/dp/artifact \
      reward.model.model_path=/path/to/reward/full_weights.pt
 
+Both collection launchers above use the same job-scoped exit cleanup as
+evaluation. On ``Ctrl+C``, ``SIGTERM``, normal completion or an error, collection
+stops before the driver snapshots child processes, closes Franka controllers
+and environments, and terminates this job's actors and remaining ROS children.
+Wait for the launcher to exit; repeated interrupts do not abort
+cleanup. The shared Ray cluster and other jobs are left running.
+Reward collection saves already acquired frames from the current partial
+episode when acquisition can stop gracefully. Demo collection flushes completed
+successful trajectories and keeps its existing policy of discarding incomplete
+trajectories. Demo output sync remains enabled by ``runner.sync_data_to_nodes``
+after a graceful stop; it is skipped with a warning if the collector fails to
+finish within 15 seconds. A blocked collector falls back to timed job cleanup.
+As with evaluation, unreachable nodes, ``kill -9`` and power loss can prevent
+complete cleanup; previously orphaned processes are not swept globally.
+
 The launcher supports ``lamplstm_film``, ``lamplstm_none``, ``lamplstm_concat``,
 ``pca``, ``vq``, ``mlp`` and ``all``; stages are ``prior``, ``dp`` and ``both``.
 MLP has no prior stage. ``all both`` runs five prior/DP pairs and one MLP DP.
@@ -506,6 +653,46 @@ The online configuration uses the same actor/rollout robot contract and records
 12-D executed commands, valid prefixes and intervention flags. The evaluation
 configuration loads any of the six compatible DP artifacts. Resume online
 training through the existing ``runner.resume_dir`` mechanism.
+
+The shell launcher also accepts Hydra overrides after the config name:
+
+.. code-block:: bash
+
+   bash examples/embodiment/run_async.sh ruiyan_lamp_rlpd_stack_cube_film \
+     runner.resume_dir=/path/to/run/experiment/checkpoints/global_step_3000
+
+Point ``runner.resume_dir`` to the step directory, without ``/actor`` or a
+trailing slash. Other values, including ``runner.max_steps``, come from the
+config unless overridden. ``runner.max_steps`` is the cumulative training
+endpoint, not the number of additional steps. The optional positional
+``ROBOT_PLATFORM`` goes between the config name and the overrides; otherwise
+the launcher uses the environment variable or defaults to ``LIBERO``.
+
+When using ``train_async.py`` or the launcher above, press ``Ctrl+C`` once to
+stop collection, close this run's Franka controllers and environments, then
+clean up its Ray job's actors and child processes. The reward service stays
+available until environments stop and close; the ROS master is closed after
+controller child processes exit. The entrypoint retains service owners until
+cleanup completes so Ray cannot reclaim them when inner contexts exit.
+Further ``Ctrl+C`` signals are ignored during cleanup; wait for the launcher
+to exit. Child ownership is checked by PID and creation time.
+Cleanup does not run global ``pkill`` commands or
+stop the shared Ray cluster. Normal completion, training errors and ``SIGTERM``
+sent to the Python driver also trigger cleanup. Each stage has a timeout and
+reports failures. Successful cleanup does not emit status messages.
+Cleanup cannot be guaranteed if the NUC is unreachable, actors are still
+initializing, or the driver receives ``kill -9`` or loses power.
+This feature does not remove orphan processes left by earlier runs.
+
+The IL evaluation entrypoint ``evaluations/eval_embodied_agent.py`` and
+``bash evaluations/run_eval.sh realworld ruiyan_lamp_dp_stack_cube_il_eval``
+use the same exit cleanup, including on terminal EOF and initialization errors.
+Press ``Ctrl+C`` once and wait for the launcher to exit.
+The launcher keeps logging while cleanup runs. If a synchronous environment
+is blocked waiting for actions or terminal confirmation, cleanup captures its
+children and terminates the worker after the stop timeout, then shuts down
+the Franka controller and remaining owned processes. The same limitations
+above apply; the shared Ray cluster remains running.
 
 Validate without hardware with the following commands. The portable smoke tests
 exercise all six Ruiyan variants through prior/DP updates, artifact reload,

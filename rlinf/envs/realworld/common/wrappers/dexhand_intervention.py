@@ -7,6 +7,7 @@ from __future__ import annotations
 import multiprocessing as mp
 import os
 import time
+from multiprocessing.util import Finalize
 
 import gymnasium as gym
 import numpy as np
@@ -235,6 +236,9 @@ def _teleop_worker(connection, shared, config):
         current = _feedback_target(hand)
         baseline = base = None
         previous_left = False
+        mouse_generation = 0
+        glove_generation = 0
+        input_generation = 0
         wait_release = True
         last_intervene = 0.0
         failure_enabled = config.get("right_button_ends_episode", False)
@@ -270,17 +274,57 @@ def _teleop_worker(connection, shared, config):
             if os.getppid() != config["parent_pid"]:
                 raise RuntimeError("Collection process exited")
             if active:
-                sample = glove.get_target()
-                if sample.spec != hand.spec:
-                    raise ValueError("Glove/driver hand specifications differ")
-                if not 0 <= time.time() - sample.timestamp <= 0.5:
-                    raise RuntimeError("No fresh glove target for 0.5 seconds")
-                arm, buttons = mouse.get_action()
-                left, right = bool(buttons[1]), bool(buttons[0])
+                mouse_state = mouse.get_state()
                 if failure_enabled:
-                    right_presses = mouse.get_button_press_counts()[0]
+                    # Counts survive reconnects. Retain a tap read just before
+                    # unplugging even when its button level is already invalid.
+                    right_presses = mouse_state.press_counts[0]
                     failure_sequence += right_presses - right_press_baseline
                     right_press_baseline = right_presses
+                glove_state = glove.get_state()
+                if not mouse_state.connected or not glove_state.connected:
+                    # Keep lifecycle IPC responsive while the reader reconnects.
+                    # Neither disconnected device may publish cached human input.
+                    baseline = base = None
+                    previous_left = False
+                    wait_release = True
+                    last_intervene = 0.0
+                    if not policy_mode:
+                        hand.command(current)
+                    _write_snapshot(
+                        shared,
+                        [
+                            time.monotonic(),
+                            time.time(),
+                            0,
+                            0,
+                            0,
+                            0,
+                            *np.zeros(6),
+                            *current,
+                            *([failure_sequence] if failure_enabled else []),
+                            0,
+                            input_generation,
+                        ],
+                    )
+                    connection.poll(1 / config["frequency"])
+                    continue
+                if (
+                    mouse_state.generation != mouse_generation
+                    or glove_state.generation != glove_generation
+                ):
+                    current = _feedback_target(hand)
+                    baseline = base = None
+                    previous_left = False
+                    wait_release = True
+                    mouse_generation = mouse_state.generation
+                    glove_generation = glove_state.generation
+                    input_generation += 1
+                sample = glove_state.target
+                if sample.spec != hand.spec:
+                    raise ValueError("Glove/driver hand specifications differ")
+                arm, buttons = mouse_state.action, mouse_state.buttons
+                left, right = bool(buttons[1]), bool(buttons[0])
                 if not left:
                     wait_release = False
                 controlling = left and not wait_release
@@ -335,6 +379,8 @@ def _teleop_worker(connection, shared, config):
                         *arm,
                         *current,
                         *([failure_sequence] if failure_enabled else []),
+                        1,
+                        input_generation,
                     ],
                 )
             # IPC wakes the wait immediately for pause/stop; no queued samples.
@@ -370,17 +416,26 @@ class TeleopProcess:
             "d",
             SNAPSHOT_HEADER
             + config["hand_dim"]
-            + int(config.get("right_button_ends_episode", False)),
+            + int(config.get("right_button_ends_episode", False))
+            + 2,  # Combined input health and recovery generation.
         )
         self.connection, child = context.Pipe()
         self.process = context.Process(
             target=worker,
             args=(child, self.shared, {**config, "parent_pid": os.getpid()}),
             name="dexhand-teleop",
-            daemon=True,
+            # The HID reader is a supervised child of this process. The loop
+            # monitors parent_pid and exits if its collection owner disappears.
+            daemon=False,
         )
+        # Keep the public field name; either input device advances this epoch.
+        self.mouse_generation = 0
         self.process.start()
         child.close()
+        # Non-daemon children otherwise keep the interpreter waiting at exit.
+        self._finalizer = Finalize(
+            self, self._shutdown, args=(self.process, self.connection), exitpriority=10
+        )
         try:
             self._response("ready", 30)
         except BaseException:
@@ -410,32 +465,44 @@ class TeleopProcess:
         self._response(command)
 
     def snapshot(self) -> np.ndarray:
-        """Read current state without queuing work on the teleop process."""
-        if not self.process.is_alive():
-            raise RuntimeError("Teleop process exited")
-        if self.connection.poll():
-            status, detail = self.connection.recv()
-            raise RuntimeError(f"Teleop {status}: {detail}")
-        data = _read_snapshot(self.shared)
-        if time.monotonic() - data[0] > 0.5:
-            raise RuntimeError("Teleop snapshot is stale")
-        return data
+        """Wait for healthy input without submitting actions or advancing steps.
 
-    def close(self) -> None:
-        """Stop and join the child before its owner destroys the driver."""
-        if self.process.is_alive():
+        Teleop heartbeats remain live during mouse/glove outages. Fatal reader
+        and process errors still raise; fresh inputs resume collection automatically.
+        """
+        while True:
+            if not self.process.is_alive():
+                raise RuntimeError("Teleop process exited")
+            if self.connection.poll():
+                status, detail = self.connection.recv()
+                raise RuntimeError(f"Teleop {status}: {detail}")
+            data = _read_snapshot(self.shared)
+            if time.monotonic() - data[0] > 0.5:
+                raise RuntimeError("Teleop snapshot is stale")
+            if data[-2]:
+                self.mouse_generation = int(data[-1])
+                return data[:-2]
+            time.sleep(0.01)
+
+    @staticmethod
+    def _shutdown(process, connection) -> None:
+        if process.is_alive():
             try:
-                self.connection.send("stop")
+                connection.send("stop")
             except (BrokenPipeError, OSError):
                 pass
-            self.process.join(3)
-            if self.process.is_alive():
-                self.process.terminate()
-                self.process.join(3)
-            if self.process.is_alive():
-                self.process.kill()
-                self.process.join()
-        self.connection.close()
+            process.join(3)
+            if process.is_alive():
+                process.terminate()
+                process.join(3)
+            if process.is_alive():
+                process.kill()
+                process.join()
+        connection.close()
+
+    def close(self) -> None:
+        """Stop the child before its owner destroys the driver; safe to repeat."""
+        self._finalizer()
 
 
 class DexHandIntervention(gym.Wrapper):
@@ -539,6 +606,9 @@ class DexHandIntervention(gym.Wrapper):
         while True:
             try:
                 self._teleop.snapshot()
+                self._mouse_generation = self._teleop.__dict__.get(
+                    "mouse_generation", 0
+                )
                 break
             except RuntimeError:
                 if not self._teleop.process.is_alive() or time.monotonic() > deadline:
@@ -555,6 +625,11 @@ class DexHandIntervention(gym.Wrapper):
         # Match the native SpaceMouse wrapper's motion-release grace period.
         return now - last_arm < 0.5, bool(snapshot[5])
 
+    def _mouse_reconnected(self) -> bool:
+        """Detect an outage even if it recovered between collection reads."""
+        generation = self._teleop.__dict__.get("mouse_generation", 0)
+        return generation != self.__dict__.get("_mouse_generation", generation)
+
     def prepare_lamp_chunk_step(self, fresh_chunk: bool) -> bool:
         """Latch input for one step; reject a stale suffix on component release.
 
@@ -565,6 +640,9 @@ class DexHandIntervention(gym.Wrapper):
             raise ValueError("Continuous LAMP intervention requires policy release")
         self._lamp_prepared_input = None
         snapshot = self._teleop.snapshot()
+        recovered = self._mouse_reconnected()
+        if recovered and not fresh_chunk:
+            return False
         control = self._policy_intervention_state(snapshot)
         previous = self.__dict__.get("_policy_control_state", (False, False))
         if not fresh_chunk and any(
@@ -610,6 +688,10 @@ class DexHandIntervention(gym.Wrapper):
         prepared = self.__dict__.get("_lamp_prepared_input")
         self._lamp_prepared_input = None
         before = self._teleop.snapshot() if prepared is None else prepared[0]
+        recovered = self._mouse_reconnected()
+        self._mouse_generation = self._teleop.__dict__.get("mouse_generation", 0)
+        if recovered:
+            self._last_arm_intervene = float("-inf")
         chosen = np.array(action, dtype=np.float64, copy=True)
         hand_end = SNAPSHOT_HEADER + len(chosen) - 6
         if getattr(self, "_release_behavior", "hold") == "policy":
@@ -625,14 +707,23 @@ class DexHandIntervention(gym.Wrapper):
                 chosen[:6] = before[6:12]
             if hand_control:
                 chosen[6:] = before[12:hand_end]
+            if recovered:
+                # A plan computed before the outage is no longer current. Send
+                # one stationary step and ask LAMP to replan from its observation.
+                chosen[:6] = 0
+                chosen[6:] = before[12:hand_end]
+
             obs, reward, done, truncated, info = self.env.step(chosen)
             after = self._teleop.snapshot()
+            recovered = recovered or self._mouse_reconnected()
             info["left"], info["right"] = bool(after[3]), bool(after[4])
             current = (arm_control, hand_control)
             following = self._policy_intervention_state(after)
             previous = self.__dict__.get("_policy_control_state", (False, False))
-            info["lamp_control_changed"] = current != following or current != previous
-            info["lamp_control_released"] = any(
+            info["lamp_control_changed"] = (
+                recovered or current != following or current != previous
+            )
+            info["lamp_control_released"] = recovered or any(
                 (old and not active) or (active and not new)
                 for old, active, new in zip(previous, current, following)
             )
@@ -649,7 +740,9 @@ class DexHandIntervention(gym.Wrapper):
             return self._apply_manual_failure(
                 (obs, reward, done, truncated, info), before, after
             )
-        if before[5]:
+        if recovered:
+            chosen[:6] = 0
+        elif before[5]:
             chosen[:6] = before[6:12]
         chosen[6:] = before[12:hand_end]
         obs, reward, done, truncated, info = self.env.step(chosen)

@@ -19,6 +19,7 @@ runner:
   debug_actions: true
   # First Enter resets; second Enter starts policy execution, including round 1.
   pause_between_eval_episodes: true
+  stop_eval_on_done: true
   success_source: reward_model
   max_epochs: 1
   max_steps: -1

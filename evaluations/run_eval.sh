@@ -73,7 +73,8 @@ run_eval_cmd() {
     fi
 
     echo "${cmd[*]}" | tee "${log_file}"
-    "${cmd[@]}" 2>&1 | tee -a "${log_file}"
+    # Keep the pipe open while the driver closes remote hardware after Ctrl+C.
+    "${cmd[@]}" 2>&1 | (trap '' INT TERM; exec tee -a "${log_file}")
 }
 
 run_mani_ood_eval() {

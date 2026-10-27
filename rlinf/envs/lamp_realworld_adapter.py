@@ -94,6 +94,20 @@ class RealWorldLampAdapter(LampEnvAdapter):
                         "sent_env_action": actions[0],
                         "executed_action": info.get("executed_action"),
                         "intervene_flag": info.get("intervene_flag", False),
+                        "control_info": {
+                            key: info[key]
+                            for key in (
+                                "manual_failure",
+                                "manual_failure_source",
+                                "success",
+                                "succeed",
+                                "episode",
+                                "reward_probability",
+                                "lamp_control_changed",
+                                "lamp_control_released",
+                            )
+                            if key in info
+                        },
                         "reward": reward,
                         "terminated": terminated,
                         "truncated": truncated,

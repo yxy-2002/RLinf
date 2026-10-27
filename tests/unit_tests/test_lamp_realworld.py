@@ -197,6 +197,83 @@ def test_chunk_cancels_suffix_and_preserves_measurements(
         assert not terms.any() and not rewards.any()
 
 
+@pytest.mark.parametrize("collect", [False, True])
+@pytest.mark.parametrize("dual_view", [False, True])
+def test_video_recording_preserves_lamp_step_options_and_terminal_frame(
+    tmp_path, collect, dual_view
+):
+    import gymnasium as gym
+
+    from rlinf.data.datasets.lamp.realworld import ruiyan_robot_spec
+    from rlinf.envs.wrappers.collect_episode import CollectEpisode
+    from rlinf.envs.wrappers.record_video import RecordVideo
+
+    class Robot(gym.Env):
+        seed = 0
+        num_envs = 1
+        auto_reset = False
+        steps = 0
+        reset_count = 0
+
+        def observation(self):
+            wrist = torch.full((1, 8, 8, 3), self.steps, dtype=torch.uint8)
+            return {
+                "states": torch.zeros(1, 24),
+                "hand_state_normalized": torch.zeros(1, 6),
+                "main_images": wrist,
+                "extra_view_images": wrist[:, None] + 40,
+            }
+
+        def reset(self, **kwargs):
+            self.reset_count += 1
+            self.steps = 0
+            return self.observation(), {}
+
+        def step(self, action, *, auto_reset=True):
+            # The adapter must own resets, even with both recording wrappers.
+            assert auto_reset is False
+            self.steps += 1
+            done = torch.tensor([self.steps == 2])
+            return (
+                self.observation(),
+                done.float(),
+                done,
+                torch.zeros_like(done),
+                {"executed_action": action.clone()},
+            )
+
+    robot = Robot()
+    video_cfg = {"info_on_video": False}
+    if dual_view:
+        video_cfg["image_keys"] = ["extra_view_images[0]", "main_images"]
+    video = RecordVideo(robot, OmegaConf.create(video_cfg))
+    env = (
+        CollectEpisode(video, str(tmp_path), show_goal_site=False) if collect else video
+    )
+    spec = ruiyan_robot_spec().to_dict()
+    adapter = RealWorldLampAdapter(
+        env,
+        OmegaConf.create({"env_type": "realworld", "lamp_robot_spec": spec}),
+        OmegaConf.create({"robot_spec": spec}),
+    )
+    try:
+        adapter.reset()
+        _, rewards, terms, _, infos = adapter.chunk_step(torch.zeros(1, 4, 12))
+        assert robot.steps == 2 and robot.reset_count == 1
+        assert terms.sum().item() == rewards.sum().item() == 1
+        assert infos[-1]["primitive_valid"].sum().item() == 2
+        assert len(video.render_images) == 3
+        offset = 40 if dual_view else 0
+        assert [int(frame[0, 0, 0]) for frame in video.render_images] == [
+            offset + i for i in range(3)
+        ]
+        for i, frame in enumerate(video.render_images):
+            assert frame.shape == (8, 16 if dual_view else 8, 3)
+            assert (frame[:, -8:] == i).all()
+    finally:
+        env.close()
+
+
 def test_policy_release_uses_one_executor_and_button_gate():
     from unittest.mock import Mock
 
@@ -474,9 +551,15 @@ def test_input_process_rebases_each_press_without_sending_commands(monkeypatch):
 
     def buttons():
         tick[0] += 1
-        return np.ones(6), [False, tick[0] in (2, 4)]
+        return SimpleNamespace(
+            action=np.ones(6),
+            buttons=[False, tick[0] in (2, 4)],
+            connected=True,
+            generation=1,
+            press_counts=(0, 0),
+        )
 
-    mouse.get_action.side_effect = buttons
+    mouse.get_state.side_effect = buttons
     imports = {
         "rlinf_dexhand.glove": {"GloveExpert": lambda **kw: glove},
         "rlinf_dexhand.wuji_spec": {

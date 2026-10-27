@@ -15,6 +15,7 @@ runner:
   only_eval: true
   debug_actions: true
   pause_between_eval_episodes: true
+  stop_eval_on_done: true
   success_source: reward_model
   max_epochs: 1
   max_steps: -1

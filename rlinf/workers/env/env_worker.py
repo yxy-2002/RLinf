@@ -678,6 +678,35 @@ class EnvWorker(Worker):
         adjusted_rewards[:, -1] += self.cfg.algorithm.gamma * final_values
         return adjusted_rewards
 
+    def stop(self) -> None:
+        """Acknowledge stop after the current synchronous worker call returns.
+
+        If evaluation is blocked, driver cleanup times out this request and
+        terminates the worker after capturing its child processes.
+        """
+        self.should_stop = True
+
+    def close_envs(self) -> None:
+        """Close initialized environments once, including after partial startup."""
+        self.stop()
+        errors = []
+        closed = set()
+        for name in ("env_list", "eval_env_list"):
+            envs = getattr(self, name, [])
+            setattr(self, name, [])
+            for env in envs:
+                if id(env) in closed:
+                    continue
+                closed.add(id(env))
+                try:
+                    env.close()
+                except Exception as exc:
+                    errors.append(exc)
+        if errors:
+            raise RuntimeError(
+                f"Failed to close {len(errors)} environment(s)"
+            ) from errors[0]
+
     def finish_rollout(self, mode="train"):
         # reset
         if mode == "train":
@@ -989,7 +1018,10 @@ class EnvWorker(Worker):
                         merge_fn=RolloutResult.merge_rollout_results,
                         infer_batch_size_fn=self._infer_rollout_batch_size,
                         decoupled_mode=self.env_decoupled_mode,
+                        async_op=cooperative_yield,
                     )
+                    if cooperative_yield:
+                        rollout_result = await rollout_result.async_wait()
                     self.rollout_results[stage_id].attach_lamp_next_base_cache(
                         rollout_result.forward_inputs,
                         terminations=env_output.terminations,
@@ -1105,7 +1137,10 @@ class EnvWorker(Worker):
                     merge_fn=RolloutResult.merge_rollout_results,
                     infer_batch_size_fn=self._infer_rollout_batch_size,
                     decoupled_mode=self.env_decoupled_mode,
+                    async_op=cooperative_yield,
                 )
+                if cooperative_yield:
+                    rollout_result = await rollout_result.async_wait()
                 self.rollout_results[stage_id].attach_lamp_next_base_cache(
                     rollout_result.forward_inputs,
                     terminations=env_output.terminations,
@@ -1207,8 +1242,24 @@ class EnvWorker(Worker):
         rollout_channel: Channel,
         confirmation_channel: Channel | None = None,
         debug_channel: Channel | None = None,
+        episode_control_channel: Channel | None = None,
     ):
         eval_metrics = defaultdict(list)
+
+        def control(command: str, episode: int, chunk: int) -> None:
+            # One environment/stage owns this channel (validated by the runner).
+            # STEP precedes an observation; END/STOP have no observation/action.
+            if episode_control_channel is None:
+                return
+            message = (command, episode, chunk)
+            episode_control_channel.put(message, key="request")
+            if command != "step":
+                ack = episode_control_channel.get(key="ack")
+                if ack != message:
+                    raise RuntimeError(
+                        f"Evaluation control mismatch: {message} != {ack}"
+                    )
+
         if debug_channel is not None:
             self.eval_env_list[0].debug_actions = True
 
@@ -1217,7 +1268,13 @@ class EnvWorker(Worker):
             if confirmation_channel is not None and not self._confirm_eval_phase(
                 confirmation_channel, episode, "reset"
             ):
+                control("stop", episode, -1)
                 return {}
+            if episode_control_channel is not None and confirmation_channel is None:
+                for env in self.eval_env_list:
+                    resume = getattr(type(env), "resume_evaluation", None)
+                    if resume is not None:
+                        resume(env)
             if not self.cfg.env.eval.auto_reset or eval_rollout_epoch == 0:
                 for stage_id in range(self.stage_num):
                     self.eval_env_list[stage_id].is_start = True
@@ -1231,6 +1288,7 @@ class EnvWorker(Worker):
                             confirmation_channel, episode, "start"
                         )
                     ):
+                        control("stop", episode, -1)
                         return {}
                     env_output = EnvOutput(
                         obs=extracted_obs,
@@ -1241,6 +1299,7 @@ class EnvWorker(Worker):
                         ),
                     )
                     env_batch = self._lamp_env_batch(env_output)
+                    control("step", episode, 0)
                     self.send_to(
                         group_name=self.cfg.rollout.group_name,
                         channel=rollout_channel,
@@ -1253,6 +1312,7 @@ class EnvWorker(Worker):
                         decoupled_mode=self.env_decoupled_mode,
                     )
 
+            episode_finished = False
             for eval_step in range(self.n_eval_chunk_steps):
                 for stage_id in range(self.stage_num):
                     rollout_results = self.recv_from(
@@ -1285,6 +1345,15 @@ class EnvWorker(Worker):
                     env_output, env_info = self.env_evaluate_step(
                         raw_chunk_actions, stage_id
                     )
+                    if episode_control_channel is not None:
+                        episode_finished = bool(
+                            self.eval_prev_done[stage_id].all()
+                        ) or (eval_step == self.n_eval_chunk_steps - 1)
+                        if episode_finished:
+                            env = self.eval_env_list[stage_id]
+                            pause = getattr(type(env), "pause_evaluation", None)
+                            if pause is not None:
+                                pause(env)
                     if debug_channel is not None:
                         from rlinf.utils.eval_action_debug import jsonable
 
@@ -1308,6 +1377,10 @@ class EnvWorker(Worker):
                     for key, value in env_info.items():
                         eval_metrics[key].append(value)
 
+                    if episode_finished:
+                        control("end", episode, eval_step)
+                        break
+
                     if self.cfg.env.eval.auto_reset:
                         if (
                             eval_rollout_epoch == self.eval_rollout_epoch - 1
@@ -1318,6 +1391,7 @@ class EnvWorker(Worker):
                         if eval_step == self.n_eval_chunk_steps - 1:
                             continue
                     env_batch = self._lamp_env_batch(env_output)
+                    control("step", episode, eval_step + 1)
                     self.send_to(
                         group_name=self.cfg.rollout.group_name,
                         channel=rollout_channel,
@@ -1329,6 +1403,8 @@ class EnvWorker(Worker):
                         tag="rollout_results",
                         decoupled_mode=self.env_decoupled_mode,
                     )
+                if episode_finished:
+                    break
 
             if debug_channel is not None:
                 debug_channel.put(
@@ -1345,6 +1421,7 @@ class EnvWorker(Worker):
                     key="records",
                 )
             self.finish_rollout(mode="eval")
+        control("stop", self.eval_rollout_epoch, -1)
         for stage_id in range(self.stage_num):
             if self.eval_enable_offload:
                 self.eval_env_list[stage_id].offload()

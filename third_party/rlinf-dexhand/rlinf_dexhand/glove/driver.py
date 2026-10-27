@@ -99,5 +99,5 @@ class PSIGloveDriver:
 
     def close(self):
         if self.serial is not None:
-            self.serial.close()
-            self.serial = None
+            port, self.serial = self.serial, None
+            port.close()

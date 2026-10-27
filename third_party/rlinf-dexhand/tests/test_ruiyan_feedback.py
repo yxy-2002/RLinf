@@ -58,12 +58,12 @@ def test_partial_duplicate_unknown_and_invalid_feedback():
     np.testing.assert_allclose(driver.get_state(), expected)
     details = driver.get_detailed_state()
     assert details["missing_motor_ids"] == [1, 3, 4, 5, 6]
-    assert not details["feedback_valid"]
+    assert details["feedback_valid"]
     assert details["velocities"] == [0, 20, 0, 0, 0, 0]
     driver._link.read_responses.return_value = []
     driver._poll_state()
     np.testing.assert_allclose(driver.get_state(), expected)
-    assert not driver.get_detailed_state()["feedback_valid"]
+    assert driver.get_detailed_state()["feedback_valid"]
     driver._link.read_responses.return_value = [response(i) for i in range(1, 7)]
     driver._poll_state()
     assert driver.get_detailed_state()["feedback_valid"]
@@ -146,3 +146,34 @@ def test_feedback_ages_preserve_missing_motors():
     ages = driver.get_detailed_state()["feedback_age_s_by_motor"]
     assert ages[0] >= 0
     assert ages[1:] == [None] * 5
+
+
+def test_feedback_timeout_is_per_motor_and_monotonic():
+    from unittest.mock import patch
+
+    driver = RuiyanHandDriver(command_interval_s=0)
+    driver._link = Mock()
+    with patch("time.monotonic_ns", return_value=1_000_000_000):
+        driver._link.read_responses.return_value = [response(i) for i in range(1, 7)]
+        driver._poll_state()
+    with patch("time.monotonic_ns", return_value=1_400_000_000):
+        driver._link.read_responses.return_value = [response(i) for i in range(1, 6)]
+        driver._poll_state()
+        assert driver.get_detailed_state()["feedback_valid"]
+    with patch("time.monotonic_ns", return_value=1_500_000_001):
+        state = driver.get_detailed_state()
+        assert not state["feedback_valid"]
+        assert state["stale_motor_ids"] == [6]
+        driver._link.read_responses.return_value = [response(6)]
+        driver._poll_state()
+        assert driver.get_detailed_state()["feedback_valid"]
+
+
+def test_never_received_motor_is_invalid():
+    driver = RuiyanHandDriver(command_interval_s=0)
+    driver._link = Mock()
+    driver._link.read_responses.return_value = [response(i) for i in range(1, 6)]
+    driver._poll_state()
+    state = driver.get_detailed_state()
+    assert not state["feedback_valid"]
+    assert state["stale_motor_ids"] == [6]

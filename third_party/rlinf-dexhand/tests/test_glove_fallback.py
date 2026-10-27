@@ -33,8 +33,10 @@ def reader(monkeypatch, tmp_path):
             self.items = queue.Queue()
             self.closed = False
             self.start_error = None
+            self.starts = 0
 
         def start(self):
+            self.starts += 1
             if self.start_error:
                 raise self.start_error
 
@@ -152,10 +154,8 @@ def test_initial_wait_success_and_timeout(reader):
     assert received == [item]
 
 
-@pytest.mark.parametrize(
-    "failure", [serial.SerialException("disconnected"), "bad mapping"]
-)
-def test_fatal_error_overrides_cached_target(reader, failure):
+def test_fatal_error_overrides_cached_target(reader):
+    failure = "bad mapping"
     expert = reader()
     expert.driver.items.put(target(1))
     expert.get_target()
@@ -175,10 +175,11 @@ def test_open_failure_wakes_waiter(reader, monkeypatch):
         raise error
 
     monkeypatch.setattr(pipeline.PSIGloveDriver, "start", fail)
-    expert = reader()
-    with pytest.raises(RuntimeError) as caught:
+    expert = reader(startup_timeout=0.05)
+    with pytest.raises(RuntimeError, match="No valid glove sample"):
         expert.get_target()
-    assert caught.value.__cause__ is error
+    assert expert.error is None
+    assert not expert.get_state().connected
 
 
 def test_close_wakes_initial_waiter(reader):
@@ -281,7 +282,7 @@ def test_missing_pipeline_fails_before_reader_start(config, monkeypatch):
         ("psiglove_1", "ruiyanhand", "channel_linear", True),
         ("psiglove_2", "wuji1hand", "wuji_tier2", True),
         ("psiglove_1", "wuji1hand", "wuji_tier2", False),
-        ("psiglove_2", "ruiyanhand", "channel_linear", False),
+        ("psiglove_2", "ruiyanhand", "channel_linear", True),
         ("psiglove_1", "ruiyanhand", "wuji_tier2", False),
         ("unknown", "ruiyanhand", "channel_linear", False),
     ],
@@ -322,3 +323,74 @@ def test_complete_wrong_channel_count_is_fatal(reader, glove, count):
     wait_for(lambda: expert.error is not None)
     with pytest.raises(RuntimeError, match="Glove acquisition failed"):
         expert.get_target()
+
+
+def test_serial_disconnect_reopens_and_advances_generation(reader, monkeypatch):
+    monkeypatch.setattr(module.GloveExpert, "RECONNECT_DELAY_S", 0.03)
+    expert = reader()
+    first = target(1)
+    expert.driver.items.put(first)
+    expert.get_target()
+    old = expert.get_state()
+    assert old.connected
+    expert.driver.items.put(serial.SerialException("USB removed"))
+    wait_for(lambda: not expert.get_state().connected)
+    assert expert.error is None
+    assert expert.get_target() is first  # Legacy API preserves actual sample age.
+    second = target(2)
+    expert.driver.items.put(second)
+    wait_for(lambda: expert.get_state().connected)
+    state = expert.get_state()
+    assert state.target is second and state.generation == old.generation + 1
+    assert expert.driver.starts == 2
+
+
+def test_stale_target_gates_input_and_recovery_changes_epoch(reader):
+    expert = reader()
+    expert.driver.items.put(target(1))
+    expert.get_target()
+    old = expert.get_state().generation
+    with expert.condition:
+        expert._last_success -= 1
+    assert not expert.get_state().connected
+    expert.driver.items.put(target(2))
+    wait_for(lambda: expert.get_state().connected)
+    assert expert.get_state().generation == old + 1
+    expert.close()
+    assert not expert.get_state().connected
+
+
+def test_close_interrupts_serial_reconnect_backoff(reader):
+    expert = reader()
+    expert.driver.items.put(target(1))
+    expert.get_target()
+    expert.driver.items.put(serial.SerialException("USB removed"))
+    wait_for(lambda: not expert.get_state().connected)
+    start = time.monotonic()
+    expert.close()
+    assert time.monotonic() - start < 0.5
+
+
+def test_reconnect_retries_until_port_returns(reader, monkeypatch):
+    monkeypatch.setattr(module.GloveExpert, "RECONNECT_DELAY_S", 0.03)
+    expert = reader()
+    expert.driver.items.put(target(1))
+    expert.get_target()
+    expert.driver.start_error = serial.SerialException("Port absent")
+    expert.driver.items.put(serial.SerialException("USB removed"))
+    wait_for(lambda: expert.driver.starts >= 3)
+    assert not expert.get_state().connected
+    assert expert.error is None
+    expert.driver.start_error = None
+    expert.driver.items.put(target(2))
+    wait_for(lambda: expert.get_state().connected)
+
+
+def test_timeout_does_not_reopen_serial_port(reader):
+    expert = reader()
+    expert.driver.items.put(target(1))
+    expert.get_target()
+    expert.driver.items.put(TimeoutError("Incomplete frame"))
+    wait_for(lambda: expert._failures > 0)
+    assert expert.driver.starts == 1
+    assert expert.get_state().connected

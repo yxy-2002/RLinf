@@ -17,10 +17,10 @@ runner:
   execution_mode: async
   enable_decoupled_mode: false
   weight_sync_interval: 25
-  max_steps: 16000
+  max_steps: 100000
   only_eval: false
   val_check_interval: -1
-  save_interval: 500
+  save_interval: 1000
   resume_dir: null
   ckpt_path: null
 algorithm:
@@ -42,8 +42,9 @@ algorithm:
   entropy_tuning:
     alpha_type: exp
     initial_alpha: 0.01
-    # Inferred as -0.5 * the number of decoder-causal coordinates.
+    # Inferred as target_entropy_per_dim * K * core_action_dim.
     target_entropy: null
+    target_entropy_per_dim: -0.5
     optim:
       lr: 0.0003
       lr_scheduler: torch_constant
@@ -52,14 +53,14 @@ algorithm:
     enable_cache: true
     cache_size: 70000
     sample_window_size: 70000
-    min_buffer_size: 100
+    min_buffer_size: 400
     auto_save: true
-    enable_preload: false
-    prefetch_size: 4
+    enable_preload: true
+    prefetch_size: 2
   demo_buffer:
     enable_cache: true
-    cache_size: 1000
-    sample_window_size: 1000
+    cache_size: 2000
+    sample_window_size: 2000
     min_buffer_size: 1
     auto_save: true
     load_path: ???
@@ -107,11 +108,13 @@ actor:
     actor_hidden_dims: [256, 256, 256]
     log_std_min: -20.0
     log_std_max: 2.0
-    init_log_std: -9.0
+    # Initial Gaussian log std before tanh; -2.5 gives std approximately 0.082.
+    init_log_std: -2.5
     eval_base_noise_seed: ${env.eval.seed}
     eval_base_noise_seeds: []
     eval_base_noise_seed_offset: 0
     target_entropy: ${algorithm.entropy_tuning.target_entropy}
+    target_entropy_per_dim: ${oc.select:algorithm.entropy_tuning.target_entropy_per_dim,-0.5}
     hand_prior: null
     training_recipe: ${algorithm.training_recipe}
   group_name: ActorGroup
@@ -122,7 +125,11 @@ actor:
   global_batch_size: 256
   micro_batch_size: 256
   enable_offload: false
-  enable_drq: false
+  enable_drq: true
+  # Sample missing base cores once at ingestion; keep fresh DrQ image features.
+  lamp_cache_base_core: true
+  # Share detached current-observation features within an actor/critic update.
+  lamp_share_frozen_features: true
   sync_weight_no_wait: false
   optim:
     lr: 0.0003

@@ -247,7 +247,6 @@ class RuiyanHandDriver:
         self._current_positions = np.zeros(self.NUM_DOFS, dtype=np.float64)
         self._motor_feedback_ns = np.zeros(self.NUM_DOFS, dtype=np.int64)
         self._feedback_timestamp = 0.0
-        self._feedback_complete = False
         self._missing_motor_ids = set(self._motor_ids)
         self._current_velocities = np.zeros(self.NUM_DOFS, dtype=np.float64)
         self._current_currents = np.zeros(self.NUM_DOFS, dtype=np.float64)
@@ -286,17 +285,28 @@ class RuiyanHandDriver:
             return self._current_positions.copy()
 
     def get_detailed_state(self) -> dict:
-        """Return detailed per-motor diagnostic information."""
+        """Return per-motor feedback, valid while every motor is <=0.5 s old.
+
+        Freshness uses monotonic time and survives partial serial reads.
+        ``missing_motor_ids`` describes only the latest poll; it is not a
+        fault unless that motor has never replied or exceeds the age limit.
+        """
         with self._lock:
+            now_ns = time.monotonic_ns()
+            ages = [
+                None if stamp == 0 else (now_ns - int(stamp)) / 1e9
+                for stamp in self._motor_feedback_ns
+            ]
+            stale_ids = [
+                motor_id
+                for motor_id, age in zip(self._motor_ids, ages)
+                if age is None or age > 0.5
+            ]
             return {
                 "feedback_timestamp": self._feedback_timestamp,
-                "feedback_age_s_by_motor": [
-                    None if stamp == 0 else (time.monotonic_ns() - int(stamp)) / 1e9
-                    for stamp in self._motor_feedback_ns
-                ],
-                "feedback_valid": self._feedback_complete
-                and self._feedback_timestamp > 0
-                and time.time() - self._feedback_timestamp <= 0.5,
+                "feedback_age_s_by_motor": ages,
+                "feedback_valid": not stale_ids,
+                "stale_motor_ids": stale_ids,
                 "missing_motor_ids": sorted(self._missing_motor_ids),
                 "finger_names": list(self.FINGER_NAMES),
                 "positions": self._current_positions.copy().tolist(),
@@ -393,7 +403,6 @@ class RuiyanHandDriver:
 
         with self._lock:
             self._missing_motor_ids = set(self._motor_ids) - received.keys()
-            self._feedback_complete = not self._missing_motor_ids
             if not received:
                 return
             # Preserve missing positions; missing velocity/current default to zero

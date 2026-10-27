@@ -70,6 +70,7 @@ class AsyncLampRealWorldRLPDPolicy(
             history_length=history_length,
             episodes=list(range(start, stop)),
         ):
+            self._prepare_replay_cores([trajectory])
             self.demo_buffer.add_trajectories([trajectory])
         # Source identity is independent of the frozen base weights. The normal
         # training checkpoint contract separately checks model compatibility.

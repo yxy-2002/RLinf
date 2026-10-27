@@ -19,4 +19,5 @@ CMD=(python "${EMBODIED_PATH}/collect_real_data.py"
      "runner.logger.log_path=${LOG_DIR}" "$@")
 printf '%q ' "${CMD[@]}" > "${LOG_DIR}/run_embodiment.log"
 printf '\n' >> "${LOG_DIR}/run_embodiment.log"
-"${CMD[@]}" 2>&1 | tee -a "${LOG_DIR}/run_embodiment.log"
+# Keep logging while the driver flushes data and cleans remote hardware.
+"${CMD[@]}" 2>&1 | (trap '' INT TERM; exec tee -a "${LOG_DIR}/run_embodiment.log")

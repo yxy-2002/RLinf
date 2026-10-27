@@ -10,4 +10,4 @@ runner:
   pause_between_episodes: true
 reward:
   model:
-    model_path: /workspace/yxy_RLinf/RLinf/logs/reward_model/20261016-131705-ruiyan_reward_training_stack_cube/ruiyan-stack-cube-resnet18/checkpoints/best_model/actor/model_state_dict/full_weights.pt
+    model_path: /workspace/yxy_RLinf/RLinf/logs/reward_model/20261022-085656-ruiyan_reward_training_stack_cube/ruiyan-stack-cube-resnet18/checkpoints/global_step_400/actor/model_state_dict/full_weights.pt

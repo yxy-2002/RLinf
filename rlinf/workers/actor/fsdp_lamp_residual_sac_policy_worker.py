@@ -38,6 +38,123 @@ from rlinf.workers.actor.fsdp_sac_policy_worker import EmbodiedSACFSDPPolicy
 class LampResidualSACFSDPPolicy(EmbodiedSACFSDPPolicy):
     """Reuse RLinf SAC while preserving LAMP macro-transition semantics."""
 
+    def _cache_base_core_enabled(self) -> bool:
+        return bool(self.cfg.get("actor", {}).get("lamp_cache_base_core", False))
+
+    def _core_generator(self) -> torch.Generator:
+        """Keep cache population independent of the SAC sampling RNG."""
+        if not hasattr(self, "_lamp_core_generator"):
+            self._lamp_core_generator = torch.Generator(device=self.device)
+            self._lamp_core_generator.manual_seed(
+                int(self.cfg.actor.get("seed", 1234)) + 771 + self._rank
+            )
+        return self._lamp_core_generator
+
+    @torch.no_grad()
+    def _prepare_replay_cores(self, trajectories) -> None:
+        """Persist cores for original observations before replay publication.
+
+        Rollout's valid core is preserved. Missing current/next cores are sampled
+        once, including terminal observations. Feature validity remains separate:
+        an old visual feature must never become valid by filling its core.
+        """
+        if not self._cache_base_core_enabled():
+            return
+        policy = self._unwrap_policy(self.model)
+        for trajectory in trajectories:
+            shape = tuple(trajectory.rewards.shape[:2])
+            rows = shape[0] * shape[1]
+            context = trajectory.forward_inputs
+            for obs_key, prefix in (
+                ("curr_obs", "lamp_base"),
+                ("next_obs", "lamp_next_base"),
+            ):
+                key = f"{prefix}_replay_core"
+                expected = (*shape, policy.horizon, policy.core_dim)
+                if key in context:
+                    if tuple(context[key].shape) != expected or not bool(
+                        torch.isfinite(context[key]).all()
+                    ):
+                        raise ValueError(f"Invalid persisted LAMP core: {key}")
+                    continue
+                cores = torch.empty(expected, dtype=torch.float32)
+                flat = cores.flatten(0, 1)
+                valid = torch.zeros(rows, dtype=torch.bool)
+                original = context.get(f"{prefix}_core")
+                original_valid = context.get(f"{prefix}_cache_valid")
+                if original is not None and original_valid is not None:
+                    if (
+                        tuple(original.shape) != expected
+                        or original_valid.numel() != rows
+                    ):
+                        raise ValueError(f"Invalid rollout core shape: {prefix}")
+                    valid = original_valid.detach().cpu().bool().reshape(-1)
+                    flat[valid] = original.detach().cpu().flatten(0, 1)[valid]
+                missing = (~valid).nonzero().flatten()
+                observation = getattr(trajectory, obs_key)
+                for indices in missing.split(int(self.cfg.actor.micro_batch_size)):
+                    if indices.numel() == 0:
+                        continue
+                    obs = {
+                        name: tensor.flatten(0, 1)[indices].to(self.device)
+                        for name, tensor in observation.items()
+                    }
+                    features = policy.base_policy.encode_observation(obs)
+                    flat[indices] = (
+                        policy.base_policy.sample_base_core(
+                            features, generator=self._core_generator()
+                        )
+                        .detach()
+                        .cpu()
+                        .float()
+                    )
+                if not bool(torch.isfinite(cores).all()):
+                    raise ValueError(f"Nonfinite LAMP replay core: {key}")
+                context[key] = cores
+
+    def _load_demo_buffer(self, load_path: str) -> None:
+        """Materialize converted demo cores in this run, leaving sources intact."""
+        super()._load_demo_buffer(load_path)
+        if not self._cache_base_core_enabled():
+            return
+        self._demo_training_identity(self._unwrap_policy(self.model))
+        buffer = self.demo_buffer
+        destination = (
+            Path(self.cfg.runner.logger.log_path)
+            / "lamp_core_cache"
+            / f"rank_{self._rank}"
+            / "demo"
+        )
+        destination.mkdir(parents=True, exist_ok=True)
+        cache = buffer._flat_trajectory_cache
+        if cache is not None:
+            cache.clear()
+        for tid in buffer._trajectory_id_list:
+            version = buffer._trajectory_index[tid]["model_weights_id"]
+            trajectory = buffer._load_trajectory(tid, version)
+            self._prepare_replay_cores([trajectory])
+            buffer._save_trajectory(trajectory, tid, version, str(destination))
+            buffer._trajectory_file_path[tid] = str(destination)
+            if cache is not None:
+                cache.put(tid, buffer._flatten_trajectory(trajectory))
+
+    def update_one_epoch(self, train_actor: bool = True):
+        """Limit detached augmented features to one optimizer update."""
+        self._lamp_shared_features = (
+            {}
+            if self.cfg.actor.get("lamp_share_frozen_features", False)
+            and train_actor
+            and self.update_step % self.critic_actor_ratio == 0
+            else None
+        )
+        try:
+            return super().update_one_epoch(train_actor=train_actor)
+        finally:
+            self._lamp_shared_features = None
+            # A failed actor/alpha update must not leak log probabilities.
+            if getattr(self, "_alpha_log_pi_cache", None):
+                self._alpha_log_pi_cache.clear()
+
     def compile_training_models(self) -> None:
         """Retain FSDP parameter names and compile only actor/Q tensor kernels."""
         for model in (self.model, self.target_model):
@@ -84,9 +201,15 @@ class LampResidualSACFSDPPolicy(EmbodiedSACFSDPPolicy):
                 f"expected {expected_target_entropy:g}, got "
                 f"{float(configured_target_entropy):g}"
             )
-        if expected_target_entropy != -0.5 * float(causal_action_dim):
-            raise RuntimeError(
-                "LAMP model target entropy must equal -0.5 * causal_action_dim"
+        configured_per_dim = float(
+            self.cfg.algorithm.entropy_tuning.get("target_entropy_per_dim", -0.5)
+        )
+        if expected_target_entropy != configured_per_dim * causal_action_dim:
+            raise ValueError(
+                "LAMP model target entropy must equal configured "
+                "target_entropy_per_dim * causal_action_dim: "
+                f"expected {configured_per_dim * causal_action_dim:g}, "
+                f"got {expected_target_entropy:g}"
             )
         if self.cfg.algorithm.entropy_tuning.get("alpha_type") != "exp":
             raise ValueError("LAMP residual SAC requires alpha_type=exp")
@@ -118,6 +241,7 @@ class LampResidualSACFSDPPolicy(EmbodiedSACFSDPPolicy):
                     "contract_digest": policy.contract_digest,
                 }
             validate_lamp_residual_trajectory(trajectory, **kwargs)
+        self._prepare_replay_cores(trajectories)
         self.replay_buffer.add_trajectories(trajectories)
         if getattr(self, "demo_buffer", None) is not None:
             interventions = []
@@ -198,10 +322,20 @@ class LampResidualSACFSDPPolicy(EmbodiedSACFSDPPolicy):
         else:
             # Preserve legacy checkpoint equality for Policy Decorator runs.
             contract["utd_ratio"] = float(algorithm.utd_ratio)
+        if self._cache_base_core_enabled():
+            contract["replay_base_core_version"] = 1
         return contract
 
     def setup_sac_components(self) -> None:
         """Use the proven RealWorld replay/mixer and validate LAMP contracts."""
+        if self._cache_base_core_enabled() or self.cfg.actor.get(
+            "lamp_share_frozen_features", False
+        ):
+            # Initialize the FSDP root before directly calling its frozen child.
+            self.model.state_dict()
+            policy = self._unwrap_policy(self.model)
+            if any(p.requires_grad for p in policy.base_policy.parameters()):
+                raise ValueError("LAMP replay caching requires a frozen base policy")
         super().setup_sac_components()
         if self.demo_buffer is not None:
             if self.cfg.actor.global_batch_size // self._world_size % 2:
@@ -232,6 +366,9 @@ class LampResidualSACFSDPPolicy(EmbodiedSACFSDPPolicy):
                 "demo_rng": None
                 if self.demo_buffer is None
                 else self.demo_buffer.random_generator.get_state(),
+                "lamp_core_rng": self._core_generator().get_state()
+                if self._cache_base_core_enabled()
+                else None,
             },
             root / f"lamp_sampling_rank_{self._rank}.pt",
         )
@@ -263,7 +400,8 @@ class LampResidualSACFSDPPolicy(EmbodiedSACFSDPPolicy):
         if manifest.exists():
             if json.loads(manifest.read_text()) != self._training_contract():
                 raise ValueError(
-                    "LAMP checkpoint training contract differs from this run"
+                    "LAMP checkpoint training contract differs from this run; "
+                    "changing lamp_cache_base_core requires a new run"
                 )
         elif self.demo_buffer is not None:
             raise ValueError("An online-only checkpoint cannot resume as RLPD")
@@ -278,12 +416,18 @@ class LampResidualSACFSDPPolicy(EmbodiedSACFSDPPolicy):
                 str(root / "demo_buffer" / f"rank_{self._rank}")
             )
         sampling_path = root / f"lamp_sampling_rank_{self._rank}.pt"
+        if self._cache_base_core_enabled() and not sampling_path.is_file():
+            raise ValueError("Cached-core checkpoint is missing its sampling state")
         if sampling_path.exists():
             sampling = torch.load(sampling_path, map_location="cpu", weights_only=True)
             self.update_step = int(sampling["update_step"])
             self.replay_buffer.random_generator.set_state(sampling["online_rng"])
             if self.demo_buffer is not None:
                 self.demo_buffer.random_generator.set_state(sampling["demo_rng"])
+            if self._cache_base_core_enabled():
+                if sampling.get("lamp_core_rng") is None:
+                    raise ValueError("Cached-core checkpoint is missing its RNG state")
+                self._core_generator().set_state(sampling["lamp_core_rng"])
 
     @staticmethod
     def _update_rollout_ingest_counters(
@@ -392,8 +536,52 @@ class LampResidualSACFSDPPolicy(EmbodiedSACFSDPPolicy):
     def _next_observation(batch) -> dict[str, torch.Tensor]:
         return dict(batch["next_obs"])
 
-    @staticmethod
-    def _base_cache(batch, *, next_state: bool = False) -> dict[str, torch.Tensor]:
+    def _base_cache(
+        self, batch, *, next_state: bool = False
+    ) -> dict[str, torch.Tensor]:
+        cache = self._replay_base_cache(batch, next_state=next_state)
+        slots = getattr(self, "_lamp_shared_features", None)
+        if next_state or slots is None:
+            return cache
+        if id(batch) not in slots:
+            policy = self._unwrap_policy(self.model)
+            with torch.no_grad():
+                features = policy.base_policy.encode_observation(
+                    self._current_observation(batch)
+                )
+                shared = {"condition": features.condition.detach()}
+                if "pre_fusion" in (
+                    policy.actor_input,
+                    policy.critic_observation_input,
+                ):
+                    prefusion = policy._flatten_pre_fusion_features(features).detach()
+                    shared.update(
+                        actor_observation=prefusion, critic_observation=prefusion
+                    )
+            # Hold the batch too, so Python cannot reuse its identity this update.
+            slots[id(batch)] = (batch, shared)
+        # The freshly encoded features are valid even for old replay placeholders.
+        # In the legacy path, keep the validity mask for missing base cores.
+        return {**cache, **slots[id(batch)][1]}
+
+    def _replay_base_cache(
+        self, batch, *, next_state: bool = False
+    ) -> dict[str, torch.Tensor]:
+        if self._cache_base_core_enabled():
+            prefix = "lamp_next_base" if next_state else "lamp_base"
+            core = batch.get("forward_inputs", {}).get(f"{prefix}_replay_core")
+            if core is None:
+                raise ValueError(
+                    "LAMP replay core missing; prepare data before sampling"
+                )
+            # Never pass original-image features or their validity mask through
+            # this path. DrQ features are freshly encoded on every update.
+            return {"base_core": core}
+        # update_one_epoch crops both observations before any training forward.
+        # Replay features and diffusion plans describe the original images, so
+        # recompute both from the augmented observation without mutating replay.
+        if getattr(self, "enable_drq", False):
+            return {}
         context = batch.get("forward_inputs", {})
         prefix = "lamp_next_base" if next_state else "lamp_base"
         condition = context.get(f"{prefix}_condition")

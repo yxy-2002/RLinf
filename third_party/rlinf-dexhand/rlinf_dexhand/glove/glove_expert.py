@@ -7,8 +7,10 @@ import logging
 import math
 import threading
 import time
+from dataclasses import dataclass
 
 import numpy as np
+from serial import SerialException
 
 from ..types import HandTarget
 from .driver import GloveFrameError
@@ -16,7 +18,19 @@ from .driver import GloveFrameError
 logger = logging.getLogger(__name__)
 
 
+@dataclass(frozen=True)
+class GloveState:
+    """Atomic target and connection identity for safe teleoperation."""
+
+    target: HandTarget | None
+    connected: bool
+    generation: int
+
+
 class GloveExpert:
+    RECONNECT_DELAY_S = 1.0
+    STALE_TIMEOUT_S = 0.5
+
     def __init__(
         self,
         *,
@@ -49,6 +63,8 @@ class GloveExpert:
         self.frequency = frequency
         self.startup_timeout = startup_timeout
         self.warning_interval = warning_interval
+        self._connected = False
+        self._generation = 0
         self._failures = 0
         self._last_warning = -math.inf
         self._last_success = None
@@ -76,15 +92,31 @@ class GloveExpert:
 
     def _read_loop(self):
         try:
-            self.driver.start()
+            opened = False
             while not self.stop.is_set():
                 begin = time.monotonic()
                 try:
+                    if not opened:
+                        self.driver.start()
+                        opened = True
                     sample = self.driver.read()
                 except (TimeoutError, GloveFrameError) as exc:
                     with self.condition:
                         self._failures += 1
                         self._warn_locked(f"{type(exc).__name__}: {exc}")
+                except (SerialException, OSError) as exc:
+                    with self.condition:
+                        self._connected = False
+                        self._failures += 1
+                        self._warn_locked(f"Serial disconnected; reconnecting: {exc}")
+                        self.condition.notify_all()
+                    try:
+                        self.driver.close()
+                    except (SerialException, OSError):
+                        logger.warning("Could not close disconnected glove port")
+                    opened = False
+                    self.stop.wait(self.RECONNECT_DELAY_S)
+                    continue
                 else:
                     # Mapping errors are fatal, not communication failures.
                     target = self.retargeter.update(sample)
@@ -96,6 +128,16 @@ class GloveExpert:
                                 self.driver.port,
                                 self._failures,
                             )
+                        # A connection epoch also changes after a stale interval,
+                        # so consumers re-arm even if they missed the outage.
+                        if (
+                            not self._connected
+                            or self._last_success is None
+                            or time.monotonic() - self._last_success
+                            > self.STALE_TIMEOUT_S
+                        ):
+                            self._generation += 1
+                        self._connected = True
                         self.latest = target
                         self._last_success = time.monotonic()
                         self._failures = 0
@@ -136,6 +178,21 @@ class GloveExpert:
                         f"on {self.driver.port}"
                     )
                 self.condition.wait(remaining)
+
+    def get_state(self) -> GloveState:
+        """Return nonblocking health; cached targets never count as fresh input."""
+        with self.condition:
+            if self.error is not None:
+                raise RuntimeError("Glove acquisition failed") from self.error
+            connected = (
+                self._connected
+                and not self.stop.is_set()
+                and self.thread.is_alive()
+                and self.latest is not None
+                and time.monotonic() - self._last_success <= self.STALE_TIMEOUT_S
+                and 0 <= time.time() - self.latest.timestamp <= self.STALE_TIMEOUT_S
+            )
+            return GloveState(self.latest, connected, self._generation)
 
     def get_angles(self):
         return np.asarray(self.get_target().values).copy()

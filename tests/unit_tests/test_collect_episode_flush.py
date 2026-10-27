@@ -4,6 +4,7 @@
 """Check episode flush decisions without constructing a hardware environment."""
 
 import importlib.util
+from concurrent.futures import Future
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock
@@ -62,3 +63,30 @@ def test_running_env_history_is_not_accessed():
     collector._get_episode_success.assert_called_once_with(collector._buffers[1], 1)
     collector._flush_episode.assert_called_once_with(1, False)
     collector._reset_env_buffer.assert_called_once_with(1)
+
+
+@pytest.mark.parametrize("write_error", [False, True])
+def test_finalize_writers_keeps_hardware_alive_until_explicit_close(write_error):
+    collector = object.__new__(MODULE.CollectEpisode)
+    collector.env = Mock()
+    collector._closed = False
+    collector.export_format = "pickle"
+    executor = Mock()
+    collector._executor = executor
+    pending = Future()
+    if write_error:
+        pending.set_exception(OSError("disk write failed"))
+    else:
+        pending.set_result(None)
+    collector._futures = [pending]
+    if write_error:
+        with pytest.raises(OSError, match="disk write failed"):
+            collector.finish_recording()
+    else:
+        collector.finish_recording()
+    collector.env.close.assert_not_called()
+    executor.shutdown.assert_called_once_with(wait=True)
+    collector.finish_recording()
+    collector.close()
+    collector.close()
+    collector.env.close.assert_called_once()

@@ -107,6 +107,18 @@ def test_driver_sync_runs_after_collection_and_before_worker_cleanup(
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     events = []
+    from contextlib import contextmanager
+
+    @contextmanager
+    def exit_cleanup(**kwargs):
+        resources = []
+        try:
+            yield resources
+        finally:
+            assert collector in resources
+            events.append("worker_closed")
+
+    monkeypatch.setattr(module, "training_exit_cleanup", exit_cleanup)
     collector = Mock()
     collector.run.return_value.wait.side_effect = lambda: events.append("run_finished")
     collector.collection_outputs.return_value.wait.return_value = [
@@ -114,7 +126,7 @@ def test_driver_sync_runs_after_collection_and_before_worker_cleanup(
     ]
     collector._close.side_effect = lambda: events.append("worker_closed")
     worker = Mock()
-    worker.create_group.return_value.launch.return_value = collector
+    worker.create_group.return_value = collector
     monkeypatch.setattr(module, "DataCollector", worker)
     monkeypatch.setattr(module, "Cluster", Mock())
     monkeypatch.setattr(module, "ComponentPlacement", Mock())

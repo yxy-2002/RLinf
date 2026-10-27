@@ -373,6 +373,7 @@ class LampResidualSACPolicy(nn.Module, BasePolicy):
         critic_observation_input: str = "condition",
         entropy_scope: str = "decoder_causal",
         target_entropy: float | None = None,
+        target_entropy_per_dim: float = -0.5,
         training_recipe: str = "policy_decorator",
         learning_starts_macro_transitions: int = 8000,
         progressive_exploration_macro_steps: int = 30000,
@@ -475,7 +476,10 @@ class LampResidualSACPolicy(nn.Module, BasePolicy):
         )
         self.register_buffer("causal_mask", causal_mask, persistent=False)
         self.causal_action_dim = int(causal_mask.sum().item())
-        self.target_entropy = -0.5 * float(self.causal_action_dim)
+        self.target_entropy_per_dim = float(target_entropy_per_dim)
+        if not math.isfinite(self.target_entropy_per_dim):
+            raise ValueError("LAMP target_entropy_per_dim must be finite")
+        self.target_entropy = self.target_entropy_per_dim * self.causal_action_dim
         self.validate_target_entropy(target_entropy)
 
         residual_scale_per_action = self.residual_scale_per_core * self.horizon
@@ -639,7 +643,8 @@ class LampResidualSACPolicy(nn.Module, BasePolicy):
             float(configured), self.target_entropy, rel_tol=0.0, abs_tol=1e-6
         ):
             raise ValueError(
-                "LAMP target entropy must equal -0.5 * decoder-causal action count: "
+                "LAMP target entropy must equal target_entropy_per_dim * "
+                "decoder-causal action count: "
                 f"expected {self.target_entropy:g}, got {float(configured):g}"
             )
         return self.target_entropy
@@ -1040,6 +1045,7 @@ class LampResidualSACPolicy(nn.Module, BasePolicy):
             context["base_core"] + residual,
             context["base_core"],
         )
+        context["lamp_adapted_core"] = corrected_core.detach()
         physical_full = self.base_policy.decode_core_action(
             corrected_core,
             decoder_history=context.get("decoder_history"),
@@ -1158,6 +1164,28 @@ class LampResidualSACPolicy(nn.Module, BasePolicy):
                 )
         else:
             observation_features = shared_feature[feature_key]
+            valid = shared_feature.get("base_cache_valid")
+            if valid is not None:
+                valid = torch.as_tensor(
+                    valid, device=observation_features.device, dtype=torch.bool
+                ).reshape(-1)
+                if valid.shape[0] != observation_features.shape[0]:
+                    raise ValueError(
+                        "base_cache_valid batch size differs from critic observation"
+                    )
+                if not bool(valid.all()):
+                    invalid = ~valid
+                    with torch.no_grad():
+                        features = self.base_policy.encode_observation(
+                            self._slice_observation(obs, invalid)
+                        )
+                        fresh = (
+                            features.condition
+                            if self.critic_observation_input == "condition"
+                            else self._flatten_pre_fusion_features(features)
+                        )
+                        observation_features = observation_features.clone()
+                        observation_features[invalid] = fresh.to(observation_features)
         observation_features = observation_features.detach()
         if (
             observation_features.ndim != 2
@@ -1304,7 +1332,25 @@ class LampResidualSACPolicy(nn.Module, BasePolicy):
         )
         if enabled is None:
             enabled = torch.ones(batch, dtype=torch.bool, device=execution.device)
+        debug_outputs = {}
+        if mode == "eval":
+            # Reuse this exact forward pass, including quaternion correction.
+            # All fields retain a batch axis for distributed rollout splitting.
+            debug_outputs = {
+                "base_core_chunk": context["base_core"],
+                "residual_chunk": _residual,
+                "adapted_core_chunk": context["lamp_adapted_core"],
+                "planned_env_action_chunk": _full_plan,
+                "sent_env_action_chunk": execution,
+                "residual_mean": residual_mean,
+                "residual_log_std": log_std.reshape(-1, self.horizon, self.core_dim),
+                "residual_scale": scale.reshape(1, self.horizon, self.core_dim).expand(
+                    batch, -1, -1
+                ),
+                "residual_causal_mask": self.causal_mask.expand(batch, -1, -1),
+            }
         return execution, {
+            "debug_outputs": debug_outputs,
             "prev_logprobs": previous_logprobs,
             "prev_values": previous_values,
             "forward_inputs": forward_inputs,

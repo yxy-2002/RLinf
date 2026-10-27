@@ -623,14 +623,13 @@ class LampPolicy(nn.Module, BasePolicy):
             )
         return history, mask
 
-    def sample_base_plan(
+    def sample_base_core(
         self,
         features: LampObservationFeatures,
         initial_noise: torch.Tensor | None = None,
         generator: torch.Generator | None = None,
-    ) -> LampPlan:
-        """Sample the exact normalized base plan and decode it once."""
-
+    ) -> torch.Tensor:
+        """Sample a normalized DP core without the unused physical decoding."""
         batch = features.condition.shape[0]
         if initial_noise is None:
             sample = torch.randn(
@@ -642,7 +641,16 @@ class LampPolicy(nn.Module, BasePolicy):
         else:
             sample = initial_noise
         sampler = self._compiled_predict or self.core._ddim_sample
-        core_action_norm = sampler(sample, features.condition)
+        return sampler(sample, features.condition)
+
+    def sample_base_plan(
+        self,
+        features: LampObservationFeatures,
+        initial_noise: torch.Tensor | None = None,
+        generator: torch.Generator | None = None,
+    ) -> LampPlan:
+        """Sample the exact normalized base plan and decode it once."""
+        core_action_norm = self.sample_base_core(features, initial_noise, generator)
         physical, decode_outputs = self.core._decode_core(
             core_action_norm,
             features.auxiliary.get("decoder_history"),

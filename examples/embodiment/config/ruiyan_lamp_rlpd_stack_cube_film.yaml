@@ -5,23 +5,24 @@ defaults:
 
 runner:
   logger:
-    experiment_name: ruiyan_lamp_rlpd_stack_cube_film_020_020
+    experiment_name: ruiyan_lamp_rlpd_stack_cube_film_030_020
 
 actor:
   model:
     # Load the exported DP and its embedded LAMPLSTM FiLM prior together.
-    model_path: /workspace/yxy_RLinf/RLinf/outputs/ruiyan_stack_cube_30demo_sweep_20261015/delivery/film/artifact
-    wrist_residual_scale: 0.2
+    model_path: /workspace/yxy_RLinf/RLinf/outputs/ruiyan_stack_cube_20demo_film_20261022/delivery/film/artifact
+    wrist_residual_scale: 0.3
     hand_residual_scale: 0.2
+    hand_prior:
+      type: lamplstm
 
 # Load all 30 recorded demos directly; chunk/history adaptation runs at startup.
 algorithm:
   demo_buffer:
     load_path:
-    - /workspace/yxy_RLinf/RLinf/logs/20261015-092341-ruiyan_demo_data_stack_cube/demos
-    - /workspace/yxy_RLinf/RLinf/logs/20261015-094038-ruiyan_demo_data_stack_cube/demos
-    - /workspace/yxy_RLinf/RLinf/logs/20261015-095330-ruiyan_demo_data_stack_cube/demos
+    - /workspace/yxy_RLinf/RLinf/logs/20261022-091242-ruiyan_demo_data_stack_cube/demos
+    - /workspace/yxy_RLinf/RLinf/logs/20261022-092538-ruiyan_demo_data_stack_cube/demos
 
 reward:
   model:
-    model_path: /workspace/yxy_RLinf/RLinf/logs/reward_model/20261016-131705-ruiyan_reward_training_stack_cube/ruiyan-stack-cube-resnet18/checkpoints/best_model/actor/model_state_dict/full_weights.pt
+    model_path: /workspace/yxy_RLinf/RLinf/logs/reward_model/20261022-085656-ruiyan_reward_training_stack_cube/ruiyan-stack-cube-resnet18/checkpoints/global_step_400/actor/model_state_dict/full_weights.pt

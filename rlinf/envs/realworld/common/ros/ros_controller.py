@@ -16,13 +16,35 @@ import os
 import pathlib
 import sys
 import time
+import xmlrpc.client
 from typing import Callable, Optional
+from urllib.parse import urlsplit
 
 import psutil
+import rosgraph
 import rospy
 from filelock import FileLock
 
 from rlinf.utils.logging import get_logger
+
+
+class _MasterTransport(xmlrpc.client.Transport):
+    """Bound each ROS master probe without changing global socket timeouts."""
+
+    def make_connection(self, host):
+        connection = super().make_connection(host)
+        connection.timeout = 1.0
+        return connection
+
+
+def _is_ros_master_online(uri: str) -> bool:
+    """Check the configured master's XML-RPC endpoint, not process names."""
+    try:
+        with xmlrpc.client.ServerProxy(uri, transport=_MasterTransport()) as master:
+            code, _, _ = master.getPid("/rlinf_master_probe")
+            return code == 1
+    except (OSError, xmlrpc.client.Error):
+        return False
 
 
 class ROSController:
@@ -45,17 +67,7 @@ class ROSController:
         if self._ros_version == 1:
             # roscore is removed in ROS 2
             with self._ros_lock:
-                self._ros_core = None
-                # Check roscore state and launch roscore
-                for proc in psutil.process_iter():
-                    if proc.name() == "roscore":
-                        self._ros_core = proc
-
-                if self._ros_core is None:
-                    self._ros_core = psutil.Popen(
-                        ["roscore"], stdout=sys.stdout, stderr=sys.stdout
-                    )
-                    time.sleep(1)  # Wait for roscore to start
+                self._ensure_ros_master()
 
         # Initialize ros node
         rospy.init_node("franka_controller", anonymous=True)
@@ -64,6 +76,42 @@ class ROSController:
         self._output_channels: dict[str, rospy.Publisher] = {}
         self._input_channels: dict[str, rospy.Subscriber] = {}
         self._input_channel_status: dict[str, bool] = {}
+
+    def _ensure_ros_master(self) -> None:
+        """Reuse a reachable master or wait for our new roscore to be ready."""
+        self._ros_core = None
+        master_uri = rosgraph.get_master_uri()
+        if _is_ros_master_online(master_uri):
+            self._logger.info("Reusing ROS master at %s", master_uri)
+            return
+
+        port = urlsplit(master_uri).port or 11311
+        self._ros_core = psutil.Popen(
+            ["roscore", "-p", str(port)], stdout=sys.stdout, stderr=sys.stdout
+        )
+        deadline = time.monotonic() + 10.0
+        while True:
+            # A master may also have been started by another application.
+            if _is_ros_master_online(master_uri):
+                self._logger.info("ROS master ready at %s", master_uri)
+                return
+            exit_code = self._ros_core.poll()
+            if exit_code is not None:
+                raise RuntimeError(
+                    f"roscore exited with code {exit_code}; "
+                    f"ROS master at {master_uri} is unavailable."
+                )
+            if time.monotonic() >= deadline:
+                self._ros_core.terminate()
+                try:
+                    self._ros_core.wait(timeout=5)
+                except psutil.TimeoutExpired:
+                    self._ros_core.kill()
+                    self._ros_core.wait(timeout=5)
+                raise RuntimeError(
+                    f"ROS master at {master_uri} did not become ready within 10s."
+                )
+            time.sleep(0.1)
 
     def get_input_channel_status(self, name: str) -> bool:
         """Get the status of a ROS input channel.

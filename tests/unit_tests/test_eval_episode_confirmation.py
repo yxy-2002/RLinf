@@ -131,7 +131,8 @@ def test_driver_flushes_each_phase_and_does_not_buffer_double_enter(monkeypatch)
     ]
 
 
-def test_driver_eof_cancels_waiting_worker(monkeypatch):
+@pytest.mark.parametrize("error", [EOFError, KeyboardInterrupt])
+def test_driver_interrupt_defers_worker_teardown_to_job_cleanup(monkeypatch, error):
     control = MagicMock()
     runner = EmbodiedEvalRunner.__new__(EmbodiedEvalRunner)
     runner.pause_between_eval_episodes = True
@@ -142,14 +143,15 @@ def test_driver_eof_cancels_waiting_worker(monkeypatch):
     monkeypatch.setattr(runner_module.Channel, "create", lambda name: control)
 
     def eof(*args):
-        raise EOFError("closed")
+        raise error("closed")
 
     monkeypatch.setattr(runner_module, "wait_for_eval_confirmations", eof)
-    with pytest.raises(EOFError):
+    with pytest.raises(error):
         runner.evaluate()
-    control.put.assert_called_once_with(None, key="confirm")
-    runner.env._close.assert_called_once()
-    runner.rollout._close.assert_called_once()
+    control.put.assert_not_called()
+    runner.env.evaluate.return_value.wait.assert_not_called()
+    runner.env._close.assert_not_called()
+    runner.rollout._close.assert_not_called()
 
 
 def test_driver_detects_eof_at_prompt(monkeypatch):

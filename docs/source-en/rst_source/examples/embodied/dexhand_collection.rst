@@ -291,12 +291,15 @@ the retargeted pose directly. ``release_behavior: hold`` keeps the last target
 when releasing the button during collection. ``policy`` passes through policy
 actions outside intervention. Ruiyan retains its existing [0,1] semantics.
 
-Wuji uses the same glove fallback as Ruiyan: timeouts or malformed frames
-reuse the last valid target while arm control and collection continue. A target
-older than 0.5 seconds causes a warning, not a collection pause or episode discard.
-New frames update the target automatically without a resume service or rebasing.
-Failure to obtain an initial sample or a fatal reader error still raises an error.
-Driver command timeouts and hardware faults remain separate and can stop collection.
+Wuji and Ruiyan share glove disconnect protection. Transient timeouts or malformed
+frames reuse the last valid target for up to 0.5 seconds. Serial disconnection or
+stale input pauses input delivery; collection holds the last hand target in
+``hold`` mode. The reader retries opening the configured port every second.
+After fresh input returns, the operator must release and press the takeover
+button again; relative control establishes a new baseline. The input generation
+also changes so RLPD can discard actions prepared before recovery.
+Failure to obtain an initial sample, mapping errors, driver command timeouts and
+hardware faults still raise errors. This protection does not repair USB hardware.
 
 Start the ROS1 display with:
 

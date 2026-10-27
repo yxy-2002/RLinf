@@ -20,6 +20,7 @@ from types import SimpleNamespace
 
 import pytest
 import torch
+from omegaconf import OmegaConf
 from torch import nn
 
 from rlinf.models.embodiment.lamp.policy_wrapper import (
@@ -153,6 +154,38 @@ def _observation(batch: int = 2) -> dict[str, torch.Tensor]:
     return {"condition": torch.randn(batch, 256)}
 
 
+@pytest.mark.parametrize("core_dim", [8, 9])
+@pytest.mark.parametrize("per_dim", [-0.5, -1.0])
+def test_configurable_causal_entropy_target(core_dim: int, per_dim: float) -> None:
+    expected = per_dim * 8 * core_dim
+    policy = LampResidualSACPolicy(
+        _FakeLampPolicy("pca", core_dim),
+        target_entropy_per_dim=per_dim,
+        target_entropy=expected,
+    )
+    assert policy.target_entropy == expected
+    assert policy.validate_target_entropy(None) == expected
+    with pytest.raises(ValueError, match="decoder-causal"):
+        policy.validate_target_entropy(expected + 1.0)
+
+
+@pytest.mark.parametrize("per_dim", [float("nan"), float("inf"), float("-inf")])
+def test_rejects_nonfinite_entropy_per_dim(per_dim: float) -> None:
+    with pytest.raises(ValueError, match="target_entropy_per_dim must be finite"):
+        LampResidualSACPolicy(_FakeLampPolicy("pca", 9), target_entropy_per_dim=per_dim)
+
+
+def test_residual_factory_passes_entropy_per_dim(monkeypatch) -> None:
+    from rlinf.models.embodiment import lamp
+
+    monkeypatch.setattr(
+        lamp, "get_model", lambda *args, **kwargs: _FakeLampPolicy("pca", 9)
+    )
+    cfg = OmegaConf.create({"num_action_chunks": 8, "target_entropy_per_dim": -1.0})
+    policy = lamp.get_residual_model(cfg)
+    assert policy.target_entropy == -72.0
+
+
 @pytest.mark.parametrize(
     ("prior", "core_dim", "active_dim"),
     (
@@ -246,6 +279,17 @@ def test_full_decode_then_crop_and_strict_q_action_contract(prior: str) -> None:
         mode="eval",
     )
     assert execution.shape == (2, 8, 23)
+    debug = metadata["debug_outputs"]
+    torch.testing.assert_close(debug["sent_env_action_chunk"], execution)
+    torch.testing.assert_close(debug["planned_env_action_chunk"][:, :8], execution)
+    torch.testing.assert_close(
+        debug["adapted_core_chunk"],
+        policy._correct_core_quaternion(
+            debug["base_core_chunk"] + debug["residual_chunk"],
+            debug["base_core_chunk"],
+        ),
+    )
+    assert all(value.shape[0] == 2 for value in debug.values())
     forward_inputs = metadata["forward_inputs"]
     assert torch.equal(
         forward_inputs["action"],

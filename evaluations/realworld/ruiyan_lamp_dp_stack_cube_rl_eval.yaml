@@ -1,0 +1,33 @@
+defaults:
+- ruiyan_demo_data_stack_cube
+- ruiyan_lamp_dp_rl_eval
+- _self_
+hydra:
+  searchpath:
+  - file://${oc.env:EMBODIED_PATH}/config/
+runner:
+  logger:
+    log_path: ./logs/eval/ruiyan_lamp
+    experiment_name: ruiyan_lamp_dp_stack_cube_rl_eval
+  ckpt_path: /workspace/yxy_RLinf/RLinf/logs/20261027-06:51:36-ruiyan_lamp_rlpd_stack_cube_film/ruiyan_lamp_rlpd_stack_cube_film_030_020/checkpoints/global_step_15000
+env:
+  eval:
+    rollout_epoch: 30
+    video_cfg:
+      save_video: true
+      video_base_dir: ${runner.logger.log_path}/video/eval
+      fps: 10
+      image_keys:
+      - extra_view_images[0]
+      - main_images
+rollout:
+  model:
+    # Keep the artifact and residual bounds identical to the training run.
+    model_path: /workspace/yxy_RLinf/RLinf/outputs/ruiyan_stack_cube_20demo_film_20261022/delivery/film/artifact
+    wrist_residual_scale: 0.3
+    hand_residual_scale: 0.2
+    hand_prior:
+      type: lamplstm
+reward:
+  model:
+    model_path: /workspace/yxy_RLinf/RLinf/logs/reward_model/20261022-085656-ruiyan_reward_training_stack_cube/ruiyan-stack-cube-resnet18/checkpoints/global_step_400/actor/model_state_dict/full_weights.pt

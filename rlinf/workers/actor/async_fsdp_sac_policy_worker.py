@@ -36,6 +36,7 @@ class AsyncEmbodiedSACFSDPPolicy(EmbodiedSACFSDPPolicy):
             getattr(self, "_recv_rollout_thread", None) is None
             or not self._recv_rollout_thread.is_alive()
         ):
+            self._recv_stop_event = threading.Event()
             self._recv_rollout_thread = threading.Thread(
                 target=self._recv_rollout_thread_main,
                 args=(input_channel,),
@@ -49,8 +50,13 @@ class AsyncEmbodiedSACFSDPPolicy(EmbodiedSACFSDPPolicy):
         split_num = compute_split_num(send_num, recv_num)
         while not self.should_stop:
             for _ in range(split_num):
-                trajectory = input_channel.get()
-                self._recv_queue.put(trajectory)
+                work = input_channel.get(async_op=True)
+                while not work.done():
+                    if self._recv_stop_event.wait(0.05):
+                        return
+                if self.should_stop:
+                    return
+                self._recv_queue.put(work.wait())
 
     def _drain_received_trajectories(self, max_trajectories: int | None = None):
         if getattr(self, "_recv_queue", None) is None:
@@ -81,7 +87,7 @@ class AsyncEmbodiedSACFSDPPolicy(EmbodiedSACFSDPPolicy):
                 self.demo_buffer.add_trajectories(intervene_traj_list)
 
     async def _wait_for_replay_buffer_ready(self, min_buffer_size: int):
-        while True:
+        while not self.should_stop:
             self._drain_received_trajectories(
                 max_trajectories=self.cfg.actor.get("recv_drain_max_trajectories", 256)
             )
@@ -99,6 +105,8 @@ class AsyncEmbodiedSACFSDPPolicy(EmbodiedSACFSDPPolicy):
         # Check if replay buffer has enough samples
         min_buffer_size = self.cfg.algorithm.replay_buffer.get("min_buffer_size", 100)
         await self._wait_for_replay_buffer_ready(min_buffer_size)
+        if self.should_stop:
+            return {}
 
         torch.distributed.barrier()
 
@@ -119,6 +127,8 @@ class AsyncEmbodiedSACFSDPPolicy(EmbodiedSACFSDPPolicy):
         update_epoch = self.cfg.algorithm.get("update_epoch", 1)
         for _ in range(update_epoch):
             await asyncio.sleep(0)
+            if self.should_stop:
+                return {}
             metrics_data = self.update_one_epoch()
             append_to_dict(metrics, metrics_data)
             self.update_step += 1
@@ -132,7 +142,13 @@ class AsyncEmbodiedSACFSDPPolicy(EmbodiedSACFSDPPolicy):
 
     async def stop(self):
         self.should_stop = True
-        self.buffer_dataset.close()
+        stop_event = getattr(self, "_recv_stop_event", None)
+        if stop_event is not None:
+            stop_event.set()
+        dataset = getattr(self, "buffer_dataset", None)
+        if dataset is not None and not getattr(self, "_buffer_dataset_closed", False):
+            self._buffer_dataset_closed = True
+            await asyncio.to_thread(dataset.close)
         recv_thread = getattr(self, "_recv_rollout_thread", None)
         if recv_thread is not None and recv_thread.is_alive():
-            await asyncio.to_thread(recv_thread.join, 5)
+            await asyncio.to_thread(recv_thread.join, 1)

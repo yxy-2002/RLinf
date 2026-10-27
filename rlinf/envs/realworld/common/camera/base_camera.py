@@ -14,7 +14,6 @@
 
 import queue
 import threading
-import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import Optional
@@ -55,6 +54,8 @@ class BaseCamera(ABC):
             target=self._capture_frames, daemon=True
         )
         self._frame_capturing_start = False
+        self._stop_capture = threading.Event()
+        self._device_closed = False
 
     @property
     def name(self) -> str:
@@ -67,10 +68,22 @@ class BaseCamera(ABC):
 
     def close(self):
         """Stop the capture thread and release hardware resources."""
+        if self._device_closed:
+            return
         self._frame_capturing_start = False
-        self._close_device()
+        self._stop_capture.set()
+        # Let a normal read finish before stopping the SDK pipeline. If it is
+        # blocked, closing the device unblocks it; that exception is expected.
         if self._frame_capturing_thread.is_alive():
-            self._frame_capturing_thread.join(timeout=2.0)
+            self._frame_capturing_thread.join(timeout=1.0)
+        try:
+            self._close_device()
+            self._device_closed = True
+        finally:
+            if self._frame_capturing_thread.is_alive():
+                self._frame_capturing_thread.join(timeout=2.0)
+        if self._frame_capturing_thread.is_alive():
+            raise RuntimeError(f"[{self.name}] Capture thread did not stop")
 
     def get_frame(self, timeout: int = 5) -> np.ndarray:
         """Return the most recent frame (blocks up to *timeout* seconds).
@@ -87,16 +100,21 @@ class BaseCamera(ABC):
 
     def _capture_frames(self):
         while self._frame_capturing_start:
-            time.sleep(1 / self._camera_info.fps)
+            if self._stop_capture.wait(1 / self._camera_info.fps):
+                break
             try:
                 has_frame, frame = self._read_frame()
             except Exception as e:
+                if not self._frame_capturing_start:
+                    break
                 _logger.error(
                     "[%s] _read_frame raised %s: %s — exiting capture thread.",
                     self._camera_info.name,
                     type(e).__name__,
                     e,
                 )
+                break
+            if not self._frame_capturing_start:
                 break
             if not has_frame:
                 _logger.error(

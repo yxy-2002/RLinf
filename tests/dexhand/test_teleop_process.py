@@ -34,6 +34,7 @@ def _fake_worker(connection, shared, config):
         if active:
             sequence += 1
             values = [time.monotonic(), time.time(), sequence] + [0] * (len(shared) - 3)
+            values[-2:] = [1, 1]
             _write_snapshot(shared, values)
 
 
@@ -308,6 +309,9 @@ def test_video_stop_is_idempotent_and_wakes_waiting_thread(monkeypatch):
 
 
 class _RuiyanGlove:
+    def get_state(self):
+        return SimpleNamespace(target=self.get_target(), connected=True, generation=1)
+
     def __init__(self, **kwargs):
         self.sequence = 0
         self.started = time.monotonic()
@@ -338,8 +342,18 @@ class _RuiyanMouse:
     def __init__(self):
         self.started = time.monotonic()
 
-    def get_action(self):
-        return np.zeros(6), [False, time.monotonic() - self.started > 0.3]
+    def get_state(self):
+        from rlinf.envs.realworld.common.spacemouse.spacemouse_expert import (
+            SpaceMouseState,
+        )
+
+        return SpaceMouseState(
+            np.zeros(6),
+            [False, time.monotonic() - self.started > 0.3],
+            (0, 0),
+            True,
+            1,
+        )
 
     def close(self):
         pass
@@ -573,3 +587,29 @@ def test_wuji_target_limits_after_mapping_and_rate_limit(mode):
     np.testing.assert_allclose(result, 0.3)
     result = _bounded_hand_command(target, result, spec, lower, upper, float("inf"))
     np.testing.assert_allclose(to_radians(spec, result), np.clip(target, lower, upper))
+
+
+def test_non_daemon_teleop_does_not_block_interpreter_exit(tmp_path):
+    import subprocess
+    import sys
+
+    script = tmp_path / "teleop_exit.py"
+    script.write_text(
+        "from rlinf.envs.realworld.common.wrappers.dexhand_intervention import TeleopProcess\n"
+        "def worker(connection, shared, config):\n"
+        "    connection.send(('ready', None))\n"
+        "    while connection.recv() != 'stop':\n"
+        "        pass\n"
+        "if __name__ == '__main__':\n"
+        "    child = TeleopProcess({'hand_dim': 6}, worker=worker)\n"
+    )
+    subprocess.run(
+        [sys.executable, str(script)],
+        env={
+            **os.environ,
+            "PYTHONPATH": os.getcwd() + os.pathsep + os.environ.get("PYTHONPATH", ""),
+        },
+        check=True,
+        capture_output=True,
+        timeout=20,
+    )

@@ -3,8 +3,10 @@
 
 """Check the dependency boundary and lifecycle of real-world reward RPC."""
 
+import os
 import subprocess
 import sys
+from pathlib import Path
 from unittest.mock import Mock
 
 import pytest
@@ -15,6 +17,26 @@ from rlinf.utils.realworld_reward import (
     RealWorldRewardService,
     _OwnedRewardService,
 )
+
+
+def test_ray_reward_owner_survives_context_exit_and_ctrl_c(tmp_path):
+    """Run reference-count deletion and corrected shutdown on an isolated Ray."""
+    fixture = Path(__file__).parent / "fixtures" / "reward_owner_lifetime.py"
+    result = subprocess.run(
+        [sys.executable, str(fixture), str(tmp_path)],
+        capture_output=True,
+        text=True,
+        timeout=60,
+        env={
+            **os.environ,
+            "PYTHONPATH": str(Path(__file__).resolve().parents[2])
+            + os.pathsep
+            + os.environ.get("PYTHONPATH", ""),
+        },
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "REFERENCE_DELETION_REPRODUCED" in result.stdout
+    assert "RETAINED_OWNER_CTRL_C_PASS" in result.stdout
 
 
 def test_service_signature_without_training_dependencies():
@@ -82,7 +104,8 @@ def test_group_closes_even_if_service_cleanup_fails(monkeypatch):
 
 @pytest.mark.parametrize("fail", [False, True])
 @pytest.mark.parametrize("mode", ["train", "eval"])
-def test_driver_owns_reward_service(monkeypatch, fail, mode):
+@pytest.mark.parametrize("close_on_exit", [False, True])
+def test_driver_owns_reward_service(monkeypatch, fail, mode, close_on_exit):
     from omegaconf import OmegaConf
 
     import rlinf.utils.realworld_reward as module
@@ -101,9 +124,14 @@ def test_driver_owns_reward_service(monkeypatch, fail, mode):
     monkeypatch.setattr(module, "inject_realworld_reward_cfg", inject)
     monkeypatch.setattr(module, "launch_realworld_reward_service", launch)
     placement, cluster = Mock(), Mock()
+    retained_resources = None if close_on_exit else []
     try:
         with module.realworld_reward_service(
-            cfg, placement, cluster, env_mode=mode
+            cfg,
+            placement,
+            cluster,
+            env_mode=mode,
+            retained_resources=retained_resources,
         ) as name:
             assert name == "eval-reward"
             owner._close.assert_not_called()
@@ -113,7 +141,11 @@ def test_driver_owns_reward_service(monkeypatch, fail, mode):
         assert fail and str(exc) == "env init failed"
     inject.assert_called_once_with(cfg, cfg.env[mode], placement, cluster)
     launch.assert_called_once_with(injected)
-    owner._close.assert_called_once_with()
+    if close_on_exit:
+        owner._close.assert_called_once_with()
+    else:
+        owner._close.assert_not_called()
+        assert retained_resources == [owner]
     assert OmegaConf.to_container(cfg) == original
 
 

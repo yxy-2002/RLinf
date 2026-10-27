@@ -85,6 +85,19 @@ class EmbodiedEvalRunner:
         self.rollout = rollout
         self.env = env
 
+        if cfg.runner.get("stop_eval_on_done", False) and (
+            cfg.env.eval.auto_reset
+            or cfg.env.eval.total_num_envs != 1
+            or cfg.rollout.pipeline_stage_num != 1
+            or cfg.runner.get("enable_decoupled_mode", False)
+            or cfg.env.eval.max_steps_per_rollout_epoch
+            < cfg.rollout.model.num_action_chunks
+        ):
+            raise ValueError(
+                "runner.stop_eval_on_done requires one environment, one pipeline "
+                "stage, auto_reset=false, coupled rollout and at least one chunk"
+            )
+
         self.pause_between_eval_episodes = bool(
             cfg.runner.get("pause_between_eval_episodes", False)
         )
@@ -153,6 +166,11 @@ class EmbodiedEvalRunner:
             else None
         )
         control_kwargs = {"confirmation_channel": control} if control else {}
+        episode_kwargs = (
+            {"episode_control_channel": Channel.create("EvalEpisodeControl")}
+            if self.cfg.runner.get("stop_eval_on_done", False)
+            else {}
+        )
         debug_channel = (
             Channel.create("EvalActionDebug")
             if self.cfg.runner.get("debug_actions", False)
@@ -169,10 +187,12 @@ class EmbodiedEvalRunner:
             input_channel=self.env_channel,
             rollout_channel=self.rollout_channel,
             **control_kwargs,
+            **episode_kwargs,
         )
         rollout_handle: Handle = self.rollout.evaluate(
             input_channel=self.rollout_channel,
             output_channel=self.env_channel,
+            **episode_kwargs,
         )
         try:
             if control is not None:
@@ -185,16 +205,9 @@ class EmbodiedEvalRunner:
                     debug_writer.drain()
                     time.sleep(0.1)
             env_results = env_handle.wait()
-        except (KeyboardInterrupt, EOFError):
-            if control is not None:
-                control.put(None, key="confirm")
-                try:
-                    env_handle.wait()
-                finally:
-                    self.rollout._close()
-                    self.env._close()
-            raise
         finally:
+            # Let the driver's exit context snapshot children before closing
+            # workers. Waiting here can hang on a blocked environment forever.
             if debug_writer is not None:
                 debug_writer.drain()
         env_decoupled_mode = self.cfg.runner.get("enable_decoupled_mode", False)

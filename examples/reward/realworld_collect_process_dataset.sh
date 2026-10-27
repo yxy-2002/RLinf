@@ -21,4 +21,5 @@ CMD=(python "${REWARD_PATH}/realworld_collect_process_dataset.py"
      "runner.logger.log_path=${LOG_DIR}" "$@")
 printf '%q ' "${CMD[@]}" > "${LOG_DIR}/run_collect_process.log"
 printf '\n' >> "${LOG_DIR}/run_collect_process.log"
-"${CMD[@]}" 2>&1 | tee -a "${LOG_DIR}/run_collect_process.log"
+# Keep logging while the driver stops collection and cleans remote hardware.
+"${CMD[@]}" 2>&1 | (trap '' INT TERM; exec tee -a "${LOG_DIR}/run_collect_process.log")

@@ -1,0 +1,32 @@
+defaults:
+- ruiyan_demo_data_stamp_seal
+- ruiyan_lamp_dp_il_eval
+- _self_
+hydra:
+  searchpath:
+  - file://${oc.env:EMBODIED_PATH}/config/
+runner:
+  logger:
+    log_path: ./logs/eval/ruiyan_lamp
+    experiment_name: ruiyan_lamp_dp_stamp_seal_il_eval
+env:
+  eval:
+    max_steps_per_rollout_epoch: 300
+    max_episode_steps: 300
+    override_cfg:
+      max_num_steps: 300
+    video_cfg:
+      save_video: true
+      video_base_dir: ${runner.logger.log_path}/video/eval
+      fps: 10
+      # Left: global camera. Right: wrist camera. One MP4 per rollout.
+      image_keys:
+      - extra_view_images[0]
+      - main_images
+rollout:
+  model:
+    model_path: /workspace/yxy_RLinf/RLinf/outputs/ruiyan_stamp_seal_30demo_pca_20261026/delivery/pca
+reward:
+  model:
+    model_path: /workspace/yxy_RLinf/RLinf/logs/reward_model/20261022-062515-ruiyan_reward_training_stamp_seal/ruiyan-stamp-seal-resnet18/checkpoints/global_step_350/actor/model_state_dict/full_weights.pt
+

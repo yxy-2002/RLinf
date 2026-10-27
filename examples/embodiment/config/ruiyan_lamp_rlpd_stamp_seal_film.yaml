@@ -1,0 +1,29 @@
+# Ruiyan setup and native RLPD settings inherit realworld_lamp_rlpd_base.
+defaults:
+- ruiyan_lamp_rlpd
+- _self_
+
+runner:
+  logger:
+    experiment_name: ruiyan_lamp_rlpd_stamp_seal_pca_030_030
+
+actor:
+  model:
+    # Load the exported DP and its embedded PCA prior together.
+    model_path: /workspace/yxy_RLinf/RLinf/outputs/ruiyan_stamp_seal_30demo_pca_20261022/delivery/pca/artifact
+    wrist_residual_scale: 0.3
+    hand_residual_scale: 0.3
+    hand_prior:
+      type: pca
+
+# Load all 30 recorded demos directly; chunk/history adaptation runs at startup.
+algorithm:
+  demo_buffer:
+    load_path:
+    - /workspace/yxy_RLinf/RLinf/logs/20261022-064854-ruiyan_demo_data_stamp_seal/demos
+    - /workspace/yxy_RLinf/RLinf/logs/20261022-070723-ruiyan_demo_data_stamp_seal/demos
+    - /workspace/yxy_RLinf/RLinf/logs/20261022-072313-ruiyan_demo_data_stamp_seal/demos
+
+reward:
+  model:
+    model_path: /workspace/yxy_RLinf/RLinf/logs/reward_model/20261022-062515-ruiyan_reward_training_stamp_seal/ruiyan-stamp-seal-resnet18/checkpoints/global_step_350/actor/model_state_dict/full_weights.pt

@@ -22,6 +22,7 @@ from rlinf.config import validate_cfg
 from rlinf.scheduler import Cluster
 from rlinf.utils.placement import HybridComponentPlacement
 from rlinf.utils.realworld_reward import realworld_reward_service
+from rlinf.utils.training_cleanup import training_exit_cleanup
 from rlinf.workers.env.async_env_worker import AsyncEnvWorker
 from rlinf.workers.reward.reward_worker import EmbodiedRewardWorker
 from rlinf.workers.rollout.hf.async_huggingface_worker import (
@@ -41,6 +42,11 @@ def main(cfg) -> None:
     cluster = Cluster(
         cluster_cfg=cfg.cluster, distributed_log_dir=cfg.runner.per_worker_log_path
     )
+    with training_exit_cleanup(namespace=Cluster.NAMESPACE) as retained_resources:
+        _run_training(cfg, cluster, retained_resources)
+
+
+def _run_training(cfg, cluster, retained_resources: list[object]) -> None:
     component_placement = HybridComponentPlacement(cfg, cluster)
 
     # Create actor worker group
@@ -119,9 +125,14 @@ def main(cfg) -> None:
         env=env_group,
         reward=reward_group,
     )
+    retained_resources.append(runner)
 
     with realworld_reward_service(
-        cfg, component_placement, cluster, env_mode="train"
+        cfg,
+        component_placement,
+        cluster,
+        env_mode="train",
+        retained_resources=retained_resources,
     ) as reward_service_name:
         runner.init_workers(reward_service_name=reward_service_name)
         runner.run()

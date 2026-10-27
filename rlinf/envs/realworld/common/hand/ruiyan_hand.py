@@ -136,7 +136,13 @@ class RuiyanHand(EndEffector):
         if self._require_feedback:
             state = self._driver.get_detailed_state()
             if not state["feedback_valid"]:
-                raise RuntimeError("Ruiyan measured feedback is missing or stale")
+                raise RuntimeError(
+                    "Ruiyan measured feedback is missing or stale: "
+                    f"port={state['port']} motor_ids={state['motor_ids']} "
+                    f"stale_motor_ids={state['stale_motor_ids']} "
+                    f"ages_s={state['feedback_age_s_by_motor']} "
+                    f"missing_this_poll={state['missing_motor_ids']}"
+                )
             return np.asarray(state["positions"], dtype=np.float32)
         return self._driver.get_state()
 

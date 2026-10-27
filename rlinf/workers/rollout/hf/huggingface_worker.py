@@ -30,6 +30,7 @@ from rlinf.hybrid_engines.weight_syncer import WeightSyncer
 from rlinf.models import get_model
 from rlinf.models.embodiment.base_policy import BasePolicy
 from rlinf.scheduler import Channel, Cluster, Worker, split_channel_message
+from rlinf.utils.checkpoint_utils import load_rollout_checkpoint
 from rlinf.utils.placement import HybridComponentPlacement
 
 
@@ -137,8 +138,10 @@ class MultiStepRolloutWorker(Worker):
         self.hf_model: BasePolicy = get_model(rollout_model_config)
 
         if self.cfg.runner.get("ckpt_path", None):
-            model_dict = torch.load(self.cfg.runner.ckpt_path)
-            self.hf_model.load_state_dict(model_dict)
+            weights_path = load_rollout_checkpoint(
+                self.hf_model, self.cfg.runner.ckpt_path
+            )
+            self.log_info(f"Loaded rollout model weights from {weights_path}")
 
         if self.cfg.rollout.get("expert_model", None):
             expert_model_config = copy.deepcopy(self.model_cfg)
@@ -728,9 +731,68 @@ class MultiStepRolloutWorker(Worker):
         if self.enable_offload:
             self.offload_model()
 
-    async def evaluate(self, input_channel: Channel, output_channel: Channel):
+    async def _evaluate_chunk(
+        self, input_channel: Channel, output_channel: Channel
+    ) -> None:
+        """Predict and send exactly one requested evaluation action chunk."""
+        env_output = await self.recv_env_output(
+            input_channel=input_channel,
+            tag="eval_rollout_results",
+            batch_size=self.eval_batch_size,
+        )
+        prediction_started = time.perf_counter()
+        actions, result = self.predict(env_output["obs"], mode="eval")
+        if isinstance(actions, torch.Tensor):
+            actions = actions.detach().cpu().contiguous()
+        if self.cfg.runner.get("debug_actions", False):
+            debug = dict(result.get("debug_outputs", {}))
+            # CPU action transfer above waits for the produced actions. This is
+            # wall time through prediction/transfer, not a CUDA-kernel benchmark.
+            debug["prediction_wall_seconds"] = torch.full(
+                (actions.shape[0], 1),
+                time.perf_counter() - prediction_started,
+                dtype=torch.float64,
+            )
+            actions = RolloutResult(actions=actions, forward_inputs=debug)
+        self.send_rollout_result(
+            output_channel=output_channel,
+            rollout_result=actions,
+            tag="eval_rollout_results",
+            batch_size=self.eval_batch_size,
+            split_fn=self._split_rollout_result
+            if isinstance(actions, RolloutResult)
+            else None,
+        )
+
+    async def evaluate(
+        self,
+        input_channel: Channel,
+        output_channel: Channel,
+        episode_control_channel: Channel | None = None,
+    ):
         if self.enable_offload:
             self.reload_model()
+        if episode_control_channel is not None:
+            try:
+                while True:
+                    message = await episode_control_channel.get(
+                        key="request", async_op=True
+                    ).async_wait()
+                    command, _episode, _chunk = message
+                    if command == "step":
+                        await self._evaluate_chunk(input_channel, output_channel)
+                    elif command in ("end", "stop"):
+                        await episode_control_channel.put(
+                            message, key="ack", async_op=True
+                        ).async_wait()
+                        if command == "stop":
+                            break
+                    else:
+                        raise RuntimeError(f"Unknown evaluation control: {message}")
+            finally:
+                if self.enable_offload:
+                    self.offload_model()
+            return
         if self.env_decoupled_mode:
             while True:
                 (
@@ -764,28 +826,7 @@ class MultiStepRolloutWorker(Worker):
             ):
                 for _ in range(self.n_eval_chunk_steps):
                     for _ in range(self.num_pipeline_stages):
-                        env_output = await self.recv_env_output(
-                            input_channel=input_channel,
-                            tag="eval_rollout_results",
-                            batch_size=self.eval_batch_size,
-                        )
-                        actions, result = self.predict(env_output["obs"], mode="eval")
-                        if isinstance(actions, torch.Tensor):
-                            actions = actions.detach().cpu().contiguous()
-                        if self.cfg.runner.get("debug_actions", False):
-                            actions = RolloutResult(
-                                actions=actions,
-                                forward_inputs=result.get("debug_outputs", {}),
-                            )
-                        self.send_rollout_result(
-                            output_channel=output_channel,
-                            rollout_result=actions,
-                            tag="eval_rollout_results",
-                            batch_size=self.eval_batch_size,
-                            split_fn=self._split_rollout_result
-                            if isinstance(actions, RolloutResult)
-                            else None,
-                        )
+                        await self._evaluate_chunk(input_channel, output_channel)
 
             if self.enable_offload:
                 self.offload_model()

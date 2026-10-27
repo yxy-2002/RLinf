@@ -297,14 +297,26 @@ class CollectEpisode(gym.Wrapper):
         if self._closed:
             return None
         self._closed = True
-        self._finalize_lerobot()
-        self._wait_futures()
-        if self._executor is not None:
+        try:
+            self.finish_recording()
+        finally:
+            if hasattr(self.env, "close"):
+                self.env.close()
+
+    def finish_recording(self) -> None:
+        """Finalize submitted episodes without closing the hardware environment.
+
+        Collection drivers use this before syncing files and snapshotting child
+        processes. Incomplete episodes retain the existing discard policy.
+        """
+        if self._executor is None:
+            return
+        try:
+            self._finalize_lerobot()
+            self._wait_futures()
+        finally:
             self._executor.shutdown(wait=True)
             self._executor = None
-        if hasattr(self.env, "close"):
-            return self.env.close()
-        return None
 
     def _new_buffer(self) -> dict[str, list]:
         return {

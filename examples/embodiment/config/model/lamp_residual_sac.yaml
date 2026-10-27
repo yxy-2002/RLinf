@@ -34,6 +34,7 @@ eval_base_noise_seeds: []
 eval_base_noise_seed_offset: 0
 
 target_entropy: ${algorithm.entropy_tuning.target_entropy}
+target_entropy_per_dim: ${oc.select:algorithm.entropy_tuning.target_entropy_per_dim,-0.5}
 learning_starts_macro_transitions: ${algorithm.learning_starts_macro_transitions}
 progressive_exploration_macro_steps: ${algorithm.progressive_exploration_macro_steps}
 hand_prior: null

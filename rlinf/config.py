@@ -827,6 +827,20 @@ def validate_lamp_async_cfg(cfg: DictConfig) -> None:
     """
     from rlinf.models.embodiment.lamp.training_recipe import training_recipe
 
+    if cfg.actor.get("lamp_cache_base_core", False) or cfg.actor.get(
+        "lamp_share_frozen_features", False
+    ):
+        assert training_recipe(cfg.algorithm) == "realworld_rlpd", (
+            "LAMP replay optimization currently supports RealWorld RLPD only"
+        )
+        assert cfg.actor.fsdp_config.sharding_strategy == "no_shard", (
+            "LAMP replay optimization requires FSDP no_shard"
+        )
+        assert not cfg.actor.get(
+            "enable_offload", False
+        ) and not cfg.actor.fsdp_config.get("cpu_offload", False), (
+            "LAMP replay optimization requires resident actor parameters"
+        )
     if training_recipe(cfg.algorithm) == "realworld_rlpd":
         assert cfg.runner.get("execution_mode", "sync") == "async", (
             "RealWorld RLPD requires runner.execution_mode=async"
@@ -994,7 +1008,10 @@ def validate_lamp_residual_contract_cfg(cfg: DictConfig, model_cfg: DictConfig) 
     assert tuple(model_cfg.get("actor_hidden_dims", ())) == (256, 256, 256)
     assert float(model_cfg.get("log_std_min", 0.0)) == -20.0
     assert float(model_cfg.get("log_std_max", 0.0)) == 2.0
-    assert float(model_cfg.get("init_log_std", 0.0)) == -9.0
+    init_log_std = float(model_cfg.get("init_log_std", -9.0))
+    assert float(model_cfg.log_std_min) < init_log_std < float(model_cfg.log_std_max), (
+        "LAMP init_log_std must lie strictly between log_std_min and log_std_max"
+    )
     return contract_version
 
 

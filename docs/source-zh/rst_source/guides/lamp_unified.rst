@@ -202,20 +202,7 @@ FSDP 包装内部编译 residual actor 的高斯参数网络，以及 online/tar
 冻结 DP 的缓存缺失重算、手部解码、优化器和 target 更新也保持 eager。
 训练内核在首批训练数据上编译，共用 GPU 时可能与 rollout 争用资源。
 
-使用新初始化的 RL 权重和已记录 replay，无需连接机器人即可测试：
-
-.. code-block:: bash
-
-   PYTHONPATH=. python toolkits/benchmark_lamp_training_compile.py \
-     --config ruiyan_lamp_rlpd_stack_cube_film \
-     --replay /path/to/run/replay_buffer/rank_0 \
-     --output /tmp/lamp_training_compile.json
-
-测试使用 batch 256 和配置中的 critic/actor 更新比例，保留记录中的缓存缺失。
-比较前四次更新的 loss、梯度、参数、alpha 和 target Q，再计时 80 次更新，
-并检查 actor 权重导出和加载。测试不包含 replay 采样、50/50 示范混合或并发 rollout。
-叠方块 replay 的实测未见训练提速；默认开启此开关以继续进行在线对照。
-设置 ``actor.compile_model=false`` 可对比 eager 训练，不需要旧 RL checkpoint。
+设置 ``actor.compile_model=false`` 可对比 eager 训练。
 
 异步训练入口在配置的 GPU 节点启动独立奖励服务，并向真机环境传递轻量 RPC 服务名。
 控制节点不需要导入奖励 worker 的 ``transformers`` 或 FSDP 依赖；
@@ -236,10 +223,43 @@ macro transition 更新预算。有效 primitive rewards 求和，每个 macro t
 只应用一次 gamma 0.97。温度保留指数参数化和 decoder-causal 目标熵，base policy 保持冻结。
 
 真机和 Dexjoco 在 ``algorithm.entropy_tuning.target_entropy: null`` 时均自动设置
-``target_entropy = -d / 2``，其中 ``d`` 是 decoder-causal 残差坐标数，等于执行长度 K
-乘以每步 core action 维度。K=8 且手部 latent 为二维时，睿研使用 ``-32``
-（6 维腕部 + 2 维 latent），Dexjoco 使用 ``-36``（7 维腕部 + 2 维 latent）。
-每维目标熵为 ``-0.5``。显式配置必须与此推导值一致，旧的 ``-d`` 目标会被拒绝。
+``target_entropy = target_entropy_per_dim * K * core_action_dim``，
+仅统计 decoder-causal 残差坐标。通过
+``algorithm.entropy_tuning.target_entropy_per_dim`` 分别配置每维目标熵：
+Dexjoco 默认为 ``-1.0``，真机默认为 ``-0.5``。K=8 且手部 latent 为二维时，
+睿研使用 ``-32``（6 维腕部 + 2 维 latent），Dexjoco 使用 ``-72``
+（7 维腕部 + 2 维 latent）。未指定新字段的旧配置仍使用每维 ``-0.5``。
+显式 ``target_entropy`` 必须与推导值一致。查看指标时，将 ``entropy_causal``
+与总目标熵比较，或将 ``entropy_causal_per_dim`` 与配置的每维目标比较。
+
+真机设置 ``actor.model.init_log_std: -2.5``，使新建 residual actor 在 tanh 前的
+高斯标准差接近 0.082。这显式控制初始噪声尺度，并非复刻 franka_infra 的随机
+标准差输出头初始化。实际扰动仍受 residual scale 限制。
+Dexjoco 保留 ``-9.0``。从训练 checkpoint 恢复时会加载 actor 已学习的分布，
+不会将其重置为这里的初始值。
+``init_log_std`` 必须严格位于 ``log_std_min`` 与 ``log_std_max`` 之间
+（当前为 -20 和 2）；启动校验支持 -2.5、0 和旧值 -9。
+
+开启 ``actor.enable_drq: true`` 时，训练会对当前和下一状态的相机图像做最多
+四像素的随机平移，并重新计算视觉特征。
+真机默认启用 ``actor.lamp_cache_base_core: true``：每条新 rollout 仍采样新的
+base plan，learner 保留其 core，并在入库前基于原始观测一次性补齐缺失的
+当前/下一状态 core。原始 demo 在启动时补齐；预转换 demo 使用运行目录内的
+缓存副本，不修改源数据。core 随 replay/demo 轨迹保存，内存淘汰或恢复
+checkpoint 后仍可复用。learner 继续解码 ``base core + residual``，
+保留通向 actor 的梯度。
+
+``actor.lamp_share_frozen_features: true`` 在同一次更新中让 data-Q 和 actor
+共享已 detach 的增强后当前观测特征，更新结束后释放。actor 使用的 Q 值仍在
+critic 更新后重新计算。这两个选项要求冻结 base 参数常驻设备，并使用 FSDP
+``no_shard``。两个选项都设为 ``false`` 可恢复之前的路径：开启 DrQ 时重新计算
+特征和 plan；关闭 DrQ 时复用原有有效缓存。
+
+缓存 core 会改变训练语义：每条 replay transition 的 base plan 固定，
+不再从增强图像重新采样。吞吐提升不代表收敛或成功率等价；原生异步调度下，
+learner 加速也会提高每条新观测对应的更新次数。
+切换 ``actor.lamp_cache_base_core`` 需要新开训练（``runner.resume_dir: null``）；
+同模式 checkpoint 保存 core 和独立的缓存采样 RNG。特征共享可独立切换。
 
 真机从第一个训练动作起就启用 residual actor，保持原有残差幅度限制。训练时随机采样，
 评估时使用确定性输出，不再使用渐进启用门控或均匀随机残差 warmup。
@@ -276,6 +296,27 @@ HID 按下事件累计保存，短按不会因两次控制步间已松开而丢�
 右键本身不计为动作接管。该选项不改变数采默认行为，设为 ``false`` 可关闭。
 ``release_behavior: policy`` 将两种命令统一经环境执行，既有 ``hold`` 采集行为保留。
 
+SpaceMouse 断连后会暂停提交新的环境动作，直到输入恢复；等待期间控制器保持
+最后的目标。等待本身不产生环境步，断连也不会自动将 episode 标记为失败。
+HID 读取在独立进程中运行：读取异常、进程退出或读取卡死都会触发自动重新打开，
+重试间隔为 1 秒。输入超过 0.25 秒即失效；读取进程首次启动允许最多 10 秒。
+容器必须能够访问重连后的 HID 设备，因此仍然需要宿主机上的设备节点同步服务。
+
+控制器和输入进程共享 ROS 服务。导入 RealWorld 模块（包括 HID 读取进程启动或
+重启时）会保留正在运行的 ROS Master。``ROSController`` 在节点本地锁保护下，
+探测 ``ROS_MASTER_URI`` 指定的 XML-RPC 接口；只要 master 能响应就复用，
+即使其 ``roscore`` 父进程已经退出。没有 master 响应时才启动 ``roscore``，
+并等待最多 10 秒就绪；进程退出或就绪超时会在 ``rospy.init_node`` 之前中止初始化。
+每次探测的 socket 超时为 1 秒。包导入不清理 ROS 进程。
+清除失效节点注册不会停止正常运行的 master，也不能防止后续进程退出产生新的残留。
+
+恢复不需要操作员确认。终端在每次中断时输出一次
+``[spacemouse] Connection interrupted``，恢复后输出
+``[spacemouse] Connection restored``。重新打开时仍按住的按钮会被忽略，直到松开；
+手部接管会重新建立手套基准。LAMP 执行器在恢复后丢弃旧 chunk 的剩余动作。
+如果在新 chunk 的开始才发现恢复，会先执行一个机械臂零增量、使用恢复后手部目标的
+控制步，再请求重新规划。输入看门狗无法撤回已经提交给控制器的命令。
+
 真机 RLPD 配置启用 ``env.train.lamp_continue_intervention: true``：
 进入或持续接管不会取消 chunk。每个子步读取最新人工输入，未接管部分继续执行
 已有策略计划。任一部分释放接管时，取消剩余 chunk 并请求重新规划。
@@ -308,6 +349,36 @@ Policy Decorator 保留原有预算状态恢复。训练模式或 demo 身份改
 可复现检查和限制见 ``docs/lamp_unified_validation.md``，适配职责见
 ``docs/lamp_code_guide.md``。
 
+评估 Ruiyan RL Checkpoint
+------------------------
+
+使用 residual 策略评估器加载训练后的 RL checkpoint，运行期间不更新模型。
+公共配置为 ``evaluations/realworld/ruiyan_lamp_dp_rl_eval.yaml``，
+叠方块任务使用 ``ruiyan_lamp_dp_stack_cube_rl_eval.yaml``。
+评估沿用 IL 的每轮确认、奖励服务、动作日志和录像功能。
+
+.. code-block:: bash
+
+   bash evaluations/run_eval.sh realworld ruiyan_lamp_dp_stack_cube_rl_eval \
+     runner.ckpt_path=/path/to/checkpoints/global_step_11000
+
+``runner.ckpt_path`` 支持 step 目录、其下的 ``actor`` 目录、
+``model_state_dict`` 目录或 ``full_weights.pt`` 文件。
+评估严格加载完整策略权重，包括学到的 residual actor，不恢复优化器或 replay buffer。
+``runner.resume_dir`` 仅用于恢复训练。缺少导出的完整权重或模型状态不兼容时会报错。
+
+叠方块预设指向已有的 FiLM artifact 和 11k checkpoint。评估其他训练任务时，
+将 ``rollout.model.model_path`` 指向训练使用的 base artifact，并保持 robot spec、
+动作时域、actor/critic 输入及 residual 尺度一致。
+尤其注意 residual 尺度不保存在权重 state dict 中：此配置显式设置
+``wrist_residual_scale: 0.2`` 和 ``hand_residual_scale: 0.2``，
+与 ``ruiyan_lamp_rlpd_stack_cube_film`` 一致。
+
+评估使用确定性 residual actor，DP 噪声流由
+``rollout.model.eval_base_noise_seed: 42`` 固定，可覆盖种子进行多次试验。
+每次预测 16 步、执行前 8 步，关闭 temporal ensemble；默认评估 20 轮，每轮最多 400 步。
+这里测试的是固定的 RL 策略；IL 评估器只加载 base DP artifact。
+
 在线评估动作日志
 ----------------
 
@@ -318,12 +389,48 @@ Policy Decorator 保留原有预算状态恢复。训练模式或 demo 身份改
    bash evaluations/run_eval.sh realworld realworld_lamp_dp_stack_cube_il_eval
 
 公共 IL 评估配置默认开启 ``runner.debug_actions: true``。
+真机 IL 预设还默认开启 ``runner.stop_eval_on_done: true``，Ruiyan RL 评估继承此设置。
+发生 termination（包括 reward 模型判定成功）或 truncation 后，在终止的 primitive
+step 完成时结束当前轮：丢弃 LAMP chunk 的剩余动作，不再请求下一组动作。
+环境保持输出，rollout 确认本轮结束，随后完成动作日志和录像收尾，再等待下一轮
+reset/start 确认。达到 rollout 步数上限也通过同一握手结束；最后一轮结束后还会
+停止 rollout worker。这会结束当前 episode，不会提前退出整个多轮评估。
+只评估一轮可设置 ``env.eval.rollout_epoch=1``。
+该协议要求单环境、单 pipeline stage、``auto_reset=false`` 和 coupled rollout。
+关闭动作日志或交互确认也可使用；不启用确认时，下一轮自动 reset 并恢复执行。
+
 每个 episode 在 driver 节点写入
 ``<runner.logger.log_path>/debug_actions/episode_0001_env_000.jsonl``。
 每个动作 chunk 写入后立即刷新，因此评估中断时已经完成的 chunk 仍可读取。
 ``episode_end`` 记录标记正常完成，并区分环境终止与 rollout 步数上限。
 
-每条 ``action_chunk`` 包含 ``policy.decoded_action_plan`` （时间集成或
+RL 评估沿用相同日志文件。``policy`` 中新增同一次推理的
+``base_core_chunk``、``residual_chunk``、``adapted_core_chunk``（经过四元数修正）、
+``planned_env_action_chunk``、``sent_env_action_chunk``，以及残差均值、对数标准差、
+scale 和 causal mask。core 数值是归一化模型坐标，不是电机位置；planned/sent
+动作是解码后的环境命令。记录不会额外采样策略或调用解码器。
+``prediction_wall_seconds`` 包含推理及动作传回 CPU 的时间，不包含网络或机器人执行时间。
+
+动作 chunk 使用 ``schema_version: 2``，保留原有字段，并新增
+``primitive_step_start``、``executed_step_count``、``applied_env_action_chunk``
+（形状为实际步数 × batch × 动作维度）、``applied_action_source``、
+``discarded_suffix_count``、``suffix_discard_reason``。
+丢弃数仅统计 sent chunk 中未执行的部分，不包括规划 horizon 中未发送的部分。
+RealWorld 每步的 ``control_info`` 保留环境提供的人工失败、reward 概率、成功、episode 指标及
+接管变化等信息，不推断缺失字段。applied action 是控制命令，不是电机实测反馈；
+实测状态仍在 ``state_before``/``state_after``。这些记录不能替代独立的串口/电机诊断日志。
+
+可通过 ``env.eval.video_cfg.save_video=true`` 开启录像。
+录像 wrapper 会转发 LAMP adapter 的 ``auto_reset=False``，保持 adapter
+管理的 episode 边界；同时启用 ``CollectEpisode`` 时也适用。
+
+``ruiyan_lamp_dp_stack_cube_il_eval`` 默认开启 10 FPS 录像，
+``env.eval.video_cfg.image_keys`` 为 ``[extra_view_images[0], main_images]``：
+左侧全局视角、右侧腕部视角，每轮拼接为一个 MP4。文件保存在环境 worker
+所在节点的 ``<runner.logger.log_path>/video/eval/seed_<seed>/`` 目录。
+该设置只选择录像画面，不改变模型输入。省略 ``image_keys`` 时保留默认的单视角录像行为。
+
+每条 IL ``action_chunk`` 包含 ``policy.decoded_action_plan`` （时间集成或
 执行窗口裁剪前的完整解码预测）、``policy.core_action_norm``，以及使用
 LAMPLSTM、PCA 或 VQ 先验时的 ``policy.latent_action``。
 MLP 不包含 latent 字段；VQ 还记录 ``vq_index``。
@@ -400,6 +507,18 @@ delta 为 0.1 的低通滤波和 10 帧滑动平均。
      rollout.model.model_path=/path/to/dp/artifact \
      reward.model.model_path=/path/to/reward/full_weights.pt
 
+上述两个采集脚本均使用与评估相同的、限定本次 job 的退出清理。
+收到 ``Ctrl+C``、``SIGTERM``、正常结束或发生异常时，会先停止采集，再记录子进程，
+关闭 Franka 控制器和环境，并清理本次 job 的 actor 及剩余 ROS 子进程。
+请等待启动脚本退出；重复中断不会打断清理，
+共享 Ray 集群和其他 job 会继续运行。
+Reward 采集能正常停止时，会保存当前未完成 episode 中已取得的图像；
+demo 采集会完成已成功轨迹的写入，未完成轨迹仍按原有规则丢弃。
+正常停止后的 demo 数据同步仍由 ``runner.sync_data_to_nodes`` 控制；
+若采集器在 15 秒内未结束，则跳过同步并打印警告，随后进入带超时的 job 清理。
+与评估一样，节点断联、``kill -9`` 或断电可能导致清理不完整，
+不会全局清扫之前遗留的孤儿进程。
+
 训练脚本支持 ``lamplstm_film``、``lamplstm_none``、``lamplstm_concat``、
 ``pca``、``vq``、``mlp`` 和 ``all``；阶段为 ``prior``、``dp`` 和 ``both``。
 MLP 没有独立 prior 阶段。``all both`` 运行五组 prior/DP 和一个 MLP DP。
@@ -431,6 +550,38 @@ stack-cube 示范目录，使用全部 30 条。它通过 ``ruiyan_lamp_rlpd`` �
 
 在线配置使用一致的 actor/rollout 机器人约定，记录 12 维实际执行动作、有效前缀和人工干预标记。
 评估配置可加载六种兼容的 DP artifact。在线恢复使用现有 ``runner.resume_dir`` 机制。
+
+Shell 启动脚本也支持在配置名称后追加 Hydra 参数覆盖：
+
+.. code-block:: bash
+
+   bash examples/embodiment/run_async.sh ruiyan_lamp_rlpd_stack_cube_film \
+     runner.resume_dir=/path/to/run/experiment/checkpoints/global_step_3000
+
+``runner.resume_dir`` 指向步数目录，不要追加 ``/actor`` 或末尾斜杠。
+未覆盖的参数（包括 ``runner.max_steps``）沿用配置文件。
+``runner.max_steps`` 表示累计训练终点，而不是额外训练的步数。
+可选的位置参数 ``ROBOT_PLATFORM`` 放在配置名称和覆盖参数之间；
+省略时使用同名环境变量，未设置则默认为 ``LIBERO``。
+
+通过 ``train_async.py`` 或上述脚本启动后，按一次 ``Ctrl+C`` 即会停止采集，
+关闭本次训练的 Franka 控制器和环境，再清理本次 Ray job 的 actor 及其子进程。
+奖励服务会保留到环境停止并关闭之后，ROS master 会在控制器子进程退出后再关闭。
+训练入口同时保留服务创建者的引用，直到清理完成，避免退出上下文时被 Ray 自动回收。
+清理期间重复按 ``Ctrl+C`` 不会中断清理，请等待启动脚本退出。
+子进程按 PID 和创建时间核验归属；不会全局执行 ``pkill`` 或停止共享 Ray 集群。
+正常结束、训练异常和训练主进程收到 ``SIGTERM`` 也会触发清理。
+各阶段有超时，失败会明确记录；清理成功时不再输出状态提示。
+NUC 断联、进程尚在初始化、``kill -9`` 或断电时，不能保证完整清理。
+此功能不清理此前运行已经遗留的孤儿进程。
+
+IL 评估入口 ``evaluations/eval_embodied_agent.py`` 和
+``bash evaluations/run_eval.sh realworld ruiyan_lamp_dp_stack_cube_il_eval``
+也使用相同的退出清理逻辑，包括终端 EOF 和初始化异常。
+按一次 ``Ctrl+C`` 后，请等待启动脚本退出。
+启动脚本会在清理期间继续记录日志。如果同步环境阻塞在动作接收或终端确认，
+清理逻辑会记录其子进程，在停止请求超时后终止该 worker，再关闭 Franka 控制器
+和其余所属进程。上述限制同样适用，共享 Ray 集群会继续运行。
 
 使用以下命令进行无硬件验证。portable 冒烟测试覆盖六种 Ruiyan 变体的 prior/DP 更新、
 artifact 重载、residual actor/critic 更新和 residual 状态重载。

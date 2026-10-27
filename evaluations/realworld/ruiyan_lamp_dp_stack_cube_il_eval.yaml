@@ -9,9 +9,19 @@ runner:
   logger:
     log_path: ./logs/eval/ruiyan_lamp
     experiment_name: ruiyan_lamp_dp_stack_cube_il_eval
+env:
+  eval:
+    video_cfg:
+      save_video: true
+      video_base_dir: ${runner.logger.log_path}/video/eval
+      fps: 10
+      # Left: global camera. Right: wrist camera. One MP4 per rollout.
+      image_keys:
+      - extra_view_images[0]
+      - main_images
 rollout:
   model:
-    model_path: /workspace/yxy_RLinf/RLinf/outputs/ruiyan_stack_cube_30demo_sweep_20261015/delivery/film/artifact
+    model_path: /workspace/yxy_RLinf/RLinf/outputs/ruiyan_stack_cube_20demo_film_20261022/delivery/film/artifact
 reward:
   model:
-    model_path: /workspace/yxy_RLinf/RLinf/logs/20261014-132746-ruiyan_reward_training_stack_cube/ruiyan-stack-cube-resnet18/checkpoints/best_model/actor/model_state_dict/full_weights.pt
+    model_path: /workspace/yxy_RLinf/RLinf/logs/reward_model/20261022-085656-ruiyan_reward_training_stack_cube/ruiyan-stack-cube-resnet18/checkpoints/global_step_400/actor/model_state_dict/full_weights.pt

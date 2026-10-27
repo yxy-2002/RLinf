@@ -56,6 +56,9 @@ class RecordVideo(gym.Wrapper):
         video_cfg: Video configuration object/dict. Common fields:
             ``video_base_dir`` (output directory root),
             ``fps`` (optional FPS override),
+            ``image_keys`` (optional observation fields concatenated left to
+            right; each must be RGB ``[B,H,W,C]`` with matching batch size and
+            height; ``extra_view_images[0]`` selects a view from ``[B,V,H,W,C]``),
             ``info_on_video`` (whether to render overlay text),
             ``extra_info_on_video`` (list of ``info`` keys to render).
         fps: Explicit FPS override. If ``None``, FPS is resolved from
@@ -115,12 +118,43 @@ class RecordVideo(gym.Wrapper):
 
     def _get_image_from_dict(self, obs: dict) -> Optional[Any]:
         """Pick the best image field from an observation dict."""
+        image_keys = self.video_cfg.get("image_keys")
+        if image_keys:
+            return self._concatenate_views(obs, image_keys)
         if hasattr(self.env, "capture_image"):
             return self.env.capture_image()
         for key in ("main_images", "images", "rgb", "full_image", "main_image"):
             if key in obs and obs[key] is not None:
                 return obs[key]
         return None
+
+    def _concatenate_views(self, obs: dict, image_keys) -> np.ndarray:
+        """Join configured camera views horizontally without changing observations."""
+        images = []
+        for selector in image_keys:
+            key, bracket, index = selector.partition("[")
+            if key not in obs or obs[key] is None:
+                raise ValueError(f"Video observation field {key!r} is missing")
+            pixels = self._to_numpy(obs[key])
+            if bracket:
+                if not index.endswith("]") or not index[:-1].isdigit():
+                    raise ValueError(f"Invalid video image selector: {selector!r}")
+                view = int(index[:-1])
+                if pixels.ndim != 5 or view >= pixels.shape[1]:
+                    raise ValueError(
+                        f"Video selector {selector!r} requires [B,V,H,W,C] "
+                        f"with view {view}, got {pixels.shape}"
+                    )
+                pixels = pixels[:, view]
+            if pixels.ndim != 4 or pixels.shape[-1] != 3:
+                raise ValueError(
+                    f"Video field {selector!r} must be RGB [B,H,W,3], "
+                    f"got {pixels.shape}"
+                )
+            if images and pixels.shape[:2] != images[0].shape[:2]:
+                raise ValueError("Video views must have matching batch size and height")
+            images.append(pixels)
+        return np.concatenate(images, axis=2)
 
     def _extract_frame_batches(self, obs: Any) -> list[list[np.ndarray]]:
         """Extract a list of per-step image batches from obs."""
@@ -362,9 +396,9 @@ class RecordVideo(gym.Wrapper):
         self.add_new_frames(obs, info)
         return obs, info
 
-    def step(self, action):
-        """Step env and record the resulting frame."""
-        obs, reward, terminated, truncated, info = self.env.step(action)
+    def step(self, action, **kwargs):
+        """Forward step options (such as auto_reset) and record the frame."""
+        obs, reward, terminated, truncated, info = self.env.step(action, **kwargs)
         terminations = (
             info.get("terminations", terminated)
             if isinstance(info, dict)

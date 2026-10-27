@@ -16,9 +16,10 @@ import pytest
 import torch
 from hydra import compose, initialize_config_dir
 from omegaconf import OmegaConf, open_dict
-from test_lamp_residual_model import _observation, _policy
+from test_lamp_residual_model import _FakeLampPolicy, _observation, _policy
 
 from rlinf.config import validate_lamp_async_cfg
+from rlinf.models.embodiment.lamp.residual_sac import LampResidualSACPolicy
 from rlinf.models.embodiment.lamp.training_recipe import uses_policy_decorator
 from rlinf.models.embodiment.modules.entropy_tunning import EntropyTemperature
 from rlinf.scheduler.hardware.accelerators.accelerator import AcceleratorType
@@ -39,8 +40,9 @@ def config(name):
         return compose(config_name=name)
 
 
+@pytest.mark.parametrize("per_dim", [None, -0.5, -1.0])
 @pytest.mark.parametrize("configured", [None, -36.0, -72.0])
-def test_learner_setup_uses_half_dimension_entropy(monkeypatch, configured):
+def test_learner_setup_uses_configured_entropy(monkeypatch, configured, per_dim):
     worker = object.__new__(LampResidualSACFSDPPolicy)
     worker.cfg = OmegaConf.create(
         {
@@ -49,27 +51,51 @@ def test_learner_setup_uses_half_dimension_entropy(monkeypatch, configured):
             }
         }
     )
-    worker.model = _policy("pca")  # K=8, core_dim=9: target=-36.
+    kwargs = {} if per_dim is None else {"target_entropy_per_dim": per_dim}
+    if per_dim is not None:
+        worker.cfg.algorithm.entropy_tuning.target_entropy_per_dim = per_dim
+    worker.model = LampResidualSACPolicy(_FakeLampPolicy("pca", 9), **kwargs)
+    expected = (-0.5 if per_dim is None else per_dim) * 72
     worker.param_names_need_sync = ["residual_actor.mean_head.weight"]
     monkeypatch.setattr(
         EmbodiedSACFSDPPolicy,
         "setup_model_and_optimizer",
         lambda self, initialize_target=False: None,
     )
-    if configured == -72.0:
-        with pytest.raises(ValueError, match="expected -36, got -72"):
+    if configured is not None and configured != expected:
+        with pytest.raises(ValueError, match=f"expected {expected:g}, got"):
             worker.setup_model_and_optimizer()
     else:
         worker.setup_model_and_optimizer()
-        assert worker.target_entropy == -36.0
+        assert worker.target_entropy == expected
 
 
-@pytest.mark.parametrize("entropy,gradient_sign", [(-48.0, -1), (-36.0, 0), (-24.0, 1)])
-def test_temperature_gradient_tracks_half_dimension_target(entropy, gradient_sign):
+def test_learner_rejects_model_algorithm_entropy_mismatch(monkeypatch):
+    worker = object.__new__(LampResidualSACFSDPPolicy)
+    worker.cfg = OmegaConf.create(
+        {"algorithm": {"entropy_tuning": {"target_entropy_per_dim": -1.0}}}
+    )
+    worker.model = _policy("pca")
+    worker.param_names_need_sync = ["residual_actor.mean_head.weight"]
+    monkeypatch.setattr(
+        EmbodiedSACFSDPPolicy,
+        "setup_model_and_optimizer",
+        lambda self, initialize_target=False: None,
+    )
+    with pytest.raises(ValueError, match="target_entropy_per_dim"):
+        worker.setup_model_and_optimizer()
+
+
+@pytest.mark.parametrize("per_dim", [-0.5, -1.0])
+@pytest.mark.parametrize("offset,gradient_sign", [(-12.0, -1), (0.0, 0), (12.0, 1)])
+def test_temperature_gradient_tracks_target(per_dim, offset, gradient_sign):
     worker = object.__new__(LampResidualSACFSDPPolicy)
     worker.worker_timer = lambda *args: nullcontext()
     worker._accelerator_type = AcceleratorType.NO_ACCEL
-    worker.target_entropy = _policy("pca").target_entropy
+    worker.target_entropy = LampResidualSACPolicy(
+        _FakeLampPolicy("pca", 9), target_entropy_per_dim=per_dim
+    ).target_entropy
+    entropy = worker.target_entropy + offset
     worker.entropy_temp = EntropyTemperature(0.01, "exp", device=torch.device("cpu"))
     worker._alpha_log_pi_cache = [torch.tensor([-entropy])]
     loss = worker.forward_alpha({})
@@ -184,6 +210,11 @@ def learner(monkeypatch):
     """Execute production LAMP losses/optimizers with a tiny frozen base on CPU."""
     w = object.__new__(AsyncLampRealWorldRLPDPolicy)
     w.cfg = config("ruiyan_lamp_rlpd")
+    # This fixture exercises the legacy losses. Cache-specific tests opt in
+    # after preparing their replay inputs.
+    w.cfg.actor.lamp_cache_base_core = False
+    w.cfg.actor.lamp_share_frozen_features = False
+    w.cfg.algorithm.replay_buffer.min_buffer_size = 100
     w.cfg.actor.global_batch_size = 2
     w.cfg.actor.micro_batch_size = 2
     w._rank = 0
@@ -356,6 +387,7 @@ def test_native_ingestion_preserves_execution_masks_and_interventions(monkeypatc
     from test_lamp_async_sac import _trajectory
 
     w = object.__new__(AsyncLampRealWorldRLPDPolicy)
+    w.cfg = OmegaConf.create({"actor": {}})
     w._recv_queue = queue.Queue()
     recorded, demos = [], []
     w.replay_buffer = SimpleNamespace(add_trajectories=recorded.extend)
@@ -380,7 +412,10 @@ def test_native_ingestion_preserves_execution_masks_and_interventions(monkeypatc
     assert len(recorded) == 1
 
 
-def test_native_checkpoint_restores_training_and_replay(tmp_path, monkeypatch):
+@pytest.mark.parametrize("cache_cores", [False, True])
+def test_native_checkpoint_restores_training_and_replay(
+    tmp_path, monkeypatch, cache_cores
+):
     """Exercise the production checkpoint chain with CPU model serialization."""
     from test_lamp_async_sac import _trajectory
 
@@ -427,6 +462,7 @@ def test_native_checkpoint_restores_training_and_replay(tmp_path, monkeypatch):
 
     w, _ = learner(monkeypatch)
     asyncio.run(w.run_training())
+    w.cfg.actor.lamp_cache_base_core = cache_cores
     w._strategy = CPUCheckpointStrategy()
     w.is_weight_offloaded = False
     w.is_optimizer_offloaded = False
@@ -437,6 +473,7 @@ def test_native_checkpoint_restores_training_and_replay(tmp_path, monkeypatch):
         "training_recipe": "realworld_rlpd",
         "scheduling_version": 1,
         "update_epoch": int(w.cfg.algorithm.update_epoch),
+        "cached_cores": w._cache_base_core_enabled(),
     }
     w.replay_buffer = TrajectoryReplayBuffer(enable_cache=True, cache_size=4, seed=7)
     w.demo_buffer = TrajectoryReplayBuffer(enable_cache=True, cache_size=4, seed=13)
@@ -445,6 +482,16 @@ def test_native_checkpoint_restores_training_and_replay(tmp_path, monkeypatch):
             for value in range(3):
                 traj = _trajectory(transitions=2)
                 traj.actions.fill_(value)
+                if cache_cores:
+                    for prefix in ("lamp_base", "lamp_next_base"):
+                        traj.forward_inputs[f"{prefix}_replay_core"] = torch.full(
+                            (
+                                *traj.actions.shape[:2],
+                                w.model.horizon,
+                                w.model.core_dim,
+                            ),
+                            float(value),
+                        )
                 buffer.add_trajectories([traj])
         w._realworld_progress.update(online_macro_transitions=6, primitive_env_steps=48)
         saved_model = copy.deepcopy(w.model.state_dict())
@@ -453,6 +500,8 @@ def test_native_checkpoint_restores_training_and_replay(tmp_path, monkeypatch):
         saved_optim_step = next(iter(w.optimizer.state.values()))["step"].clone()
         path = tmp_path / "checkpoint"
         w.save_checkpoint(str(path), 1)
+        if cache_cores:
+            next_cache_noise = torch.randn(4, generator=w._core_generator())
         next_online = w.replay_buffer.sample(6)["actions"].clone()
         next_demo = w.demo_buffer.sample(6)["actions"].clone()
         with torch.no_grad():
@@ -463,6 +512,15 @@ def test_native_checkpoint_restores_training_and_replay(tmp_path, monkeypatch):
         w.update_step = 0
         w._realworld_progress["training_rounds"] = 0
         w.load_checkpoint(str(path))
+        if cache_cores:
+            torch.testing.assert_close(
+                torch.randn(4, generator=w._core_generator()),
+                next_cache_noise,
+                rtol=0,
+                atol=0,
+            )
+            saved = w.replay_buffer._load_trajectory(0, traj.model_weights_id)
+            assert "lamp_next_base_replay_core" in saved.forward_inputs
         assert w.update_step == 8
         assert w._realworld_progress["training_rounds"] == 1
         assert w._realworld_progress["primitive_env_steps"] == 48
@@ -485,6 +543,10 @@ def test_native_checkpoint_restores_training_and_replay(tmp_path, monkeypatch):
         )
         w.cfg.algorithm.update_epoch = 4
         with pytest.raises(ValueError, match="training contract differs"):
+            w.load_checkpoint(str(path))
+        w.cfg.algorithm.update_epoch = 8
+        w.cfg.actor.lamp_cache_base_core = not cache_cores
+        with pytest.raises(ValueError, match="lamp_cache_base_core"):
             w.load_checkpoint(str(path))
     finally:
         w.replay_buffer.close()
@@ -509,7 +571,9 @@ def test_raw_demo_loading_preserves_actions_and_partitions(tmp_path, world_size)
         w = object.__new__(AsyncLampRealWorldRLPDPolicy)
         w._rank, w._world_size = rank, world_size
         w.model = stub_policy()
-        w.cfg = OmegaConf.create({"env": {"train": {"lamp_history_length": 3}}})
+        w.cfg = OmegaConf.create(
+            {"actor": {}, "env": {"train": {"lamp_history_length": 3}}}
+        )
         w.demo_buffer = TrajectoryReplayBuffer(auto_save=False, cache_size=4)
         try:
             w._load_demo_buffer(OmegaConf.create([str(root) for root in roots]))

@@ -335,8 +335,18 @@ class _SyntheticMouse:
     def __init__(self):
         self.started = time.monotonic()
 
-    def get_action(self):
-        return np.zeros(6), [False, time.monotonic() - self.started > 0.5]
+    def get_state(self):
+        from rlinf.envs.realworld.common.spacemouse.spacemouse_expert import (
+            SpaceMouseState,
+        )
+
+        return SpaceMouseState(
+            np.zeros(6),
+            [False, time.monotonic() - self.started > 0.5],
+            (0, 0),
+            True,
+            1,
+        )
 
     def close(self):
         pass

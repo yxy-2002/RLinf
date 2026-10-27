@@ -1,0 +1,28 @@
+# Ruiyan setup and native RLPD settings inherit realworld_lamp_rlpd_base.
+defaults:
+- ruiyan_lamp_rlpd
+- _self_
+
+runner:
+  logger:
+    experiment_name: ruiyan_lamp_rlpd_stack_cube_pca_020_020
+
+actor:
+  model:
+    # Load the exported DP and its embedded LAMPLSTM FiLM prior together.
+    model_path: /workspace/yxy_RLinf/RLinf/outputs/ruiyan_stack_cube_20demo_pca_20261022/delivery/pca/artifact
+    wrist_residual_scale: 0.2
+    hand_residual_scale: 0.2
+    hand_prior:
+      type: pca
+
+# Load all 30 recorded demos directly; chunk/history adaptation runs at startup.
+algorithm:
+  demo_buffer:
+    load_path:
+    - /workspace/yxy_RLinf/RLinf/logs/20261022-091242-ruiyan_demo_data_stack_cube/demos
+    - /workspace/yxy_RLinf/RLinf/logs/20261022-092538-ruiyan_demo_data_stack_cube/demos
+
+reward:
+  model:
+    model_path: /workspace/yxy_RLinf/RLinf/logs/reward_model/20261022-085656-ruiyan_reward_training_stack_cube/ruiyan-stack-cube-resnet18/checkpoints/global_step_400/actor/model_state_dict/full_weights.pt

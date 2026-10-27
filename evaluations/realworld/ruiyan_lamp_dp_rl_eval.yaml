@@ -1,0 +1,37 @@
+# Compose after the task/device config, as with ruiyan_lamp_dp_il_eval.
+defaults:
+- ruiyan_lamp_dp_il_eval
+- model/lamp_residual_sac@rollout.model
+- _self_
+
+runner:
+  # Accepts global_step_<N>, actor/, or model_state_dict/full_weights.pt.
+  ckpt_path: ???
+
+algorithm:
+  loss_type: embodied_sac
+  adv_type: null
+
+rollout:
+  # The generic worker maps temperature_eval=0 to deterministic residuals.
+  sampling_params:
+    do_sample: false
+    temperature_train: 1.0
+    temperature_eval: 0.0
+    top_k: 0
+    top_p: 1.0
+    max_new_tokens: 1
+  model:
+    action_dim: 12
+    contract_version: 5
+    actor_input: pre_fusion
+    critic_observation_input: pre_fusion
+    init_log_std: -2.5
+    training_recipe: realworld_rlpd
+    target_entropy: null
+    target_entropy_per_dim: -0.5
+    # Unused by realworld_rlpd evaluation; avoid training-only interpolations.
+    learning_starts_macro_transitions: 8000
+    progressive_exploration_macro_steps: 30000
+    eval_base_noise_seed: 42
+

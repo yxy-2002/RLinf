@@ -12,11 +12,30 @@ from types import SimpleNamespace
 
 import hydra
 import pytest
+from omegaconf import open_dict
 
-from rlinf.config import validate_cfg
+from rlinf.config import validate_cfg, validate_lamp_residual_contract_cfg
 
 _ROOT = Path(__file__).resolve().parents[2]
 _CONFIG_DIR = _ROOT / "examples" / "embodiment" / "config"
+
+
+@pytest.mark.parametrize(
+    "name,expected",
+    [
+        ("dexjoco_lamp_residual_sac_lamplstm_water_plant", -1.0),
+        ("ruiyan_lamp_rlpd_stack_cube_film", -0.5),
+    ],
+)
+def test_entropy_per_dim_config_propagation_and_legacy_default(name, expected):
+    with hydra.initialize_config_dir(config_dir=str(_CONFIG_DIR), version_base="1.1"):
+        cfg = hydra.compose(config_name=name)
+    assert cfg.actor.model.target_entropy_per_dim == expected
+    cfg.algorithm.entropy_tuning.target_entropy_per_dim = -0.75
+    assert cfg.actor.model.target_entropy_per_dim == -0.75
+    with open_dict(cfg.algorithm.entropy_tuning):
+        del cfg.algorithm.entropy_tuning.target_entropy_per_dim
+    assert cfg.actor.model.target_entropy_per_dim == -0.5
 
 
 @pytest.fixture(autouse=True)
@@ -52,11 +71,49 @@ def test_lamp_online_sac_configs_use_exec8_v4(task: str) -> None:
     assert cfg.env.train.total_num_envs == 32
     assert cfg.env.train.max_steps_per_rollout_epoch == 16
     assert cfg.env.eval.max_steps_per_rollout_epoch == 904
+    assert cfg.algorithm.entropy_tuning.target_entropy_per_dim == -1.0
+    assert cfg.actor.model.target_entropy_per_dim == -1.0
     assert cfg.runner.max_steps == 16000
     assert cfg.runner.logger.step_axis == "env_step"
     assert cfg.algorithm.replay_buffer.auto_save is True
     assert cfg.algorithm.replay_buffer.cache_size == 70000
     assert cfg.algorithm.replay_buffer.sample_window_size == 70000
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "dexjoco_lamp_residual_sac_lamplstm_water_plant",
+        "ruiyan_lamp_rlpd_stack_cube_film",
+    ],
+)
+@pytest.mark.parametrize("init_log_std", [None, -9.0, -2.5, 0.0])
+def test_lamp_initial_std_passes_launch_validation(monkeypatch, name, init_log_std):
+    monkeypatch.setattr(
+        "rlinf.config.HybridComponentPlacement",
+        lambda cfg, cluster: SimpleNamespace(get_world_size=lambda component: 1),
+    )
+    with hydra.initialize_config_dir(config_dir=str(_CONFIG_DIR), version_base="1.1"):
+        cfg = hydra.compose(
+            config_name=name,
+            overrides=[]
+            if init_log_std is None
+            else [f"actor.model.init_log_std={init_log_std}"],
+        )
+    expected = cfg.actor.model.init_log_std
+    validated = validate_cfg(cfg)
+    assert validated.actor.model.init_log_std == expected
+
+
+@pytest.mark.parametrize(
+    "init_log_std", [-21.0, -20.0, 2.0, 3.0, float("inf"), float("-inf"), float("nan")]
+)
+def test_lamp_initial_std_rejects_invalid_values(init_log_std):
+    with hydra.initialize_config_dir(config_dir=str(_CONFIG_DIR), version_base="1.1"):
+        cfg = hydra.compose(config_name="ruiyan_lamp_rlpd_stack_cube_film")
+    cfg.actor.model.init_log_std = init_log_std
+    with pytest.raises(AssertionError, match="init_log_std must lie strictly between"):
+        validate_lamp_residual_contract_cfg(cfg, cfg.actor.model)
 
 
 def test_lamp_rlpd_configs_and_converter_are_removed() -> None:
@@ -86,6 +143,7 @@ def test_lamp_v4_pd_cadence_overlays_compose(config_name: str) -> None:
     assert cfg.actor.model.contract_version == 4
     assert cfg.env.train.total_num_envs == 32
     assert cfg.env.train.max_steps_per_rollout_epoch == 16
+    assert cfg.actor.model.target_entropy_per_dim == -1.0
 
 
 def test_lamp_v4_accepts_positive_initial_alpha() -> None:
@@ -138,6 +196,8 @@ def test_realworld_rlpd_reuses_device_profile_and_portable_contract():
     assert cfg.algorithm.update_epoch == 8
     assert "utd_ratio" not in cfg.algorithm
     assert cfg.algorithm.entropy_tuning.initial_alpha == 0.01
+    assert cfg.algorithm.entropy_tuning.target_entropy_per_dim == -0.5
+    assert cfg.actor.model.target_entropy_per_dim == -0.5
     assert cfg.algorithm.gamma == 0.97
     assert cfg.algorithm.replay_buffer.auto_save
     assert cfg.algorithm.demo_buffer.auto_save

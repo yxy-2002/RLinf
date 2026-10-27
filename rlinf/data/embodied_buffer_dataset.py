@@ -107,8 +107,8 @@ class ReplayBufferDataset(IterableDataset):
 
     def close(self) -> None:
         """Releases references to replay and demo buffers."""
-        del self.replay_buffer
-        del self.demo_buffer
+        self.replay_buffer = None
+        self.demo_buffer = None
 
     def __del__(self) -> None:
         """Destructor that ensures buffers are cleaned up."""
@@ -257,7 +257,7 @@ class PreloadReplayBufferDataset(ReplayBufferDataset):
         self._stop_event.set()
 
         thread_timeout = 10
-        if self.sample_thread.is_alive():
+        if self.sample_thread is not None and self.sample_thread.is_alive():
             self.sample_thread.join(timeout=thread_timeout)
             if self.sample_thread.is_alive():
                 logger.warning(

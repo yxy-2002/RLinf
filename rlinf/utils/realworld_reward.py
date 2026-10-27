@@ -205,11 +205,15 @@ def realworld_reward_service(
     cluster: "Cluster",
     *,
     env_mode: str = "eval",
+    retained_resources: list[object] | None = None,
 ) -> Iterator[str | None]:
     """Own the standalone reward service on a training or evaluation driver.
 
     Only the service name crosses into the robot environment, so its Python
     environment does not need the reward worker's training dependencies.
+    Pass the list yielded by ``training_exit_cleanup`` to transfer ownership
+    to job cleanup. Retaining the owner also prevents Ray reference-count
+    deletion while the environment is still using the service.
     """
     if env_mode not in ("train", "eval"):
         raise ValueError(f"Unknown reward environment mode: {env_mode}")
@@ -225,10 +229,14 @@ def realworld_reward_service(
         cfg, cfg.env[env_mode], component_placement, cluster
     )
     owner, service_name = launch_realworld_reward_service(env_cfg)
+    if retained_resources is not None:
+        retained_resources.append(owner)
     try:
         yield service_name
     finally:
-        owner._close()
+        # Async training owns these actors until all environment calls finish.
+        if retained_resources is None:
+            owner._close()
 
 
 # Preserve the existing evaluation entrypoint API.

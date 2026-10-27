@@ -6,7 +6,7 @@
 import asyncio
 import json
 from collections import deque
-from types import SimpleNamespace
+from types import MethodType, SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
@@ -62,7 +62,12 @@ class Robot:
             done.float(),
             done,
             torch.tensor([False]),
-            {"executed_action": actions + 0.1, "intervene_flag": False},
+            {
+                "executed_action": actions + 0.1,
+                "intervene_flag": False,
+                "reward_probability": torch.tensor([0.9]),
+                "success": done,
+            },
         )
 
 
@@ -93,6 +98,8 @@ def test_primitive_alignment_terminal_suffix_and_reset():
     assert second["state_after"]["arm_state"] == pytest.approx([0.2] * 6)
     assert first["executed_action"][0] == pytest.approx([0.1] * 26)
     assert first["sent_env_action"] == [0.0] * 26
+    assert first["control_info"]["reward_probability"] == pytest.approx([0.9])
+    assert second["control_info"]["success"] == [True]
     adapter.chunk_step(torch.zeros(1, 4, 26))
     assert len(adapter.debug_steps) == 2  # No post-terminal padding records.
     adapter.reset()
@@ -113,6 +120,7 @@ def test_plan_debug_uses_same_decode_and_omits_fake_latent(prior):
     )
     policy = SimpleNamespace(
         core=core,
+        sample_base_core=core._ddim_sample,
         _compiled_predict=None,
         spec=SimpleNamespace(
             action_horizon=4, core_action_dim=8, hand_prior_type=prior
@@ -186,6 +194,11 @@ def test_worker_transports_two_episodes_to_driver_files(tmp_path):
         assert len(chunk["steps"]) == 2
         assert chunk["policy"]["latent_action"] == [[[1.0, 1.0]] * 4]
         assert len(chunk["sent_action_chunk"][0]) == 4
+        assert chunk["executed_step_count"] == 2
+        assert chunk["discarded_suffix_count"] == 2
+        assert chunk["suffix_discard_reason"] == "terminated"
+        assert chunk["applied_action_source"] == ["policy", "policy"]
+        assert len(chunk["applied_env_action_chunk"]) == 2
         assert end["reason"] == "environment_done"
 
 
@@ -231,5 +244,44 @@ def test_rollout_debug_transport_preserves_actions_and_uses_batch_split(enabled)
         sent.append(result)
 
     worker.send_rollout_result = send
+    worker._evaluate_chunk = MethodType(MultiStepRolloutWorker._evaluate_chunk, worker)
     asyncio.run(MultiStepRolloutWorker.evaluate(worker, None, None))
     assert len(sent) == 1
+
+
+@pytest.mark.parametrize(
+    ("control", "intervene", "expected"),
+    [
+        ({"manual_failure": [True]}, True, "manual_failure"),
+        ({"lamp_control_released": [True]}, False, "control_released"),
+        ({}, True, "intervention"),
+        ({"lamp_control_changed": [True]}, False, "control_changed"),
+        ({}, False, "unknown"),
+    ],
+)
+def test_chunk_discard_reason_and_actual_action_source(control, intervene, expected):
+    from rlinf.utils.eval_action_debug import enrich_action_chunk
+
+    record = {
+        "type": "action_chunk",
+        "sent_action_chunk": [[[0.0], [0.0]]],
+        "steps": [
+            {
+                "step": 8,
+                "executed_action": [[0.3]],
+                "intervene_flag": [intervene],
+                "control_info": control,
+            }
+        ],
+    }
+    enriched = enrich_action_chunk(record)
+    assert enriched["primitive_step_start"] == 8
+    assert enriched["discarded_suffix_count"] == 1
+    assert enriched["suffix_discard_reason"] == expected
+    assert enriched["applied_env_action_chunk"] == [[[0.3]]]
+    assert enriched["applied_action_source"] == [
+        "intervention" if intervene else "policy"
+    ]
+    assert "schema_version" not in record
+    record["sent_action_chunk"] = [[[0.0]]]
+    assert enrich_action_chunk(record)["suffix_discard_reason"] is None

@@ -315,7 +315,7 @@ def test_demo_both_outputs_keep_executed_actions_and_terminal_frame(tmp_path):
     collector._target_step_period = None
     collector.log_info = Mock()
     asyncio.run(collector.run())
-    assert env.closed and env.resets == 3
+    assert not env.closed and env.resets == 3
     collector.buffer.close.assert_called_once()
     collector.buffer.add_trajectories.assert_called_once()
     trajectory = collector.buffer.add_trajectories.call_args.args[0][0]
@@ -331,6 +331,8 @@ def test_demo_both_outputs_keep_executed_actions_and_terminal_frame(tmp_path):
     assert episode["success"]
     np.testing.assert_array_equal(np.array(episode["actions"])[:, 0], [1, 2, 3])
     assert episode["observations"][-1]["states"][0] == 3
+    asyncio.run(collector.close_envs())
+    assert env.closed
 
 
 def test_stop_request_saves_partial_frame_episode(tmp_path):
@@ -374,7 +376,10 @@ def test_stop_request_saves_partial_frame_episode(tmp_path):
         str(tmp_path / "raw_reward_episodes/episode_000000.pt")
     )
     assert payload.labels == [0]
-    assert collector.env.closed
+    env = collector.env
+    assert not env.closed
+    asyncio.run(collector.close_envs())
+    assert env.closed
 
 
 def test_reward_injection_copies_config_and_uses_gpu_placement():
@@ -572,7 +577,10 @@ def test_demo_stop_drops_incomplete_trajectory(tmp_path):
     asyncio.run(collector.run())
     collector.buffer.add_trajectories.assert_not_called()
     collector.buffer.close.assert_called_once()
-    collector.env.close.assert_called_once()
+    env = collector.env
+    env.close.assert_not_called()
+    asyncio.run(collector.close_envs())
+    env.close.assert_called_once()
 
 
 @pytest.mark.parametrize("successful_first_episode", [True, False])
@@ -645,7 +653,10 @@ def test_demo_episode_pause_before_reset(
             assert collector.env.reset.call_count == (1 if stop_while_paused else 3)
             assert collector._waiting_episode is None
             collector.buffer.close.assert_called_once()
-            collector.env.close.assert_called_once()
+            collector.env.close.assert_not_called()
+            env = collector.env
+            asyncio.run(collector.close_envs())
+            env.close.assert_called_once()
         finally:
             asyncio.run(collector.request_stop())
 
@@ -667,17 +678,21 @@ def test_demo_driver_enter_or_eof(monkeypatch, line):
     handle.done.side_effect = [False, True]
     stopped = threading.Event()
 
-    module.wait_for_collection(collector, handle, stopped)
+    if line:
+        module.wait_for_collection(collector, handle, stopped)
+    else:
+        with pytest.raises(EOFError, match="terminal closed"):
+            module.wait_for_collection(collector, handle, stopped)
 
     flush.assert_called_once_with(0, module.termios.TCIFLUSH)
     if line:
         collector.resume_episode.assert_called_once_with(3)
         collector.request_stop.assert_not_called()
     else:
-        collector.request_stop.assert_called_once()
+        collector.request_stop.assert_not_called()
         collector.resume_episode.assert_not_called()
         assert stopped.is_set()
-    handle.wait.assert_called_once()
+    assert handle.wait.call_count == int(bool(line))
 
 
 def test_demo_pause_requires_driver_terminal(monkeypatch):

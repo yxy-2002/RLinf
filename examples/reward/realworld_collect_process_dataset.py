@@ -23,7 +23,6 @@ import asyncio
 import json
 import os
 import random
-import signal
 import time
 
 import hydra
@@ -37,6 +36,7 @@ from rlinf.envs.realworld.common.keyboard.keyboard_listener import KeyboardListe
 from rlinf.envs.realworld.realworld_env import RealWorldEnv
 from rlinf.scheduler import Cluster, ComponentPlacement, Worker
 from rlinf.utils.logging import get_logger
+from rlinf.utils.training_cleanup import training_exit_cleanup
 
 logger = get_logger()
 
@@ -153,16 +153,31 @@ class FrameCollector(Worker):
         """Request a graceful flush after the current step."""
         self._quit = True
 
+    async def stop(self) -> None:
+        """Finish frame persistence before acknowledging job cleanup."""
+        await self.request_stop()
+        task = getattr(self, "_collection_task", None)
+        if task is not None and not task.done():
+            # run() reports acquisition errors. Cleanup must still close the env.
+            await asyncio.shield(asyncio.gather(task, return_exceptions=True))
+
+    async def close_envs(self) -> None:
+        """Close hardware only after the driver has captured owned children."""
+        await self.stop()
+        env = getattr(self, "env", None)
+        self.env = None
+        if env is not None:
+            env.close()
+
     async def run(self) -> None:
         """Collect in a thread so the actor can receive stop requests."""
         if self.label_source == "keyboard":
             self._run_legacy()
-            self.env.close()
             return
-        try:
-            await asyncio.to_thread(self._run_spacemouse)
-        finally:
-            self.env.close()
+        self._collection_task = asyncio.create_task(
+            asyncio.to_thread(self._run_spacemouse)
+        )
+        await asyncio.shield(self._collection_task)
 
     def _run_spacemouse(self):
         from rlinf.data.reward_collection import (
@@ -459,27 +474,17 @@ class FrameCollector(Worker):
 )
 def main(cfg):
     cluster = Cluster(cluster_cfg=cfg.cluster)
+    with training_exit_cleanup(namespace=Cluster.NAMESPACE) as retained_resources:
+        _run_collection(cfg, cluster, retained_resources)
+
+
+def _run_collection(cfg, cluster, retained_resources: list[object]) -> None:
     component_placement = ComponentPlacement(cfg, cluster)
     env_placement = component_placement.get_strategy("env")
-    collector = FrameCollector.create_group(cfg).launch(
-        cluster, name=cfg.env.group_name, placement_strategy=env_placement
-    )
-
-    if cfg.runner.get("label_source", "keyboard") != "spacemouse_right":
-        collector.run().wait()
-        return
-
-    def request_stop(signum, frame):
-        collector.request_stop()
-
-    previous_handlers = {}
-    try:
-        for sig in (signal.SIGINT, signal.SIGTERM):
-            previous_handlers[sig] = signal.signal(sig, request_stop)
-        collector.run().wait()
-    finally:
-        for sig, handler in previous_handlers.items():
-            signal.signal(sig, handler)
+    collector = FrameCollector.create_group(cfg)
+    retained_resources.append(collector)
+    collector.launch(cluster, name=cfg.env.group_name, placement_strategy=env_placement)
+    collector.run().wait()
 
 
 if __name__ == "__main__":

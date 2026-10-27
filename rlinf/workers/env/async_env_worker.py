@@ -13,6 +13,7 @@
 # limitations under the License.
 
 import asyncio
+from contextlib import suppress
 
 from omegaconf.omegaconf import DictConfig
 
@@ -156,3 +157,26 @@ class AsyncEnvWorker(EnvWorker):
         self._collector_gate.advance(None)
         if self._interact_task is not None and not self._interact_task.done():
             self._interact_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await self._interact_task
+
+    async def close_envs(self) -> None:
+        """Stop collection before closing every initialized environment."""
+        await self.stop()
+        errors = []
+        closed = set()
+        for name in ("env_list", "eval_env_list"):
+            envs = getattr(self, name, [])
+            setattr(self, name, [])
+            for env in envs:
+                if id(env) in closed:
+                    continue
+                closed.add(id(env))
+                try:
+                    env.close()
+                except Exception as exc:
+                    errors.append(exc)
+        if errors:
+            raise RuntimeError(
+                f"Failed to close {len(errors)} environment(s)"
+            ) from errors[0]

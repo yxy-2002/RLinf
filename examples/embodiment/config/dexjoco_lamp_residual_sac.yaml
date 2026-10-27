@@ -65,8 +65,9 @@ algorithm:
   entropy_tuning:
     alpha_type: exp
     initial_alpha: 0.01
-    # Inferred as -0.5 * the number of decoder-causal coordinates.
+    # Inferred as target_entropy_per_dim * K * core_action_dim.
     target_entropy: null
+    target_entropy_per_dim: -1.0
     optim:
       lr: 1.0e-4
       lr_scheduler: torch_constant

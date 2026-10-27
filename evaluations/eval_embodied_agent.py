@@ -23,6 +23,7 @@ from rlinf.runners.embodied_eval_runner import EmbodiedEvalRunner
 from rlinf.scheduler import Cluster
 from rlinf.utils.placement import HybridComponentPlacement
 from rlinf.utils.realworld_reward import evaluation_reward_service
+from rlinf.utils.training_cleanup import training_exit_cleanup
 from rlinf.workers.env.env_worker import EnvWorker
 from rlinf.workers.rollout.hf.huggingface_worker import MultiStepRolloutWorker
 
@@ -40,27 +41,35 @@ def main(cfg) -> None:
     print(json.dumps(OmegaConf.to_container(cfg, resolve=True), indent=2))
 
     cluster = Cluster(cluster_cfg=cfg.cluster)
+    with training_exit_cleanup(namespace=Cluster.NAMESPACE) as retained_resources:
+        _run_evaluation(cfg, cluster, retained_resources)
+
+
+def _run_evaluation(cfg, cluster, retained_resources: list[object]) -> None:
     component_placement = HybridComponentPlacement(cfg, cluster)
 
     with evaluation_reward_service(
-        cfg, component_placement, cluster
+        cfg, component_placement, cluster, retained_resources=retained_resources
     ) as reward_service_name:
         # Create rollout worker group
         rollout_placement = component_placement.get_strategy("rollout")
         rollout_group = MultiStepRolloutWorker.create_group(cfg).launch(
             cluster, name=cfg.rollout.group_name, placement_strategy=rollout_placement
         )
+        retained_resources.append(rollout_group)
         # Create env worker group
         env_placement = component_placement.get_strategy("env")
         env_group = EnvWorker.create_group(cfg).launch(
             cluster, name=cfg.env.group_name, placement_strategy=env_placement
         )
+        retained_resources.append(env_group)
 
         runner = EmbodiedEvalRunner(
             cfg=cfg,
             rollout=rollout_group,
             env=env_group,
         )
+        retained_resources.append(runner)
 
         runner.init_workers(reward_service_name=reward_service_name)
         runner.run()
