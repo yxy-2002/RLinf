@@ -156,6 +156,7 @@ class LAMPDiffusionPolicy(nn.Module):
         decoder_history_contract: str = "primitive_v1",
         decoder_history_length: int | None = 8,
         dropout_prob: float = 0.0,
+        hand_latent_clip_range: float = 2.0,
         **removed_architecture_options: Any,
     ) -> None:
         super().__init__()
@@ -208,6 +209,9 @@ class LAMPDiffusionPolicy(nn.Module):
                 "lamp_dp requires the ResNet-18 [64,128,256,512] feature contract"
             )
 
+        if not np.isfinite(hand_latent_clip_range) or hand_latent_clip_range <= 0:
+            raise ValueError("hand_latent_clip_range must be positive and finite")
+        self.hand_latent_clip_range = float(hand_latent_clip_range)
         self.hand_prior_source = hand_prior_source
         self.pca_latent_dim = int(pca_latent_dim)
         self.lamplstm_model_config = (
@@ -444,13 +448,19 @@ class LAMPDiffusionPolicy(nn.Module):
     ) -> torch.Tensor:
         timesteps = self._inference_timesteps
         schedule = self._schedule()
+        clip_range = sample.new_tensor(
+            [2.0] * self.arm_action_dim
+            + [self.hand_latent_clip_range] * (sample.shape[-1] - self.arm_action_dim)
+        )
         for index, timestep in enumerate(timesteps):
             previous = timesteps[index + 1] if index + 1 < len(timesteps) else -1
             batch_timestep = torch.full(
                 (sample.shape[0],), timestep, dtype=torch.long, device=sample.device
             )
             epsilon = self.denoiser(sample, batch_timestep, global_cond=condition)
-            sample = ddim_step(sample, epsilon, timestep, previous, schedule)
+            sample = ddim_step(
+                sample, epsilon, timestep, previous, schedule, clip_range
+            )
         return sample
 
     def _schedule(self) -> dict[str, torch.Tensor]:

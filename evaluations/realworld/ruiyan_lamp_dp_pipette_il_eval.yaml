@@ -1,0 +1,32 @@
+defaults:
+- ruiyan_demo_data_pipette
+- ruiyan_lamp_dp_il_eval
+- _self_
+hydra:
+  searchpath:
+  - file://${oc.env:EMBODIED_PATH}/config/
+runner:
+  logger:
+    log_path: ./logs/eval/ruiyan_lamp
+    experiment_name: ruiyan_lamp_dp_pipette_il_eval
+env:
+  eval:
+    max_steps_per_rollout_epoch: 600
+    max_episode_steps: 600
+    override_cfg:
+      max_num_steps: 600
+    video_cfg:
+      save_video: true
+      video_base_dir: ${runner.logger.log_path}/video/eval
+      fps: 10
+      # Left: global camera. Right: wrist camera. One MP4 per rollout.
+      image_keys:
+      - extra_view_images[0]
+      - main_images
+rollout:
+  model:
+    model_path: /workspace/yxy_RLinf/RLinf/outputs/pipette_50demo_five_priors_20261106/mlp/dp/actor/artifact
+reward:
+  model:
+    model_path: /workspace/yxy_RLinf/RLinf/logs/20261105-131625-ruiyan_reward_training_pipette/ruiyan-pipette-resnet18/checkpoints/global_step_100/actor/model_state_dict/full_weights.pt
+

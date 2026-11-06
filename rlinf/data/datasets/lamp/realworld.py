@@ -136,11 +136,15 @@ class RealWorldTrajectorySource:
         task: str | None = None,
         *,
         robot_type: str = "wuji",
+        clamp_negative_hand_states: bool = False,
     ) -> None:
         """Read one demo directory or an ordered, nonempty list of directories.
 
         Directory order defines global episode IDs. Duplicate resolved roots or
         files are rejected to prevent accidental train/validation duplication.
+        For noisy Ruiyan demos, clamp_negative_hand_states replaces negative
+        hand observations with zero in memory only. Actions and arm states are
+        unchanged; nonfinite values and normalized states above one still fail.
         """
         roots = [root] if isinstance(root, (str, Path)) else root
         if not isinstance(roots, Sequence) or not roots:
@@ -181,6 +185,9 @@ class RealWorldTrajectorySource:
             )
         self.paths = tuple(path for group in groups for path in group)
         self.spec = realworld_robot_spec(robot_type)
+        self.clamp_negative_hand_states = clamp_negative_hand_states
+        if clamp_negative_hand_states and robot_type != "ruiyan":
+            raise ValueError("Negative hand-state clamping requires Ruiyan demos")
         self.conversion = {
             "version": CONVERSION_VERSION,
             "period_seconds": 0.1,
@@ -191,6 +198,9 @@ class RealWorldTrajectorySource:
             "robot_spec": self.spec.to_dict(),
             "cameras": ["extra_view_images[0]", "main_images"],
         }
+        if clamp_negative_hand_states:
+            # Keep existing source identities unchanged when the option is off.
+            self.conversion["hand_state_transform"] = "clamp_min_zero_v1"
         digest = hashlib.sha256(json.dumps(self.conversion, sort_keys=True).encode())
         if len(groups) > 1:
             digest.update(b"multi_directory_v1")
@@ -239,6 +249,20 @@ class RealWorldTrajectorySource:
                     raise ValueError(
                         f"{path.name}: malformed {key} hand_state_normalized"
                     )
+                if self.clamp_negative_hand_states:
+                    if not (
+                        obs["states"].isfinite().all()
+                        and obs["hand_state_normalized"].isfinite().all()
+                    ):
+                        raise ValueError(
+                            f"{path.name}: nonfinite hand/state observations"
+                        )
+                    # Clone because curr_obs and next_obs may share storage.
+                    obs["hand_state_normalized"] = obs[
+                        "hand_state_normalized"
+                    ].clamp_min(0)
+                    obs["states"] = obs["states"].clone()
+                    obs["states"][..., : self.spec.hand_state_dim].clamp_min_(0)
                 measured_states({k: v[:, 0] for k, v in obs.items()}, self.spec)
                 camera_slots({k: v[:, 0] for k, v in obs.items()})
             for key in ("rewards", "terminations", "truncations", "dones"):

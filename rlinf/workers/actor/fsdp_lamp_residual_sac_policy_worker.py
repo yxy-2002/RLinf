@@ -669,6 +669,7 @@ class LampResidualSACFSDPPolicy(EmbodiedSACFSDPPolicy):
             forward_type=ForwardType.SAC_Q,
             obs=curr_obs,
             actions=actions,
+            primitive_valid=primitive_valid,
             shared_feature=self._base_cache(batch) or None,
         )
         target_q = target_q.to(dtype=data_q.dtype)

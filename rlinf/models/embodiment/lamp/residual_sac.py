@@ -751,6 +751,7 @@ class LampResidualSACPolicy(nn.Module, BasePolicy):
         )
 
     def _physical_action_norm(self, physical: torch.Tensor) -> torch.Tensor:
+        """Normalize critic actions without amplifying near-constant hand joints."""
         arm = (
             physical[..., : self.arm_action_dim]
             - self.base_policy._stat("arm_action_mean")
@@ -758,7 +759,7 @@ class LampResidualSACPolicy(nn.Module, BasePolicy):
         hand = (
             physical[..., self.arm_action_dim :]
             - self.base_policy._stat("hand_action_mean")
-        ) / self.base_policy._stat("hand_action_std").clamp_min(1e-6)
+        ) / self.base_policy._stat("hand_action_std").clamp_min(0.01)
         return torch.cat((arm, hand), dim=-1)
 
     @staticmethod
@@ -1204,6 +1205,7 @@ class LampResidualSACPolicy(nn.Module, BasePolicy):
         actions: torch.Tensor,
         shared_feature: dict[str, torch.Tensor] | None = None,
         detach_encoder: bool = False,
+        primitive_valid: torch.Tensor | None = None,
         **_: Any,
     ) -> torch.Tensor:
         if actions.ndim != 2 or actions.shape[-1] != self.executed_action_dim:
@@ -1222,9 +1224,19 @@ class LampResidualSACPolicy(nn.Module, BasePolicy):
             self.execution_horizon,
             self.physical_action_dim,
         )
-        normalized_action = self._physical_action_norm(action_chunk).flatten(
-            start_dim=1
-        )
+        normalized_action = self._physical_action_norm(action_chunk)
+        if primitive_valid is not None:
+            if (
+                primitive_valid.dtype != torch.bool
+                or primitive_valid.shape != action_chunk.shape[:2]
+            ):
+                raise ValueError("primitive_valid must be boolean with shape [B, K]")
+            # Physical zero padding is not zero after centering/scaling. Ignore
+            # unexecuted coordinates in both the Q input and action gradients.
+            normalized_action = normalized_action.masked_fill(
+                ~primitive_valid.to(device=actions.device).unsqueeze(-1), 0.0
+            )
+        normalized_action = normalized_action.flatten(start_dim=1)
         q_forward = self._compiled_q_head or self.q_head
         return q_forward(
             observation_features,

@@ -6,8 +6,8 @@ runner:
   num_data_episodes: 10
   logger:
     log_path: ./logs
-    experiment_name: ruiyan-demo-data-stamp_seal
+    experiment_name: ruiyan-demo-data-stamp-seal
   pause_between_episodes: true
 reward:
   model:
-    model_path: /workspace/yxy_RLinf/RLinf/logs/reward_model/20261022-062515-ruiyan_reward_training_stamp_seal/ruiyan-stamp-seal-resnet18/checkpoints/global_step_350/actor/model_state_dict/full_weights.pt
+    model_path: /workspace/yxy_RLinf/RLinf/logs/reward_model/20261030-140506-ruiyan_reward_training_stamp_seal/ruiyan-stamp-seal-resnet18/checkpoints/global_step_400/actor/model_state_dict/full_weights.pt

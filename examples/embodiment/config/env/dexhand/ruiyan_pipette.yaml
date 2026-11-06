@@ -1,33 +1,41 @@
 # @package _global_
 env:
   eval:
-    max_episode_steps: 4000
+    max_episode_steps: 600
     override_cfg:
-      max_num_steps: 4000
+      max_num_steps: 600
+      action_scale:
+      - 0.05
+      - 0.5
+      - 1.0
+      # Pipette uses the L515 global view and the existing D405 wrist view.
+      camera_serials:
+      - '323622272844'
+      - 'f0210722'
+      camera_names:
+        '323622272844': wrist_1
+        'f0210722': global
       target_ee_pose:
-      - 0.65998911
-      - 0.04454657
-      - 0.51844617
-      - 1.7469598
-      - 0.70795561
-      - 0.10666726
+      - 0.46060174
+      - 0.10762227
+      - 0.42254224 
+      - 1.57655249
+      - 0.78653299
+      - 0.8045757
       camera_crop_regions:
-        '105322251046':
-        - 0.154167
-        - 0.214062
-        - 0.779167
-        - 0.940625
+        # Full frame until the L515 workspace crop is calibrated.
+        'f0210722': [0.000000, 0.043750, 1.000000, 0.712500]
       ee_pose_limit_min_offset:
+      - -0.8
+      - -0.8
       - -0.4
-      - -0.4
-      - -0.2
       - -0.003
       - -0.003
       - -0.003
       ee_pose_limit_max_offset:
-      - 0.4
-      - 0.4
-      - 0.4
+      - 0.8
+      - 0.8
+      - 0.8
       - 0.003
       - 0.003
       - 0.003

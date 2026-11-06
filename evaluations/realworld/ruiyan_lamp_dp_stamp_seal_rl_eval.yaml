@@ -1,0 +1,42 @@
+defaults:
+- ruiyan_demo_data_stamp_seal
+- ruiyan_lamp_dp_rl_eval
+- _self_
+hydra:
+  searchpath:
+  - file://${oc.env:EMBODIED_PATH}/config/
+runner:
+  logger:
+    log_path: ./logs/eval/ruiyan_lamp
+    experiment_name: ruiyan_lamp_dp_stamp_seal_rl_eval
+  ckpt_path: /workspace/yxy_RLinf/RLinf/logs/20261104-13:57:49-ruiyan_lamp_rlpd_stamp_seal_film/ruiyan_lamp_rlpd_stamp_seal_50demo_film_015_010/checkpoints/global_step_13000
+env:
+  eval:
+    rollout_epoch: 30
+    max_steps_per_rollout_epoch: 400
+    max_episode_steps: 400
+    override_cfg:
+      max_num_steps: 400
+      compliance_param:
+        translational_stiffness: 1000
+        rotational_stiffness: 150
+    video_cfg:
+      save_video: true
+      video_base_dir: ${runner.logger.log_path}/video/eval
+      fps: 10
+      image_keys:
+      - extra_view_images[0]
+      - main_images
+rollout:
+  model:
+    # Keep the base artifact, residual bounds and inputs identical to training.
+    model_path: /workspace/yxy_RLinf/RLinf/outputs/stamp_new50_four_models_20261102/film_baseline/dp/actor/artifact
+    wrist_residual_scale: 0.15
+    hand_residual_scale: 0.1
+    actor_input: condition
+    critic_observation_input: condition
+    hand_prior:
+      type: lamplstm
+reward:
+  model:
+    model_path: /workspace/yxy_RLinf/RLinf/logs/reward_model/20261030-140506-ruiyan_reward_training_stamp_seal/ruiyan-stamp-seal-resnet18/checkpoints/global_step_400/actor/model_state_dict/full_weights.pt

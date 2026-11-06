@@ -15,12 +15,28 @@
 """Multi-camera frame selection and episode-level reward dataset processing."""
 
 import random
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 
 import numpy as np
 import torch
 
 from rlinf.data.datasets.reward_model import RewardDatasetPayload
+
+
+def active_camera_names(
+    camera_serials: Sequence[str | int] | None,
+    camera_names: Mapping[str | int, str] | None,
+) -> list[str]:
+    """Resolve enabled camera names using FrankaEnv's serial order and defaults.
+
+    Ignore inactive mappings retained by Hydra's recursive dictionary merge.
+    """
+    names = {str(serial): name for serial, name in (camera_names or {}).items()}
+    return [
+        names.get(str(serial), f"wrist_{index}")
+        for index, serial in enumerate(camera_serials or [], start=1)
+    ]
 
 
 def stack_camera_frames(frames: dict, camera_keys: list[str]) -> np.ndarray:

@@ -329,8 +329,9 @@ def test_policy_release_uses_one_executor_and_button_gate():
     ]
     + [("both", "before_arm"), ("both", "before_hand")],
 )
+@pytest.mark.parametrize("left_button_mode", ["hold", "toggle"])
 def test_continuous_chunk_release_never_sends_old_policy(
-    component, release, monkeypatch
+    component, release, monkeypatch, left_button_mode
 ):
     """Exercise adapter and real wrapper together with deterministic device input."""
     import gymnasium as gym
@@ -358,7 +359,10 @@ def test_continuous_chunk_release_never_sends_old_policy(
             hand = False
         elif active == "hand":
             arm = False
-        return np.array([1, 1, 1, hand, False, hand] + [0.2 * arm] * 6 + [0.7] * 20)
+        # Toggle can keep control after physical release, and switch off while
+        # the second press is still held. Execution must use effective control.
+        left = hand if left_button_mode == "hold" else not hand
+        return np.array([1, 1, 1, left, False, hand] + [0.2 * arm] * 6 + [0.7] * 20)
 
     # Each executed step reads once before sending and once after execution.
     states = [True] * 8
@@ -547,6 +551,9 @@ def test_input_process_rebases_each_press_without_sending_commands(monkeypatch):
     )
     glove = Mock()
     glove.get_target.return_value = sample
+    glove.get_state.return_value = SimpleNamespace(
+        target=sample, connected=True, generation=1
+    )
     mouse = Mock()
 
     def buttons():

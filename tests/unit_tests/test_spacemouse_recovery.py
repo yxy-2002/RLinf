@@ -112,8 +112,9 @@ def test_unrelated_teleop_failure_still_raises(monkeypatch, failure):
 
 
 @pytest.mark.parametrize("device", ["mouse", "glove"])
+@pytest.mark.parametrize("left_button_mode", ["hold", "toggle"])
 def test_input_worker_resets_glove_baseline_and_preserves_failure_sequence(
-    monkeypatch, device
+    monkeypatch, device, left_button_mode
 ):
     import os
     import sys
@@ -148,7 +149,7 @@ def test_input_worker_resets_glove_baseline_and_preserves_failure_sequence(
         return SimpleNamespace(
             connected=connected if device == "mouse" else True,
             generation=generation if device == "mouse" else 1,
-            press_counts=(count, 0),
+            press_counts=(count, [0, 1, 1, 1, 1, 2][tick[0] - 1]),
             action=np.ones(6),
             buttons=[0, left],
         )
@@ -202,6 +203,7 @@ def test_input_worker_resets_glove_baseline_and_preserves_failure_sequence(
         [0.0] * 21,
         {
             "release_behavior": "policy",
+            "left_button_mode": left_button_mode,
             "hand_type": "ruiyan_hand",
             "hand": {},
             "glove_frequency": 60,

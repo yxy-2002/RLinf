@@ -104,6 +104,7 @@ def ddim_step(
     timestep: int,
     prev_timestep: int,
     schedule: dict[str, torch.Tensor],
+    clip_sample_range: float | torch.Tensor = CLIP_SAMPLE_RANGE,
 ) -> torch.Tensor:
     """Apply one deterministic (eta=0) DDIM epsilon-prediction step."""
 
@@ -111,7 +112,7 @@ def ddim_step(
     pred_x0 = (sample - torch.sqrt(1.0 - alpha_prod_t) * epsilon) / torch.sqrt(
         alpha_prod_t
     ).clamp_min(1e-8)
-    pred_x0 = pred_x0.clamp(-CLIP_SAMPLE_RANGE, CLIP_SAMPLE_RANGE)
+    pred_x0 = pred_x0.clamp(-clip_sample_range, clip_sample_range)
     if int(prev_timestep) < 0:
         return pred_x0
     alpha_prod_prev = schedule["alphas_cumprod"][int(prev_timestep)]

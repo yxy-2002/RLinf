@@ -765,3 +765,19 @@ settled replay of the recorded opposition endpoints produces bend commands of
 ``0.31–0.68``. Recorded bending endpoints produce rotation commands of
 ``0–0.09``. These are replayed command values, not measured robot motion.
 The direct six-signal algorithm does not compensate for this coupling.
+
+Critic action scaling and partial chunks
+---------------------------------------
+
+The LAMP critic floors hand-action standard deviations at ``0.01``; arm-action
+scaling keeps its ``1e-6`` floor. Pretrained policy and decoder statistics are
+unchanged. Replay, actor, and target-policy actions use the same critic scaling.
+For partial chunks, ``primitive_valid`` masks unexecuted action positions to
+zero after normalization in the data Q forward. Full actor/target chunks do
+not need this mask. The Q input dimensions stay unchanged; no separate mask
+feature is added. Reward masking and macro-step discounting are unchanged.
+
+Old checkpoints remain shape-compatible, but their Q functions change under
+the new scaling. Start fresh critic training or explicitly migrate critic
+weights for the changed normalization; an ordinary resume does not perform
+that migration.

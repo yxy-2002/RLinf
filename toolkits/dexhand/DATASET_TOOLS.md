@@ -4,6 +4,8 @@
 
 ## 1. 审核正负帧
 
+在线 reward 采集以 `env.eval.override_cfg.camera_serials` 决定启用的相机，再通过 `camera_names` 查名称；未配置名称时按序使用 `wrist_1`、`wrist_2` 等。Hydra 递归合并字典可能保留旧序列号的名称映射，采集会忽略未启用序列号的映射。`runner.camera_keys` 必须引用已启用的相机名称。
+
 推荐审核 `raw_reward_episodes/`，再重新划分训练/验证集：
 
 ```bash

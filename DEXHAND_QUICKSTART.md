@@ -177,6 +177,30 @@ bash examples/embodiment/collect_data.sh wuji_demo_data_stack_cube \
 bash examples/embodiment/collect_data.sh realworld_collect_ruiyan_dexhand_data
 ```
 
+## 盖章 FiLM RL：左键切换接管
+
+仅 [盖章 FiLM RL 配置](examples/embodiment/config/ruiyan_lamp_rlpd_stamp_seal_film.yaml)
+显式开启以下选项；`env.train` 继承 `env.eval`，因此训练环境也生效：
+
+```yaml
+env:
+  eval:
+    glove_config:
+      left_button_mode: toggle
+```
+
+`left_button_mode` 默认为 `hold`，保留原有按住左键接管手部的逻辑。
+`toggle` 要求 `release_behavior: policy`（本 RL 配置已从共享基类继承）：
+
+- 每回合开始时由策略控制手部；第一次按左键切到手套，松开仍保持手套接管；第二次按左键交回策略。
+- 长按只切换一次，短按通过按下计数保留。每次进入手套接管都会重新建立相对映射基准。
+- 复位、暂停后恢复、SpaceMouse 或手套断线重连都会清除接管状态。恢复时若左键仍按住，需先松开再按；重连后沿用原有恢复流程重新规划。
+- 切回策略时丢弃当前旧动作序列的剩余部分，再重新规划。SpaceMouse 移动触发的机械臂接管、右键结束失败回合、手部限幅和动作记录逻辑保持不变。
+
+这里切换的是**手部控制权**；移动 SpaceMouse 仍可独立接管机械臂。
+其他 RL、评测和数据采集配置不设置该字段，继续使用原有逻辑。
+要让此配置恢复按住接管，将 `toggle` 改成 `hold`。
+
 ## 进度条
 
 - `Reward frames`：显示正帧数量/目标、负帧累计数量、当前回合、回合步数和当前标签。进度仅按正帧数推进，达到 100% 后保存并退出。

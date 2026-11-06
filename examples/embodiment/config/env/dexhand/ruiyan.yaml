@@ -29,7 +29,6 @@ env:
       frequency: 60
     override_cfg:
       enable_camera_player: false
-      enable_random_reset: false
       camera_serials:
       - '323622272844'
       - '105322251046'

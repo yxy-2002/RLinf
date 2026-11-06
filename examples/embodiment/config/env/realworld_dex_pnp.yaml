@@ -32,7 +32,6 @@ override_cfg:
   camera_fps: 30 # Shared capture rate for dexterous-hand reward/demo/train/eval.
   target_ee_pose: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
   reward_threshold: [0.01, 0.01, 0.01, 0.2, 0.2, 0.2]
-  enable_random_reset: true
   enable_gripper_penalty: false
   step_frequency: 10.0
   action_scale: [0.03, 0.5, 1.0]
@@ -75,7 +74,7 @@ override_cfg:
     rotational_clip_neg_z: 0.05
     rotational_Ki: 0.1
   # Independent per-reset uniform XYZ (meters) / Euler XYZ (radians) offsets.
-  # All zeros disable this, independently of enable_random_reset.
+  # Set all six values to zero to disable reset pose randomization.
   random_reset_ee_pose_region: [0.05, 0.05, 0.05, 0, 0, 0]
   reset_ee_pose_offset: [0, 0, 0.05, 0, 0, 0]
   ee_pose_limit_min_offset: [-0.0, -0.02, -0.02, -0.003, -0.003, -0.003]

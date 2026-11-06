@@ -45,3 +45,23 @@ Current transition-budget training requires one actor rank. Env and rollout proc
 Use `bash requirements/install.sh embodied --model lamp --env dummy` on an offline/GPU node, or `--env dexjoco` for simulation. Reuse the existing realenv Wuji installation on the control node. Docker targets are `embodied-lamp` and `embodied-lamp-dexjoco`; the latter explicitly defers GPU EGL smoke until runtime.
 
 See the bilingual guide `docs/source-en/rst_source/guides/lamp_unified.rst` / `docs/source-zh/rst_source/guides/lamp_unified.rst` and `docs/lamp_unified_validation.md` for results and remaining hardware validation. Real recordings and trained artifacts are excluded from Git.
+
+## Critic action normalization and partial chunks
+
+LAMP SAC uses a standard-deviation floor of `0.01` for hand actions in the
+critic only. Arm action scaling retains its `1e-6` floor. Pretrained policy and
+hand decoder statistics are unchanged. The same critic normalization applies
+to replay, actor, and target-policy actions.
+
+Online execution and offline demos retain physical zero padding and the
+`primitive_valid` execution-prefix mask. The learner passes that mask to the
+data Q forward; invalid action positions become zero **after normalization**
+and have zero action gradients. Actor and target-policy forwards propose full
+chunks and omit the mask. This preserves the existing Q input dimensions;
+the Q does not receive a separate mask feature. Reward masking and macro-step
+discounting are unchanged.
+
+Existing checkpoint tensors remain shape-compatible, but changing action
+scales changes the learned Q function. Do not treat an old critic/optimizer
+resume as behavior-preserving; use a fresh critic training run or an explicit
+normalization-aware weight migration. This change does not migrate checkpoints.

@@ -118,6 +118,7 @@ def test_wrapper_reset_order_and_snapshot_metadata(
             assert config["joint_lower_limits"] == lower
             assert config["joint_upper_limits"] == upper
             assert config["frequency"] == 60
+            assert config["left_button_mode"] == "hold"
 
         def request(self, command):
             env.events.append(command)

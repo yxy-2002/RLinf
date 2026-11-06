@@ -54,7 +54,13 @@ class AsyncLampRealWorldRLPDPolicy(
         )
         if robot_type is None:
             raise ValueError("Raw RealWorld demos require a Wuji or Ruiyan robot spec")
-        source = RealWorldTrajectorySource(roots, robot_type=robot_type)
+        source = RealWorldTrajectorySource(
+            roots,
+            robot_type=robot_type,
+            clamp_negative_hand_states=bool(
+                self.cfg.algorithm.demo_buffer.get("clamp_negative_hand_states", False)
+            ),
+        )
         history_length = int(self.cfg.env.train.lamp_history_length)
         # Match native replay loading's contiguous per-rank episode partition.
         count, remainder = divmod(len(source.paths), self._world_size)

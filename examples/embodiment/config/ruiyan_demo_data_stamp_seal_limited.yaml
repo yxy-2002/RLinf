@@ -1,0 +1,14 @@
+# Collection-only preset; existing evaluation and RL configs do not inherit it.
+defaults:
+- ruiyan_demo_data_stamp_seal
+- _self_
+
+env:
+  eval:
+    retargeting:
+      # Normalized motor order: thumb rotation, thumb bend, index, middle, ring, pinky.
+      joint_lower_limits: [0.40, 0, 0, 0, 0, 0]
+      joint_upper_limits: [0.70, 1, 1, 1, 1, 1]
+    override_cfg:
+      # Reset bypasses teleoperation limits; keep this target within the bounds.
+      hand_reset_state: [0.58, 0, 0, 0, 0, 0]

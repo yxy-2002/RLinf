@@ -1,0 +1,13 @@
+defaults:
+- ruiyan_demo_data
+- env/dexhand/ruiyan_pipette
+- _self_
+runner:
+  num_data_episodes: 10
+  logger:
+    log_path: ./logs
+    experiment_name: ruiyan-demo-data-pipette
+  pause_between_episodes: true
+reward:
+  model:
+    model_path: /workspace/yxy_RLinf/RLinf/logs/20261105-131625-ruiyan_reward_training_pipette/ruiyan-pipette-resnet18/checkpoints/global_step_100/actor/model_state_dict/full_weights.pt

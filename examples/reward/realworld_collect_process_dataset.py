@@ -32,6 +32,7 @@ from omegaconf import OmegaConf
 from tqdm import tqdm
 
 from rlinf.data.datasets.reward_model import RewardDatasetPayload
+from rlinf.data.reward_collection import active_camera_names
 from rlinf.envs.realworld.common.keyboard.keyboard_listener import KeyboardListener
 from rlinf.envs.realworld.realworld_env import RealWorldEnv
 from rlinf.scheduler import Cluster, ComponentPlacement, Worker
@@ -81,7 +82,10 @@ class FrameCollector(Worker):
                 raise ValueError("Inner and outer episode limits must match")
             if min(self.target_success, cfg.runner.fps) <= 0:
                 raise ValueError("Frame targets and fps must be positive")
-            available = list(env_cfg.override_cfg.camera_names.values())
+            available = active_camera_names(
+                env_cfg.override_cfg.get("camera_serials"),
+                env_cfg.override_cfg.get("camera_names"),
+            )
             if any(key not in available for key in cfg.runner.camera_keys):
                 raise ValueError("Reward camera_keys must name configured cameras")
 
@@ -188,7 +192,10 @@ class FrameCollector(Worker):
 
         cfg = self.cfg
         camera_keys = list(cfg.runner.camera_keys)
-        available = list(cfg.env.eval.override_cfg.camera_names.values())
+        available = active_camera_names(
+            cfg.env.eval.override_cfg.get("camera_serials"),
+            cfg.env.eval.override_cfg.get("camera_names"),
+        )
         metadata = {
             "camera_keys": camera_keys,
             "preprocessing": {

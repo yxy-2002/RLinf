@@ -17,6 +17,37 @@ import numpy as np
 SNAPSHOT_HEADER = 12
 
 
+class _LeftButtonToggle:
+    """Latch hand control using press counts, disarming across input resets."""
+
+    def __init__(self) -> None:
+        self.reset()
+
+    def reset(self) -> None:
+        self.active = False
+        self._press_count: int | None = None
+        self._wait_release = True
+
+    def update(self, pressed: bool, press_count: int) -> tuple[bool, bool]:
+        """Return effective control and whether a new hand baseline is needed.
+
+        Counts preserve taps shorter than one teleop iteration. Multiple taps
+        use parity; off/on within one iteration still starts a fresh baseline.
+        Ignore pre-reset clicks and require release of any button held at reset.
+        """
+        if self._press_count is None or press_count < self._press_count:
+            self.reset()
+            self._press_count = press_count
+        presses = press_count - self._press_count
+        self._press_count = press_count
+        if self._wait_release:
+            self._wait_release = pressed
+            return False, False
+        if presses % 2:
+            self.active = not self.active
+        return self.active, self.active and presses > 0
+
+
 def _resolve_joint_limits(
     physical_lower: np.ndarray,
     physical_upper: np.ndarray,
@@ -210,6 +241,11 @@ def _teleop_worker(connection, shared, config):
     hand = glove = mouse = None
     active = False
     policy_mode = config.get("release_behavior", "hold") == "policy"
+    left_toggle = (
+        _LeftButtonToggle()
+        if config.get("left_button_mode", "hold") == "toggle"
+        else None
+    )
     try:
         if config["hand_type"] == "wuji_hand":
             hand = WujiHand(ROSController(), **config["hand"])
@@ -264,6 +300,8 @@ def _teleop_worker(connection, shared, config):
                     previous_left = False
                     wait_release = True
                     # Ignore reset-time clicks and buttons still held on resume.
+                    if left_toggle is not None:
+                        left_toggle.reset()
                     failure_sequence = 0
                     if failure_enabled:
                         right_press_baseline = mouse.get_button_press_counts()[0]
@@ -289,6 +327,8 @@ def _teleop_worker(connection, shared, config):
                     previous_left = False
                     wait_release = True
                     last_intervene = 0.0
+                    if left_toggle is not None:
+                        left_toggle.reset()
                     if not policy_mode:
                         hand.command(current)
                     _write_snapshot(
@@ -318,6 +358,8 @@ def _teleop_worker(connection, shared, config):
                     previous_left = False
                     wait_release = True
                     mouse_generation = mouse_state.generation
+                    if left_toggle is not None:
+                        left_toggle.reset()
                     glove_generation = glove_state.generation
                     input_generation += 1
                 sample = glove_state.target
@@ -328,11 +370,16 @@ def _teleop_worker(connection, shared, config):
                 if not left:
                     wait_release = False
                 controlling = left and not wait_release
+                toggled_on = False
+                if left_toggle is not None:
+                    controlling, toggled_on = left_toggle.update(
+                        left, mouse_state.press_counts[1]
+                    )
                 raw = np.asarray(sample.values, dtype=np.float64)
                 if custom_limits:
                     raw = np.clip(raw, lower, upper)
                 if controlling:
-                    press_edge = not previous_left
+                    press_edge = not previous_left or toggled_on
                     if press_edge:
                         baseline = raw.copy()
                         base, current = _begin_hand_intervention(
@@ -516,6 +563,11 @@ class DexHandIntervention(gym.Wrapper):
         self._release_behavior = kwargs.get("release_behavior", "hold")
         if self._release_behavior not in ("hold", "policy"):
             raise ValueError("release_behavior must be hold or policy")
+        left_button_mode = kwargs.get("left_button_mode", "hold")
+        if left_button_mode not in ("hold", "toggle"):
+            raise ValueError("left_button_mode must be hold or toggle")
+        if left_button_mode == "toggle" and self._release_behavior != "policy":
+            raise ValueError("left_button_mode=toggle requires release_behavior=policy")
         self._was_intervening = False
         self._policy_control_state = (False, False)
         self._lamp_prepared_input = None
@@ -569,6 +621,7 @@ class DexHandIntervention(gym.Wrapper):
             "timeout": kwargs.get("timeout", 0.5),
             "max_delta": env.unwrapped.config.hand_max_delta_per_step,
             "release_behavior": self._release_behavior,
+            "left_button_mode": left_button_mode,
         }
         if hand_type == "ruiyan_hand":
             import ray

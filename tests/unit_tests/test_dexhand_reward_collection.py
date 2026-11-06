@@ -219,7 +219,12 @@ def test_frame_collector_multi_episode(tmp_path):
                     "main_image_key": "wrist_1",
                     "max_episode_steps": 1000,
                     "override_cfg": {
-                        "camera_names": {"one": "wrist_1", "two": "global"}
+                        "camera_serials": ["one", "two"],
+                        "camera_names": {
+                            "one": "wrist_1",
+                            "two": "global",
+                            "old_global": "global",
+                        },
                     },
                 }
             },
@@ -350,7 +355,12 @@ def test_stop_request_saves_partial_frame_episode(tmp_path):
                     "main_image_key": "wrist_1",
                     "max_episode_steps": 1000,
                     "override_cfg": {
-                        "camera_names": {"one": "wrist_1", "two": "global"}
+                        "camera_serials": ["one", "two"],
+                        "camera_names": {
+                            "one": "wrist_1",
+                            "two": "global",
+                            "old_global": "global",
+                        },
                     },
                 }
             },

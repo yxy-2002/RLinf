@@ -13,6 +13,8 @@ actor:
     model_path: /workspace/yxy_RLinf/RLinf/outputs/ruiyan_stack_cube_20demo_film_20261022/delivery/film/artifact
     wrist_residual_scale: 0.3
     hand_residual_scale: 0.2
+    actor_input: condition
+    critic_observation_input: condition
     hand_prior:
       type: lamplstm
 

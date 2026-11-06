@@ -1,29 +1,39 @@
 # Ruiyan setup and native RLPD settings inherit realworld_lamp_rlpd_base.
 defaults:
 - ruiyan_lamp_rlpd
+- env/dexhand/ruiyan_stamp_seal
 - _self_
 
 runner:
+  resume_dir: null
   logger:
-    experiment_name: ruiyan_lamp_rlpd_stamp_seal_pca_030_030
+    experiment_name: ruiyan_lamp_rlpd_stamp_seal_50demo_film_015_010
+
+env:
+  eval:
+    glove_config:
+      left_button_mode: toggle
 
 actor:
   model:
-    # Load the exported DP and its embedded PCA prior together.
-    model_path: /workspace/yxy_RLinf/RLinf/outputs/ruiyan_stamp_seal_30demo_pca_20261022/delivery/pca/artifact
-    wrist_residual_scale: 0.3
-    hand_residual_scale: 0.3
+    model_path: /workspace/yxy_RLinf/RLinf/outputs/stamp_new50_four_models_20261102/film_baseline/dp/actor/artifact
+    wrist_residual_scale: 0.15
+    hand_residual_scale: 0.1
+    actor_input: condition
+    critic_observation_input: condition
     hand_prior:
-      type: pca
+      type: lamplstm
 
-# Load all 30 recorded demos directly; chunk/history adaptation runs at startup.
 algorithm:
   demo_buffer:
+    clamp_negative_hand_states: true
     load_path:
-    - /workspace/yxy_RLinf/RLinf/logs/20261022-064854-ruiyan_demo_data_stamp_seal/demos
-    - /workspace/yxy_RLinf/RLinf/logs/20261022-070723-ruiyan_demo_data_stamp_seal/demos
-    - /workspace/yxy_RLinf/RLinf/logs/20261022-072313-ruiyan_demo_data_stamp_seal/demos
+    - /workspace/yxy_RLinf/RLinf/outputs/stamp_new50_state_noise_20261102/20261102-112724-ruiyan_demo_data_stamp_seal_limited/demos
+    - /workspace/yxy_RLinf/RLinf/outputs/stamp_new50_state_noise_20261102/20261102-113816-ruiyan_demo_data_stamp_seal_limited/demos
+    - /workspace/yxy_RLinf/RLinf/outputs/stamp_new50_state_noise_20261102/20261102-115413-ruiyan_demo_data_stamp_seal_limited/demos
+    - /workspace/yxy_RLinf/RLinf/outputs/stamp_new50_state_noise_20261102/20261102-121031-ruiyan_demo_data_stamp_seal_limited/demos
+    - /workspace/yxy_RLinf/RLinf/outputs/stamp_new50_state_noise_20261102/20261102-122526-ruiyan_demo_data_stamp_seal_limited/demos
 
 reward:
   model:
-    model_path: /workspace/yxy_RLinf/RLinf/logs/reward_model/20261022-062515-ruiyan_reward_training_stamp_seal/ruiyan-stamp-seal-resnet18/checkpoints/global_step_350/actor/model_state_dict/full_weights.pt
+    model_path: /workspace/yxy_RLinf/RLinf/logs/reward_model/20261030-140506-ruiyan_reward_training_stamp_seal/ruiyan-stamp-seal-resnet18/checkpoints/global_step_400/actor/model_state_dict/full_weights.pt

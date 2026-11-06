@@ -29,5 +29,5 @@ runner:
   logger:
     experiment_name: ruiyan-stamp-seal-resnet18
 data:
-  train_data_paths: /workspace/yxy_RLinf/RLinf/logs/reward_data/20261022-060308-ruiyan_reward_data_stamp_seal/reviewed_data/review_20261022-061724-172361/processed_data/train.pt
-  val_data_paths: /workspace/yxy_RLinf/RLinf/logs/reward_data/20261022-060308-ruiyan_reward_data_stamp_seal/reviewed_data/review_20261022-061724-172361/processed_data/val.pt
+  train_data_paths: /workspace/yxy_RLinf/RLinf/logs/20261030-132626-ruiyan_reward_data_stamp_seal/raw_reward_episodes/reviewed_data/review_20261030-135725-711528/processed_data/train.pt
+  val_data_paths: /workspace/yxy_RLinf/RLinf/logs/20261030-132626-ruiyan_reward_data_stamp_seal/raw_reward_episodes/reviewed_data/review_20261030-135725-711528/processed_data/val.pt

@@ -572,7 +572,11 @@ def test_raw_demo_loading_preserves_actions_and_partitions(tmp_path, world_size)
         w._rank, w._world_size = rank, world_size
         w.model = stub_policy()
         w.cfg = OmegaConf.create(
-            {"actor": {}, "env": {"train": {"lamp_history_length": 3}}}
+            {
+                "actor": {},
+                "algorithm": {"demo_buffer": {}},
+                "env": {"train": {"lamp_history_length": 3}},
+            }
         )
         w.demo_buffer = TrajectoryReplayBuffer(auto_save=False, cache_size=4)
         try:
